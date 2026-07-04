@@ -256,7 +256,7 @@ export default function MapView({
       if (existing) {
         existing.setLatLng([v.lat, v.lng]);
         // Only update icon if rotation/color changed
-        if (existing._lastIconKey !== iconKey) {
+        if ((existing as any)._lastIconKey !== iconKey) {
           let cachedIcon = iconCacheRef.current.get(iconKey);
           if (!cachedIcon) {
             cachedIcon = L.divIcon({

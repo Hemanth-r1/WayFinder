@@ -14,6 +14,7 @@ import { VEHICLE_PHYSICS, LANE_WIDTH_DEG } from '../types';
 import { VehiclePhysics } from '../utils/physics';
 import { aStarRoute } from './pathfinding';
 import { getEdgeNodes } from '../data/roadNetwork';
+import { haversineMeters, bearingBetween } from '../utils/geo';
 
 let vehicleCounter = 0;
 
@@ -37,18 +38,6 @@ const PREFERRED_LANE: Record<VehicleType, number> = {
 function rnd(min: number, max: number) { return min + Math.random() * (max - min); }
 
 // ── Geometry helpers ──────────────────────────────────────────────────────────
-
-function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLng = (lng2 - lng1) * Math.PI / 180;
-  const a = Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
-  return 2 * 6371000 * Math.asin(Math.sqrt(a));
-}
-
-function bearingBetween(a: GeoPoint, b: GeoPoint): number {
-  return ((Math.atan2(b.lng - a.lng, b.lat - a.lat) * 180 / Math.PI) % 360 + 360) % 360;
-}
 
 /** Walk a geometry polyline by `distMeters`, return {lat, lng, bearing, segmentIndex} */
 function walkGeometry(geom: GeoPoint[], startSeg: number, startProgress: number, distMeters: number): {
@@ -90,7 +79,7 @@ function walkGeometry(geom: GeoPoint[], startSeg: number, startProgress: number,
   if (seg >= geom.length - 1) {
     // End of edge
     const last = geom[geom.length - 1];
-    const bear = geom.length >= 2 ? bearingBetween(geom[geom.length - 2], last) : 0;
+    const bear = geom.length >= 2 ? bearingBetween(geom[geom.length - 2].lat, geom[geom.length - 2].lng, last.lat, last.lng) : 0;
     return { lat: last.lat, lng: last.lng, bearing: bear, segmentIndex: geom.length - 2, edgeProgress: 1 };
   }
 
@@ -99,7 +88,7 @@ function walkGeometry(geom: GeoPoint[], startSeg: number, startProgress: number,
   const a = geom[seg]; const b = geom[seg + 1];
   const lat = a.lat + (b.lat - a.lat) * t;
   const lng = a.lng + (b.lng - a.lng) * t;
-  const bearing = bearingBetween(a, b);
+  const bearing = bearingBetween(a.lat, a.lng, b.lat, b.lng);
 
   // Compute edgeProgress cleanly
   let dist = 0;
@@ -145,7 +134,7 @@ export function createVehicle(
     id: `v${vehicleCounter}`, type,
     lat: startNode.lat, lng: startNode.lng,
     bearing: firstEdge.geometry.length >= 2
-      ? bearingBetween(firstEdge.geometry[0], firstEdge.geometry[1])
+      ? bearingBetween(firstEdge.geometry[0].lat, firstEdge.geometry[0].lng, firstEdge.geometry[1].lat, firstEdge.geometry[1].lng)
       : firstEdge.bearing,
     speed: physics.maxSpeed * 0.4 * agg,
     targetSpeed: Math.min(physics.maxSpeed * agg, firstEdge.speedLimit),
@@ -319,7 +308,7 @@ function advanceToNextEdge(vehicle: Vehicle, graph: RoadGraph, signals: Map<stri
 
   // Update bearing from first geometry segment
   if (nextEdge.geometry.length >= 2) {
-    vehicle.bearing = bearingBetween(nextEdge.geometry[0], nextEdge.geometry[1]);
+    vehicle.bearing = bearingBetween(nextEdge.geometry[0].lat, nextEdge.geometry[0].lng, nextEdge.geometry[1].lat, nextEdge.geometry[1].lng);
   }
 
   const fromNode = graph.nodes.get(currentId);

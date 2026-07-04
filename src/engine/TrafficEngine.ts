@@ -176,7 +176,6 @@ export class TrafficEngine {
     if (this.signals.has(nodeId)) return false;
     const node = this.graph.nodes.get(nodeId); if (!node) return false;
     const id = `SIG-U${Date.now().toString(36).toUpperCase()}`;
-    const adj = this.graph.adjacency.get(nodeId) ?? [];
     this.signals.set(nodeId, {
       id, nodeId, phases: [], currentPhaseIndex: 0, timer: 0,
       cycleLength: 30, offset: 0, greenWaveDirection: null,
