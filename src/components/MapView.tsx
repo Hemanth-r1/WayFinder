@@ -40,6 +40,7 @@ interface MapViewProps {
   onAddSignal: (nodeId: string, lat: number, lng: number) => void;
   onSpawnVehicleAt: (nodeId: string, type: VehicleType) => void;
   showHeatmap?: boolean;
+  routePolyline?: [number, number][];
   speed?: number;
   onSpeedChange?: (speed: number) => void;
 }
@@ -54,7 +55,7 @@ export default function MapView({
   graph, signals, vehicles, congestionZones, onNodeClick, onCancelOverride,
   overrideActive, overrideTimeRemaining, selectedSource, selectedDest,
   onSelectSource, onSelectDest, role, graphVersion, vehicleVersion, stats,
-  onAddSignal, onSpawnVehicleAt, showHeatmap: _showHeatmap, speed: _speed, onSpeedChange: _onSpeedChange,
+  onAddSignal, onSpawnVehicleAt, showHeatmap = true, routePolyline, speed: _speed, onSpeedChange: _onSpeedChange,
 }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -63,6 +64,7 @@ export default function MapView({
   const signalLayerRef = useRef<L.LayerGroup | null>(null);
   const vehicleLayerRef = useRef<L.LayerGroup | null>(null);
   const heatmapLayerRef = useRef<L.LayerGroup | null>(null);
+  const routeLayerRef = useRef<L.LayerGroup | null>(null);
   const sourceDestLayerRef = useRef<L.LayerGroup | null>(null);
   const vehicleMarkersRef = useRef<Map<string, L.Marker>>(new Map());
   const lastGraphVersion = useRef(0);
@@ -105,6 +107,7 @@ export default function MapView({
     signalLayerRef.current = L.layerGroup().addTo(map);
     vehicleLayerRef.current = L.layerGroup().addTo(map);
     heatmapLayerRef.current = L.layerGroup().addTo(map);
+    routeLayerRef.current = L.layerGroup().addTo(map);
     sourceDestLayerRef.current = L.layerGroup().addTo(map);
 
     map.on('click', (e: L.LeafletMouseEvent) => {
@@ -260,6 +263,7 @@ export default function MapView({
 
       if (existing) {
         existing.setLatLng([v.lat, v.lng]);
+        existing.setTooltipContent(`${v.type.toUpperCase()} · ${Math.round(v.speed)} km/h`);
         // Only update icon if rotation/color changed
         if ((existing as any)._lastIconKey !== iconKey) {
           let cachedIcon = iconCacheRef.current.get(iconKey);
@@ -284,9 +288,12 @@ export default function MapView({
           });
           iconCacheRef.current.set(iconKey, cachedIcon);
         }
+        const tooltipText = `${v.type.toUpperCase()} · ${Math.round(v.speed)} km/h`;
         const newMarker = L.marker([v.lat, v.lng], {
           icon: cachedIcon,
           zIndexOffset: v.type === 'emergency' ? 1000 : 0,
+        }).bindTooltip(tooltipText, {
+          direction: 'top', offset: [0, -2], className: 'wf-tooltip',
         }).addTo(layer);
         (newMarker as any)._lastIconKey = iconKey;
         markers.set(v.id, newMarker);
@@ -298,6 +305,7 @@ export default function MapView({
   useEffect(() => {
     const layer = heatmapLayerRef.current; if (!layer) return;
     layer.clearLayers();
+    if (!showHeatmap) return;
     for (const zone of congestionZones) {
       const color = zone.level > 0.7 ? '#FF1744' : zone.level > 0.4 ? '#FF9100' : '#FFEB3B';
       const r = Math.max(15, Math.min(50, zone.vehicles * 5));
@@ -306,7 +314,19 @@ export default function MapView({
         weight: 1, opacity: 0.5,
       }).addTo(layer);
     }
-  }, [congestionZones]);
+  }, [congestionZones, showHeatmap]);
+
+  // ── Route display ──────────────────────────────────────────────────────────
+  useEffect(() => {
+    const layer = routeLayerRef.current;
+    if (!layer) return;
+    layer.clearLayers();
+    if (routePolyline && routePolyline.length > 1) {
+      L.polyline(routePolyline, {
+        color: '#4488FF', weight: 5, opacity: 0.8, dashArray: '12, 8',
+      }).addTo(layer);
+    }
+  }, [routePolyline]);
 
   // ── Context menu handlers ─────────────────────────────────────────────────
   const handleAddSignal = useCallback(() => {
