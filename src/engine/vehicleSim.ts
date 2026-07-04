@@ -1,34 +1,134 @@
-import type { Vehicle, VehicleType, TrafficSignal, RoadGraph } from '../types';
-import { VEHICLE_PHYSICS } from '../types';
+/**
+ * vehicleSim.ts
+ * REQ-V1: Vehicles follow full edge geometry polyline.
+ * REQ-V2: Bearing updates per geometry segment.
+ * REQ-V3/V4: Lane assignment with perpendicular offset.
+ * REQ-V5: Vehicles removed cleanly on reaching destinationNodeId.
+ * REQ-V6: Spawn only from edge-of-network nodes.
+ * REQ-V7: Lead-vehicle detection is lane-aware.
+ * REQ-V8: Stuck vehicles reroute via A* up to 3 times.
+ * REQ-V9: All vehicles routed via A*.
+ */
+import type { Vehicle, VehicleType, TrafficSignal, RoadGraph, GeoPoint } from '../types';
+import { VEHICLE_PHYSICS, LANE_WIDTH_DEG } from '../types';
 import { VehiclePhysics } from '../utils/physics';
+import { aStarRoute } from './pathfinding';
+import { getEdgeNodes } from '../data/roadNetwork';
 
 let vehicleCounter = 0;
 
 const VEHICLE_COLORS: Record<VehicleType, string[]> = {
-  sedan: ['#2196F3', '#4CAF50', '#FF9800', '#E91E63', '#9C27B0', '#00BCD4', '#607D8B'],
-  suv: ['#1565C0', '#2E7D32', '#E65100', '#AD1457', '#4527A0'],
-  hatchback: ['#03A9F4', '#8BC34A', '#FFC107', '#FF5722', '#673AB7'],
-  truck: ['#795548', '#5D4037', '#4E342E'],
-  bus: ['#FFC107', '#FF9800', '#F57F17'],
-  emergency: ['#F44336', '#D32F2F', '#B71C1C'],
-  bike: ['#3F51B5', '#009688', '#00BCD4', '#795548'],
-  auto: ['#FF6F00', '#F57F17', '#FFA000'],
-  van: ['#455A64', '#37474F', '#546E7A'],
+  sedan:     ['#2196F3', '#4CAF50', '#FF9800', '#E91E63', '#9C27B0'],
+  suv:       ['#1565C0', '#2E7D32', '#E65100'],
+  hatchback: ['#03A9F4', '#8BC34A', '#FFC107'],
+  truck:     ['#795548', '#5D4037'],
+  bus:       ['#FFC107', '#FF9800'],
+  emergency: ['#F44336', '#D32F2F'],
+  bike:      ['#3F51B5', '#009688'],
+  auto:      ['#FF6F00', '#F57F17'],
+  van:       ['#455A64', '#37474F'],
 };
 
-function randomInRange(min: number, max: number): number {
-  return min + Math.random() * (max - min);
+/** Lane index per vehicle type (0 = leftmost in direction of travel; Bangalore drives on left) */
+const PREFERRED_LANE: Record<VehicleType, number> = {
+  bike: 0, auto: 0, sedan: 1, hatchback: 1, suv: 1, van: 1, bus: 1, truck: 1, emergency: 0,
+};
+
+function rnd(min: number, max: number) { return min + Math.random() * (max - min); }
+
+// ── Geometry helpers ──────────────────────────────────────────────────────────
+
+function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+  return 2 * 6371000 * Math.asin(Math.sqrt(a));
 }
+
+function bearingBetween(a: GeoPoint, b: GeoPoint): number {
+  return ((Math.atan2(b.lng - a.lng, b.lat - a.lat) * 180 / Math.PI) % 360 + 360) % 360;
+}
+
+/** Walk a geometry polyline by `distMeters`, return {lat, lng, bearing, segmentIndex} */
+function walkGeometry(geom: GeoPoint[], startSeg: number, startProgress: number, distMeters: number): {
+  lat: number; lng: number; bearing: number; segmentIndex: number; edgeProgress: number;
+} {
+  let remaining = distMeters;
+  let seg = startSeg;
+
+  // Total length for edgeProgress computation
+  let totalLen = 0;
+  const segLengths: number[] = [];
+  for (let i = 0; i < geom.length - 1; i++) {
+    const l = haversineMeters(geom[i].lat, geom[i].lng, geom[i + 1].lat, geom[i + 1].lng);
+    segLengths.push(l);
+    totalLen += l;
+  }
+
+  // Find starting position within seg
+  seg = Math.min(seg, segLengths.length - 1);
+  let posInSeg = segLengths[seg] * startProgress;
+  let coveredBefore = 0;
+  for (let i = 0; i < seg; i++) coveredBefore += segLengths[i];
+  coveredBefore += posInSeg;
+
+  while (remaining > 0 && seg < geom.length - 1) {
+    const segLen = segLengths[seg];
+    const remainingInSeg = segLen - posInSeg;
+    if (remaining <= remainingInSeg) {
+      posInSeg += remaining;
+      remaining = 0;
+    } else {
+      remaining -= remainingInSeg;
+      coveredBefore += remainingInSeg;
+      seg++;
+      posInSeg = 0;
+    }
+  }
+
+  if (seg >= geom.length - 1) {
+    // End of edge
+    const last = geom[geom.length - 1];
+    const bear = geom.length >= 2 ? bearingBetween(geom[geom.length - 2], last) : 0;
+    return { lat: last.lat, lng: last.lng, bearing: bear, segmentIndex: geom.length - 2, edgeProgress: 1 };
+  }
+
+  const segLen = segLengths[seg];
+  const t = segLen > 0 ? posInSeg / segLen : 0;
+  const a = geom[seg]; const b = geom[seg + 1];
+  const lat = a.lat + (b.lat - a.lat) * t;
+  const lng = a.lng + (b.lng - a.lng) * t;
+  const bearing = bearingBetween(a, b);
+
+  // Compute edgeProgress cleanly
+  let dist = 0;
+  for (let i = 0; i < seg; i++) dist += segLengths[i];
+  dist += posInSeg;
+
+  return { lat, lng, bearing, segmentIndex: seg, edgeProgress: totalLen > 0 ? Math.min(1, dist / totalLen) : 0 };
+}
+
+/** Apply perpendicular lane offset to a lat/lng given bearing */
+function applyLaneOffset(lat: number, lng: number, bearing: number, laneIndex: number): { lat: number; lng: number } {
+  // Perpendicular to bearing = bearing + 90 (left side = leftmost lane = lane 0)
+  const perpRad = (bearing + 90) * Math.PI / 180;
+  const offsetLat = Math.sin(perpRad) * LANE_WIDTH_DEG.lat * (laneIndex + 0.5);
+  const offsetLng = Math.cos(perpRad) * LANE_WIDTH_DEG.lng * (laneIndex + 0.5);
+  return { lat: lat + offsetLat, lng: lng + offsetLng };
+}
+
+// ── Vehicle creation ──────────────────────────────────────────────────────────
 
 export function createVehicle(
   type: VehicleType,
   startNodeId: string,
+  destinationNodeId: string,
   route: string[],
   graph: RoadGraph,
 ): Vehicle | null {
   const startNode = graph.nodes.get(startNodeId);
   if (!startNode || route.length < 2) return null;
-
   const nextNodeId = route[1];
   const edges = graph.adjacency.get(startNodeId) || [];
   const firstEdge = edges.find(e => e.to === nextNodeId);
@@ -36,38 +136,58 @@ export function createVehicle(
 
   const physics = VEHICLE_PHYSICS[type];
   const colors = VEHICLE_COLORS[type];
-  const responseDelay = randomInRange(physics.responseDelay[0], physics.responseDelay[1]);
-  const driverAggression = randomInRange(0.7, 1.1);
+  const agg = rnd(0.7, 1.1);
+  const preferredLane = PREFERRED_LANE[type];
+  const laneIndex = Math.min(preferredLane, firstEdge.lanes - 1);
 
   vehicleCounter++;
-
   return {
-    id: `v${vehicleCounter}`,
-    type,
-    lat: startNode.lat,
-    lng: startNode.lng,
-    bearing: firstEdge.bearing,
-    speed: physics.maxSpeed * 0.4 * driverAggression,
-    targetSpeed: Math.min(physics.maxSpeed * driverAggression, firstEdge.speedLimit),
-    acceleration: physics.acceleration * driverAggression,
+    id: `v${vehicleCounter}`, type,
+    lat: startNode.lat, lng: startNode.lng,
+    bearing: firstEdge.geometry.length >= 2
+      ? bearingBetween(firstEdge.geometry[0], firstEdge.geometry[1])
+      : firstEdge.bearing,
+    speed: physics.maxSpeed * 0.4 * agg,
+    targetSpeed: Math.min(physics.maxSpeed * agg, firstEdge.speedLimit),
+    acceleration: physics.acceleration * agg,
     deceleration: physics.deceleration,
-    currentEdgeId: firstEdge.id,
-    edgeProgress: 0,
-    targetNodeId: nextNodeId,
-    route,
-    routeIndex: 0,
+    currentEdgeId: firstEdge.id, edgeProgress: 0, targetNodeId: nextNodeId,
+    destinationNodeId,
+    route, routeIndex: 0,
     color: colors[Math.floor(Math.random() * colors.length)],
-    length: physics.length,
-    width: physics.width,
-    stuckTime: 0,
-    rerouted: false,
-    responseDelay,
-    reactionTimer: 0,
-    waitingForSignal: false,
-    driverAggression,
-    routeETA: 0,
+    length: physics.length, width: physics.width,
+    stuckTime: 0, rerouted: false,
+    responseDelay: rnd(physics.responseDelay[0], physics.responseDelay[1]),
+    reactionTimer: 0, waitingForSignal: false, driverAggression: agg, routeETA: 0,
+    laneIndex, segmentIndex: 0,
   };
 }
+
+// ── Lead vehicle (lane-aware, REQ-V7) ────────────────────────────────────────
+
+function findLeadVehicle(vehicle: Vehicle, allVehicles: Map<string, Vehicle>): Vehicle | null {
+  let closest: Vehicle | null = null; let closestDist = Infinity;
+  for (const [, other] of allVehicles) {
+    if (other.id === vehicle.id) continue;
+    if (other.currentEdgeId !== vehicle.currentEdgeId) continue;
+    if (other.laneIndex !== vehicle.laneIndex) continue; // REQ-V7: lane-aware
+    if (other.edgeProgress <= vehicle.edgeProgress) continue; // must be ahead
+    const dist = haversineMeters(vehicle.lat, vehicle.lng, other.lat, other.lng);
+    if (dist < closestDist && dist < 80) { closestDist = dist; closest = other; }
+  }
+  return closest;
+}
+
+// ── Signal check ──────────────────────────────────────────────────────────────
+
+function checkCanProceed(vehicle: Vehicle, signal: TrafficSignal | undefined): boolean {
+  if (!signal) return true;
+  const phase = signal.phases[signal.currentPhaseIndex];
+  if ((phase.color === 'RED' || phase.color === 'YELLOW') && vehicle.edgeProgress <= 0.85) return false;
+  return true;
+}
+
+// ── Main update ───────────────────────────────────────────────────────────────
 
 export function updateVehicle(
   vehicle: Vehicle,
@@ -79,157 +199,109 @@ export function updateVehicle(
   const edge = graph.edges.get(vehicle.currentEdgeId);
   if (!edge) return false;
 
-  const targetNode = graph.nodes.get(vehicle.targetNodeId);
-  if (!targetNode) return false;
+  // Destination reached
+  if (vehicle.targetNodeId === vehicle.destinationNodeId && vehicle.edgeProgress >= 0.98) {
+    return false; // Clean removal REQ-V5
+  }
 
   const signal = signals.get(vehicle.targetNodeId);
-  const canProceed = checkCanProceed(vehicle, signal, allVehicles);
 
-  if (!canProceed) {
+  // Signal stop
+  if (!checkCanProceed(vehicle, signal)) {
     vehicle.reactionTimer += deltaTime;
-    if (vehicle.reactionTimer < vehicle.responseDelay) {
-      return true;
+    if (vehicle.reactionTimer >= vehicle.responseDelay) {
+      vehicle.waitingForSignal = true;
+      vehicle.speed = Math.max(0, vehicle.speed - vehicle.deceleration * 1.5 * deltaTime);
+      vehicle.stuckTime += deltaTime;
     }
-    vehicle.waitingForSignal = true;
-    const brakingDecel = vehicle.deceleration * 1.5;
-    vehicle.speed = Math.max(0, vehicle.speed - brakingDecel * deltaTime);
-    vehicle.stuckTime += deltaTime;
     return true;
   }
 
-  vehicle.waitingForSignal = false;
-  vehicle.reactionTimer = 0;
+  vehicle.waitingForSignal = false; vehicle.reactionTimer = 0;
   vehicle.stuckTime = Math.max(0, vehicle.stuckTime - deltaTime * 0.5);
 
-  const leadVehicle = findLeadVehicle(vehicle, allVehicles);
+  // Stuck rerouting (REQ-V8)
+  if (vehicle.stuckTime > 10 && !vehicle.rerouted) {
+    const currentNode = vehicle.route[vehicle.routeIndex];
+    const result = aStarRoute(graph, currentNode, vehicle.destinationNodeId, signals);
+    if (result && result.path.length >= 2) {
+      vehicle.route = result.path;
+      vehicle.routeIndex = 0;
+      vehicle.rerouted = true;
+      vehicle.stuckTime = 0;
+    } else {
+      return false; // Can't reroute — remove
+    }
+  }
+
+  // IDM acceleration
+  const lead = findLeadVehicle(vehicle, allVehicles);
   const physics = VEHICLE_PHYSICS[vehicle.type];
-
   let accel: number;
-  if (leadVehicle) {
-    const dist = haversineMeters(vehicle.lat, vehicle.lng, leadVehicle.lat, leadVehicle.lng);
-    const safeDist = VehiclePhysics.getSafeDistance(vehicle.speed / 3.6) * 3;
-    const dv = (vehicle.speed - leadVehicle.speed) / 3.6;
 
-    if (dist < safeDist * 0.5) {
+  if (lead) {
+    const dist = haversineMeters(vehicle.lat, vehicle.lng, lead.lat, lead.lng);
+    const safeDist = VehiclePhysics.getSafeDistance(vehicle.speed / 3.6) * 3;
+    const dv = (vehicle.speed - lead.speed) / 3.6;
+    if (dist < safeDist * 0.4) {
       accel = -physics.deceleration * 2;
     } else {
       accel = VehiclePhysics.calculateAcceleration(
-        vehicle.speed / 3.6,
-        Math.max(dist, 1),
-        dv,
-        vehicle.targetSpeed / 3.6,
-        1.0,
-        physics.acceleration,
-        physics.deceleration * 0.8,
-        2.0,
+        vehicle.speed / 3.6, Math.max(dist, 1), dv,
+        vehicle.targetSpeed / 3.6, 1.0, physics.acceleration, physics.deceleration * 0.8, 2.0,
       );
     }
   } else {
-    const desiredSpeed = vehicle.targetSpeed / 3.6;
-    const currentSpeed = vehicle.speed / 3.6;
-    if (currentSpeed < desiredSpeed) {
-      accel = physics.acceleration * (1 - Math.pow(currentSpeed / desiredSpeed, 4));
-    } else {
-      accel = -physics.deceleration * 0.5;
+    const desired = vehicle.targetSpeed / 3.6; const current = vehicle.speed / 3.6;
+    accel = current < desired
+      ? physics.acceleration * (1 - Math.pow(current / desired, 4))
+      : -physics.deceleration * 0.3;
+  }
+
+  vehicle.speed = Math.max(0, Math.min(vehicle.targetSpeed * 1.1, vehicle.speed + accel * deltaTime * 3.6));
+  const moveDist = (vehicle.speed / 3.6) * deltaTime;
+
+  // Walk geometry (REQ-V1, REQ-V2)
+  const geom = edge.geometry;
+  if (!geom || geom.length < 2) {
+    // Fallback linear interpolation for edges without geometry
+    vehicle.edgeProgress += moveDist / Math.max(edge.length, 1);
+    if (vehicle.edgeProgress >= 1) return advanceToNextEdge(vehicle, graph, signals);
+    const f = graph.nodes.get(edge.from); const t = graph.nodes.get(edge.to);
+    if (f && t) {
+      vehicle.lat = f.lat + (t.lat - f.lat) * vehicle.edgeProgress;
+      vehicle.lng = f.lng + (t.lng - f.lng) * vehicle.edgeProgress;
     }
+    return true;
   }
 
-  const newSpeed = vehicle.speed + accel * deltaTime * 3.6;
-  vehicle.speed = Math.max(0, Math.min(vehicle.targetSpeed * 1.1, newSpeed));
+  const walked = walkGeometry(geom, vehicle.segmentIndex, 0, moveDist);
+  // Recompute properly: use total distance covered
+  const totalCovered = vehicle.edgeProgress * edge.length + moveDist;
+  const newProgress = totalCovered / Math.max(edge.length, 1);
 
-  const speedMs = vehicle.speed / 3.6;
-  const moveDistance = speedMs * deltaTime;
-  const edgeLength = edge.length;
-
-  if (edgeLength <= 0) return false;
-
-  const progressIncrement = moveDistance / edgeLength;
-  vehicle.edgeProgress += progressIncrement;
-
-  if (vehicle.edgeProgress >= 1) {
-    return advanceToNextEdge(vehicle, graph);
+  if (newProgress >= 1 || walked.edgeProgress >= 1) {
+    return advanceToNextEdge(vehicle, graph, signals);
   }
 
-  const fromNode = graph.nodes.get(edge.from);
-  const toNode = graph.nodes.get(edge.to);
-  if (!fromNode || !toNode) return false;
+  vehicle.edgeProgress = newProgress;
+  vehicle.segmentIndex = walked.segmentIndex;
+  vehicle.bearing = walked.bearing;
 
-  vehicle.lat = fromNode.lat + (toNode.lat - fromNode.lat) * vehicle.edgeProgress;
-  vehicle.lng = fromNode.lng + (toNode.lng - fromNode.lng) * vehicle.edgeProgress;
-  vehicle.bearing = edge.bearing;
+  // Apply lane offset (REQ-V4)
+  const offset = applyLaneOffset(walked.lat, walked.lng, walked.bearing, vehicle.laneIndex);
+  vehicle.lat = offset.lat;
+  vehicle.lng = offset.lng;
 
   return true;
 }
 
-function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLng = (lng2 - lng1) * Math.PI / 180;
-  const a = Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
-  return 2 * 6371000 * Math.asin(Math.sqrt(a));
-}
-
-function findLeadVehicle(vehicle: Vehicle, allVehicles: Map<string, Vehicle>): Vehicle | null {
-  let closest: Vehicle | null = null;
-  let closestDist = Infinity;
-
-  for (const [, other] of allVehicles) {
-    if (other.id === vehicle.id) continue;
-    if (other.currentEdgeId !== vehicle.currentEdgeId) continue;
-
-    const bearingDiff = Math.abs(vehicle.bearing - other.bearing);
-    const normalizedDiff = bearingDiff > 180 ? 360 - bearingDiff : bearingDiff;
-    if (normalizedDiff > 30) continue;
-
-    const dist = haversineMeters(vehicle.lat, vehicle.lng, other.lat, other.lng);
-    const dlat = other.lat - vehicle.lat;
-    const dlng = other.lng - vehicle.lng;
-    const angleToOther = Math.atan2(dlng, dlat) * 180 / Math.PI;
-    const bearingToOther = ((angleToOther % 360) + 360) % 360;
-    const relBearing = Math.abs(bearingToOther - vehicle.bearing);
-    const isAhead = relBearing < 90 || relBearing > 270;
-
-    if (isAhead && dist < closestDist && dist < 100) {
-      closestDist = dist;
-      closest = other;
-    }
-  }
-
-  return closest;
-}
-
-function checkCanProceed(
-  vehicle: Vehicle,
-  signal: TrafficSignal | undefined,
-  allVehicles: Map<string, Vehicle>,
-): boolean {
-  if (signal) {
-    const phase = signal.phases[signal.currentPhaseIndex];
-    if (phase.color === 'RED' || phase.color === 'YELLOW') {
-      if (vehicle.edgeProgress > 0.8) return true;
-      return false;
-    }
-  }
-
-  const lead = findLeadVehicle(vehicle, allVehicles);
-  if (lead) {
-    const dist = haversineMeters(vehicle.lat, vehicle.lng, lead.lat, lead.lng);
-    const safeDist = VehiclePhysics.getSafeDistance(vehicle.speed / 3.6) * 2;
-    if (dist < safeDist * 0.4) return false;
-  }
-
-  return true;
-}
-
-function advanceToNextEdge(vehicle: Vehicle, graph: RoadGraph): boolean {
+function advanceToNextEdge(vehicle: Vehicle, graph: RoadGraph, signals: Map<string, TrafficSignal>): boolean {
   vehicle.routeIndex++;
-  if (vehicle.routeIndex >= vehicle.route.length - 1) {
-    return false;
-  }
+  if (vehicle.routeIndex >= vehicle.route.length - 1) return false;
 
   const currentId = vehicle.route[vehicle.routeIndex];
   const nextId = vehicle.route[vehicle.routeIndex + 1];
-
   const edges = graph.adjacency.get(currentId) || [];
   const nextEdge = edges.find(e => e.to === nextId);
   if (!nextEdge) return false;
@@ -237,55 +309,62 @@ function advanceToNextEdge(vehicle: Vehicle, graph: RoadGraph): boolean {
   vehicle.currentEdgeId = nextEdge.id;
   vehicle.targetNodeId = nextId;
   vehicle.edgeProgress = 0;
-  vehicle.bearing = nextEdge.bearing;
+  vehicle.segmentIndex = 0;
   vehicle.waitingForSignal = false;
   vehicle.reactionTimer = 0;
 
+  // Update lane for new edge (stay in preferred lane, capped to lane count)
+  vehicle.laneIndex = Math.min(PREFERRED_LANE[vehicle.type], nextEdge.lanes - 1);
+  vehicle.targetSpeed = Math.min(VEHICLE_PHYSICS[vehicle.type].maxSpeed * vehicle.driverAggression, nextEdge.speedLimit);
+
+  // Update bearing from first geometry segment
+  if (nextEdge.geometry.length >= 2) {
+    vehicle.bearing = bearingBetween(nextEdge.geometry[0], nextEdge.geometry[1]);
+  }
+
   const fromNode = graph.nodes.get(currentId);
-  if (fromNode) {
-    vehicle.lat = fromNode.lat;
-    vehicle.lng = fromNode.lng;
+  if (fromNode) { vehicle.lat = fromNode.lat; vehicle.lng = fromNode.lng; }
+
+  // Update signal check
+  const signal = signals.get(nextId);
+  if (signal) {
+    const phase = signal.phases[signal.currentPhaseIndex];
+    vehicle.waitingForSignal = phase.color === 'RED';
   }
 
   return true;
 }
 
+// ── Spawning ─────────────────────────────────────────────────────────────────
+
 export function spawnRandomVehicle(
   graph: RoadGraph,
-  _signals: Map<string, TrafficSignal>,
+  signals: Map<string, TrafficSignal>,
 ): Vehicle | null {
-  const nodeIds = Array.from(graph.nodes.keys());
-  const edgeNodes = nodeIds.filter(id => {
-    const adj = graph.adjacency.get(id) || [];
-    return adj.length < 4 && adj.length > 0;
-  });
+  const edgeNodeIds = getEdgeNodes(graph.adjacency); // REQ-V6: only edge nodes
+  if (edgeNodeIds.length < 2) return null;
 
-  if (edgeNodes.length === 0) return null;
-
-  const types: VehicleType[] = ['sedan', 'sedan', 'sedan', 'sedan', 'suv', 'suv', 'hatchback', 'bus', 'truck', 'bike', 'auto', 'van', 'emergency'];
+  const types: VehicleType[] = ['sedan', 'sedan', 'sedan', 'suv', 'hatchback', 'bus', 'truck', 'bike', 'bike', 'auto', 'van'];
   const type = types[Math.floor(Math.random() * types.length)];
 
-  for (let attempt = 0; attempt < 15; attempt++) {
-    const startId = edgeNodes[Math.floor(Math.random() * edgeNodes.length)];
-    const startNode = graph.nodes.get(startId);
-    if (!startNode) continue;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const startId = edgeNodeIds[Math.floor(Math.random() * edgeNodeIds.length)];
+    const startNode = graph.nodes.get(startId); if (!startNode) continue;
 
-    const candidates = nodeIds.filter(id => {
-      const n = graph.nodes.get(id);
-      if (!n) return false;
-      const d = Math.sqrt(Math.pow(startNode.lat - n.lat, 2) + Math.pow(startNode.lng - n.lng, 2));
-      return d > 0.002 && d < 0.012 && id !== startId;
+    // Pick a destination that is also an edge node, far enough away
+    const candidates = edgeNodeIds.filter(id => {
+      const n = graph.nodes.get(id); if (!n || id === startId) return false;
+      const d = Math.sqrt((startNode.lat - n.lat) ** 2 + (startNode.lng - n.lng) ** 2);
+      return d > 0.003 && d < 0.05;
     });
-
     if (candidates.length === 0) continue;
-    const endId = candidates[Math.floor(Math.random() * candidates.length)];
 
-    const route = findBFSRoute(graph, startId, endId);
-    if (route && route.length >= 3) {
-      return createVehicle(type, startId, route, graph);
+    const endId = candidates[Math.floor(Math.random() * candidates.length)];
+    const routeInfo = aStarRoute(graph, startId, endId, signals); // REQ-V9: A*
+    if (routeInfo && routeInfo.path.length >= 3) {
+      return createVehicle(type, startId, endId, routeInfo.path, graph);
     }
   }
-
   return null;
 }
 
@@ -293,55 +372,20 @@ export function spawnVehicleAt(
   graph: RoadGraph,
   startId: string,
   type: VehicleType,
+  signals: Map<string, TrafficSignal>,
 ): Vehicle | null {
-  const startNode = graph.nodes.get(startId);
-  if (!startNode) return null;
-
-  const nodeIds = Array.from(graph.nodes.keys());
-  const candidates = nodeIds.filter(id => {
-    const n = graph.nodes.get(id);
-    if (!n) return false;
-    const d = Math.sqrt(Math.pow(startNode.lat - n.lat, 2) + Math.pow(startNode.lng - n.lng, 2));
-    return d > 0.003 && id !== startId;
+  const startNode = graph.nodes.get(startId); if (!startNode) return null;
+  const edgeNodeIds = getEdgeNodes(graph.adjacency);
+  const candidates = edgeNodeIds.filter(id => {
+    const n = graph.nodes.get(id); if (!n || id === startId) return false;
+    const d = Math.sqrt((startNode.lat - n.lat) ** 2 + (startNode.lng - n.lng) ** 2);
+    return d > 0.003;
   });
-
   if (candidates.length === 0) return null;
   const endId = candidates[Math.floor(Math.random() * candidates.length)];
-  const route = findBFSRoute(graph, startId, endId);
-  if (route && route.length >= 2) {
-    return createVehicle(type, startId, route, graph);
-  }
-  return null;
-}
-
-function findBFSRoute(graph: RoadGraph, startId: string, endId: string): string[] | null {
-  const visited = new Set<string>();
-  const parent = new Map<string, string | null>();
-  const queue = [startId];
-  visited.add(startId);
-  parent.set(startId, null);
-
-  let iterations = 0;
-  while (queue.length > 0 && iterations < 500) {
-    iterations++;
-    const current = queue.shift()!;
-    if (current === endId) {
-      const path: string[] = [];
-      let node: string | null = current;
-      while (node !== null) {
-        path.unshift(node);
-        node = parent.get(node) ?? null;
-      }
-      return path;
-    }
-    const neighbors = graph.adjacency.get(current) || [];
-    for (const edge of neighbors) {
-      if (!visited.has(edge.to)) {
-        visited.add(edge.to);
-        parent.set(edge.to, current);
-        queue.push(edge.to);
-      }
-    }
+  const routeInfo = aStarRoute(graph, startId, endId, signals);
+  if (routeInfo && routeInfo.path.length >= 2) {
+    return createVehicle(type, startId, endId, routeInfo.path, graph);
   }
   return null;
 }
