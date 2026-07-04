@@ -14,6 +14,7 @@ import { VEHICLE_PHYSICS, LANE_WIDTH_DEG } from '../types';
 import { VehiclePhysics } from '../utils/physics';
 import { aStarRoute } from './pathfinding';
 import { getEdgeNodes } from '../data/roadNetwork';
+import { haversineMeters, bearingBetween } from '../utils/geo';
 
 let vehicleCounter = 0;
 
@@ -37,18 +38,6 @@ const PREFERRED_LANE: Record<VehicleType, number> = {
 function rnd(min: number, max: number) { return min + Math.random() * (max - min); }
 
 // ── Geometry helpers ──────────────────────────────────────────────────────────
-
-function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLng = (lng2 - lng1) * Math.PI / 180;
-  const a = Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
-  return 2 * 6371000 * Math.asin(Math.sqrt(a));
-}
-
-function bearingBetween(a: GeoPoint, b: GeoPoint): number {
-  return ((Math.atan2(b.lng - a.lng, b.lat - a.lat) * 180 / Math.PI) % 360 + 360) % 360;
-}
 
 /** Walk a geometry polyline by `distMeters`, return {lat, lng, bearing, segmentIndex} */
 function walkGeometry(geom: GeoPoint[], startSeg: number, startProgress: number, distMeters: number): {
@@ -90,7 +79,7 @@ function walkGeometry(geom: GeoPoint[], startSeg: number, startProgress: number,
   if (seg >= geom.length - 1) {
     // End of edge
     const last = geom[geom.length - 1];
-    const bear = geom.length >= 2 ? bearingBetween(geom[geom.length - 2], last) : 0;
+    const bear = geom.length >= 2 ? bearingBetween(geom[geom.length - 2].lat, geom[geom.length - 2].lng, last.lat, last.lng) : 0;
     return { lat: last.lat, lng: last.lng, bearing: bear, segmentIndex: geom.length - 2, edgeProgress: 1 };
   }
 
@@ -99,7 +88,7 @@ function walkGeometry(geom: GeoPoint[], startSeg: number, startProgress: number,
   const a = geom[seg]; const b = geom[seg + 1];
   const lat = a.lat + (b.lat - a.lat) * t;
   const lng = a.lng + (b.lng - a.lng) * t;
-  const bearing = bearingBetween(a, b);
+  const bearing = bearingBetween(a.lat, a.lng, b.lat, b.lng);
 
   // Compute edgeProgress cleanly
   let dist = 0;
@@ -145,7 +134,7 @@ export function createVehicle(
     id: `v${vehicleCounter}`, type,
     lat: startNode.lat, lng: startNode.lng,
     bearing: firstEdge.geometry.length >= 2
-      ? bearingBetween(firstEdge.geometry[0], firstEdge.geometry[1])
+      ? bearingBetween(firstEdge.geometry[0].lat, firstEdge.geometry[0].lng, firstEdge.geometry[1].lat, firstEdge.geometry[1].lng)
       : firstEdge.bearing,
     speed: physics.maxSpeed * 0.4 * agg,
     targetSpeed: Math.min(physics.maxSpeed * agg, firstEdge.speedLimit),
@@ -180,10 +169,36 @@ function findLeadVehicle(vehicle: Vehicle, allVehicles: Map<string, Vehicle>): V
 
 // ── Signal check ──────────────────────────────────────────────────────────────
 
+/** Map vehicle bearing to NS or EW group */
+function bearingToGroup(bearing: number): 'NS' | 'EW' {
+  // Bearing 0 = N, 90 = E, 180 = S, 270 = W
+  // Vehicle moving N/S → NS group, moving E/W → EW group
+  const norm = ((bearing % 360) + 360) % 360;
+  if (norm > 315 || norm <= 45) return 'NS';  // moving N
+  if (norm > 135 && norm <= 225) return 'NS';  // moving S
+  return 'EW';  // moving E or W
+}
+
 function checkCanProceed(vehicle: Vehicle, signal: TrafficSignal | undefined): boolean {
   if (!signal) return true;
   const phase = signal.phases[signal.currentPhaseIndex];
-  if ((phase.color === 'RED' || phase.color === 'YELLOW') && vehicle.edgeProgress <= 0.85) return false;
+
+  // Check if vehicle's travel axis matches the active phase group
+  const vehicleGroup = bearingToGroup(vehicle.bearing);
+  const matchesGroup = phase.group === vehicleGroup;
+
+  if (phase.color === 'GREEN' && matchesGroup) return true;
+
+  // YELLOW: stop if not already past stop line (85% edge progress)
+  if (phase.color === 'YELLOW' && matchesGroup && vehicle.edgeProgress <= 0.85) return false;
+
+  // RED: stop regardless (unless past stop line during transition)
+  if (phase.color === 'RED' && vehicle.edgeProgress <= 0.85) return false;
+
+  // If phase doesn't match vehicle group (e.g., EW phase, NS vehicle), stop
+  if (!matchesGroup && vehicle.edgeProgress <= 0.85) return false;
+
+  // Already past stop line → clear the intersection
   return true;
 }
 
@@ -319,7 +334,7 @@ function advanceToNextEdge(vehicle: Vehicle, graph: RoadGraph, signals: Map<stri
 
   // Update bearing from first geometry segment
   if (nextEdge.geometry.length >= 2) {
-    vehicle.bearing = bearingBetween(nextEdge.geometry[0], nextEdge.geometry[1]);
+    vehicle.bearing = bearingBetween(nextEdge.geometry[0].lat, nextEdge.geometry[0].lng, nextEdge.geometry[1].lat, nextEdge.geometry[1].lng);
   }
 
   const fromNode = graph.nodes.get(currentId);
@@ -388,4 +403,23 @@ export function spawnVehicleAt(
     return createVehicle(type, startId, endId, routeInfo.path, graph);
   }
   return null;
+}
+
+/** Spawn a vehicle that follows a user-chosen origin → destination route */
+export function spawnNavigatedVehicle(
+  graph: RoadGraph,
+  sourceId: string,
+  destId: string,
+  signals: Map<string, TrafficSignal>,
+): Vehicle | null {
+  const routeInfo = aStarRoute(graph, sourceId, destId, signals);
+  if (!routeInfo || routeInfo.path.length < 2) return null;
+
+  const type: VehicleType = 'sedan';
+  const vehicle = createVehicle(type, sourceId, destId, routeInfo.path, graph);
+  if (!vehicle) return null;
+
+  vehicle.isNavigated = true;
+  vehicle.color = '#4488FF';
+  return vehicle;
 }

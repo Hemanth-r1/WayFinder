@@ -68,8 +68,8 @@ export function applyEmergencyPriority(
       sig.adaptiveTiming = false;
       for (const phase of sig.phases) {
         const isMatchingAxis = (dir === 'N' || dir === 'S')
-          ? (phase.direction === 'N' || phase.direction === 'S')
-          : (phase.direction === 'E' || phase.direction === 'W');
+          ? phase.group === 'NS'
+          : phase.group === 'EW';
         phase.color = isMatchingAxis ? 'GREEN' : 'RED';
         phase.duration = isMatchingAxis ? EMERGENCY_HOLD_DURATION : 2;
       }

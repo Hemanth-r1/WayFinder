@@ -27,7 +27,7 @@ export interface SignalApproach {
   duration: number;
 }
 
-export interface SignalPhase { direction: Direction; color: SignalColor; duration: number; yellowDuration: number; }
+export interface SignalPhase { group: 'NS' | 'EW'; color: SignalColor; duration: number; yellowDuration: number; }
 export interface TrafficSignal {
   id: string; nodeId: string; phases: SignalPhase[]; currentPhaseIndex: number;
   timer: number; cycleLength: number; offset: number;
@@ -48,6 +48,8 @@ export interface Vehicle {
   laneIndex: number;
   /** Segment index within current edge geometry */
   segmentIndex: number;
+  /** True if this vehicle was spawned by a user navigation request */
+  isNavigated?: boolean;
 }
 export interface TrafficStats {
   totalVehicles: number; avgSpeed: number; avgDelay: number; congestionHotspots: number;
@@ -98,7 +100,7 @@ export const VEHICLE_PHYSICS: Record<VehicleType, {
 };
 
 export const SIGNAL_TIMING = {
-  minGreen: 8, maxGreen: 45, yellowDuration: 3, allRedDuration: 2, lostTimePerPhase: 2, criticalGap: 2.0,
+  minGreen: 8, maxGreen: 45, yellowDuration: 5, allRedDuration: 2, lostTimePerPhase: 2, criticalGap: 2.0,
 };
 
 /** Lane width in degrees (≈3.5m at Bangalore latitude) */

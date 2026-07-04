@@ -1,50 +1,75 @@
-/**
- * Auth Context — Manages user role state across the application.
- *
- * Provides:
- * - Current role (user/supporter/controller)
- * - Role switching
- * - Permission checks
- * - User ID for tracking
- *
- * Usage:
- *   import { useAuth } from './context/useAuth';
- *   const { role, setRole, hasPermission } = useAuth();
- */
-import { createContext, useState, useCallback, type ReactNode } from 'react';
-import type { AppRole, RolePermissions } from '../types/roles';
-import { generateUserId } from '../utils/auth';
-import { ROLE_PERMISSIONS } from '../utils/rolePermissions';
+import { createContext, useEffect, useState, type ReactNode } from 'react';
+import {
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signOut as firebaseSignOut,
+  type User,
+} from 'firebase/auth';
+import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { auth, db } from '../config/firebase';
 
 export interface AuthState {
-  role: AppRole;
-  userId: string;
-  setRole: (role: AppRole) => void;
-  hasPermission: (perm: keyof RolePermissions) => boolean;
-  getPermissions: () => RolePermissions;
+  user: User | null;
+  role: string;
+  loading: boolean;
+  signIn: (email: string, password: string) => Promise<void>;
+  signUp: (email: string, password: string) => Promise<void>;
+  signOut: () => Promise<void>;
+  promoteRole: (newRole: string) => Promise<void>;
 }
 
 export const AuthContext = createContext<AuthState | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [role, setRoleState] = useState<AppRole>('user');
-  const [userId, setUserId] = useState(() => generateUserId('user'));
+  const [user, setUser] = useState<User | null>(null);
+  const [role, setRole] = useState('user');
+  const [loading, setLoading] = useState(true);
 
-  const setRole = useCallback((newRole: AppRole) => {
-    setRoleState(newRole);
-    setUserId(generateUserId(newRole));
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
+      setUser(firebaseUser);
+      if (firebaseUser) {
+        const docRef = doc(db, 'users', firebaseUser.uid);
+        const snap = await getDoc(docRef);
+        if (snap.exists()) {
+          setRole(snap.data().role || 'user');
+        } else {
+          await setDoc(docRef, {
+            email: firebaseUser.email,
+            role: 'user',
+            createdAt: serverTimestamp(),
+          });
+          setRole('user');
+        }
+      } else {
+        setRole('user');
+      }
+      setLoading(false);
+    });
+    return unsub;
   }, []);
 
-  const hasPermission = useCallback((perm: keyof RolePermissions): boolean => {
-    return ROLE_PERMISSIONS[role][perm];
-  }, [role]);
+  const signIn = async (email: string, password: string) => {
+    await signInWithEmailAndPassword(auth, email, password);
+  };
 
-  const getPermissions = useCallback((): RolePermissions => {
-    return ROLE_PERMISSIONS[role];
-  }, [role]);
+  const signUp = async (email: string, password: string) => {
+    await createUserWithEmailAndPassword(auth, email, password);
+  };
+
+  const signOut = async () => {
+    await firebaseSignOut(auth);
+  };
+
+  const promoteRole = async (newRole: string) => {
+    if (!user) return;
+    await setDoc(doc(db, 'users', user.uid), { role: newRole }, { merge: true });
+    setRole(newRole);
+  };
 
   return (
-    <AuthContext.Provider value={{ role, userId, setRole, hasPermission, getPermissions }}>
+    <AuthContext.Provider value={{ user, role, loading, signIn, signUp, signOut, promoteRole }}>
       {children}
     </AuthContext.Provider>
   );

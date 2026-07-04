@@ -7,7 +7,10 @@
  * REQ-G5: Graph cached in localStorage via graphCache.ts.
  */
 import type { RoadNode, RoadEdge, TrafficSignal, SignalPhase, Direction, RoadType, GeoPoint, SignalApproach } from '../types';
+import { SIGNAL_TIMING } from '../types';
 import { saveGraphToCache, loadGraphFromCache } from './graphCache';
+import { saveOSMToFirebase, loadOSMFromFirebase, saveOSMToStorage, loadOSMFromStorage } from './firebaseCache';
+import type { RawOSMData } from './firebaseCache';
 import { ROAD_CONFIG } from '../config';
 
 // ── Geometry helpers ──────────────────────────────────────────────────────────
@@ -123,13 +126,12 @@ function deriveApproaches(nodeId: string, adjacency: Map<string, RoadEdge[]>): S
   return approaches;
 }
 
-function createPhase(dir: Direction, greenDur: number): SignalPhase[] {
-  const isNS = dir === 'N' || dir === 'S';
+function createPhase(_dir: Direction, greenDur: number): SignalPhase[] {
   return [
-    { direction: 'N', color: isNS ? 'GREEN' : 'RED', duration: isNS ? greenDur : 2, yellowDuration: 3 },
-    { direction: 'S', color: isNS ? 'GREEN' : 'RED', duration: isNS ? greenDur : 2, yellowDuration: 3 },
-    { direction: 'E', color: isNS ? 'RED' : 'GREEN', duration: isNS ? 2 : Math.round(greenDur * 0.8), yellowDuration: 3 },
-    { direction: 'W', color: isNS ? 'RED' : 'GREEN', duration: isNS ? 2 : Math.round(greenDur * 0.8), yellowDuration: 3 },
+    { group: 'NS', color: 'GREEN', duration: greenDur, yellowDuration: SIGNAL_TIMING.yellowDuration },
+    { group: 'NS', color: 'YELLOW', duration: SIGNAL_TIMING.yellowDuration, yellowDuration: 0 },
+    { group: 'EW', color: 'GREEN', duration: Math.round(greenDur * 0.8), yellowDuration: SIGNAL_TIMING.yellowDuration },
+    { group: 'EW', color: 'YELLOW', duration: SIGNAL_TIMING.yellowDuration, yellowDuration: 0 },
   ];
 }
 
@@ -139,8 +141,11 @@ interface OSMNode { id: number; lat: number; lng: number; }
 interface OSMWay { id: number; nodes: number[]; tags: Record<string, string>; }
 interface OSMResponse { elements: Array<{ type: string; id: number; lat?: number; lon?: number; nodes?: number[]; tags?: Record<string, string> }>; }
 
-async function fetchOSMChunk(centerLat: number, centerLng: number, radius: number, highwayFilter: string): Promise<{ nodes: Map<number, OSMNode>; ways: OSMWay[] }> {
-  const query = `[out:json][timeout:60];(way["highway"~"${highwayFilter}"](around:${radius},${centerLat},${centerLng}););out body;>;out skel qt;`;
+async function fetchOSMBbox(
+  south: number, north: number, west: number, east: number,
+  highwayFilter: string,
+): Promise<{ nodes: Map<number, OSMNode>; ways: OSMWay[] }> {
+  const query = `[out:json][timeout:30];(way["highway"~"${highwayFilter}"](${south},${west},${north},${east}););out body;>;out skel qt;`;
   const resp = await fetch('https://overpass-api.de/api/interpreter', {
     method: 'POST',
     body: `data=${encodeURIComponent(query)}`,
@@ -161,31 +166,47 @@ async function fetchOSMChunk(centerLat: number, centerLng: number, radius: numbe
   return { nodes, ways };
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise(r => setTimeout(r, ms));
+}
+
 async function fetchOSMRoads(centerLat: number, centerLng: number, radius: number): Promise<{ nodes: Map<number, OSMNode>; ways: OSMWay[] }> {
+  const latDeg = radius / 111320;
+  const lngDeg = radius / (111320 * Math.cos(centerLat * Math.PI / 180));
+  // Use 2×2 grid instead of 4×4: 4 tiles instead of 16 = 12s faster
+  const gridSize = 2;
+  const stepLat = (latDeg * 2) / gridSize;
+  const stepLng = (lngDeg * 2) / gridSize;
   const allNodes = new Map<number, OSMNode>();
   const allWays: OSMWay[] = [];
   const seenWayIds = new Set<number>();
-  const filter = radius > 10000
-    ? 'motorway|trunk|primary|secondary'
-    : 'motorway|trunk|primary|secondary|tertiary|residential|unclassified';
 
-  if (radius > 10000) {
-    const halfR = radius * 0.7;
-    const dlat = halfR / 111320;
-    const dlng = halfR / (111320 * Math.cos(centerLat * Math.PI / 180));
-    const offsets = [[dlat, dlng], [dlat, -dlng], [-dlat, dlng], [-dlat, -dlng]];
-    for (const [odlat, odlng] of offsets) {
-      const { nodes, ways } = await fetchOSMChunk(centerLat + odlat, centerLng + odlng, halfR, filter);
-      for (const [id, n] of nodes) allNodes.set(id, n);
-      for (const w of ways) { if (!seenWayIds.has(w.id)) { seenWayIds.add(w.id); allWays.push(w); } }
+  for (let r = 0; r < gridSize; r++) {
+    for (let c = 0; c < gridSize; c++) {
+      const filter = 'motorway|trunk|primary|secondary|tertiary|residential|unclassified';
+
+      const south = centerLat - latDeg + r * stepLat;
+      const north = south + stepLat;
+      const west = centerLng - lngDeg + c * stepLng;
+      const east = west + stepLng;
+      // Reduced delay between tiles
+      if (r > 0 || c > 0) await sleep(1000);
+      try {
+        const { nodes, ways } = await fetchOSMBbox(south, north, west, east, filter);
+        for (const [id, n] of nodes) allNodes.set(id, n);
+        for (const w of ways) { if (!seenWayIds.has(w.id)) { seenWayIds.add(w.id); allWays.push(w); } }
+        console.log(`[WayFinder] Tile [${r},${c}]: ${nodes.size} nodes, ${ways.length} ways`);
+      } catch (err) {
+        console.warn(`[WayFinder] Tile [${r},${c}] failed:`, err);
+      }
     }
-  } else {
-    const { nodes, ways } = await fetchOSMChunk(centerLat, centerLng, radius, filter);
-    for (const [id, n] of nodes) allNodes.set(id, n);
-    for (const w of ways) allWays.push(w);
   }
+
+  console.log(`[WayFinder] OSM grid total: ${allNodes.size} nodes, ${allWays.length} ways`);
   return { nodes: allNodes, ways: allWays };
 }
+
+
 
 // ── Graph builder — REQ-G1, REQ-G2, REQ-G4 ──────────────────────────────────
 
@@ -288,11 +309,17 @@ function buildGraphFromOSM(
     }
   }
 
-  // Place signals at intersections with ≥3 connections (REQ-S1)
+  // Place signals only at major-road intersections (REQ-S1)
+  // Avoids 49k signals on every minor residential junction
   let sigCount = 0;
   for (const [graphId, node] of graphNodes) {
     const adj = adjacency.get(graphId) || [];
     if (adj.length >= 3) {
+      const hasMajor = adj.some(e =>
+        e.roadType === 'motorway' || e.roadType === 'trunk' ||
+        e.roadType === 'primary' || e.roadType === 'secondary'
+      );
+      if (!hasMajor) continue;
       sigCount++;
       const gd = 12 + Math.floor(Math.random() * 6);
       const approaches = deriveApproaches(graphId, adjacency);
@@ -313,35 +340,144 @@ function buildGraphFromOSM(
   return { nodes: graphNodes, edges: graphEdges, adjacency, signals };
 }
 
+// ── Progressive loading types ─────────────────────────────────────────────────
+
+export type LoadPhase = 'empty' | 'signals' | 'cached' | 'fetching' | 'full' | 'fallback';
+
+export interface LoadUpdate {
+  phase: LoadPhase;
+  source: string;
+  nodes: Map<string, RoadNode>;
+  edges: Map<string, RoadEdge>;
+  adjacency: Map<string, RoadEdge[]>;
+  signals: Map<string, TrafficSignal>;
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 const CENTER = { lat: 12.9716, lng: 77.5946 };
 const RADIUS = 40000;
 
-export async function loadBangaloreNetwork(forceRefresh = false) {
+/**
+ * Load Bangalore road network with progressive updates.
+ *
+ * Loading priority:
+ *   1. signals.json (instant)     → phase 'signals' — signal markers on map
+ *   2. IndexedDB (fast, local)     → phase 'cached'  — full graph ready
+ *   3. Firebase Storage (remote)   → phase 'cached'  — raw OSM → build graph
+ *   4. Firestore chunks (remote)   → phase 'cached'  — raw OSM → build graph
+ *   5. Overpass API (remote, slow) → phase 'fetching'→ phase 'full'
+ *   6. Synthetic grid (fallback)   → phase 'fallback'
+ *
+ * @param onUpdate Called progressively as data becomes available.
+ * @param forceRefresh Skip all caches and fetch fresh from Overpass.
+ * @returns Promise resolving to the final graph data.
+ */
+export async function loadBangaloreNetwork(
+  onUpdate?: (update: LoadUpdate) => void,
+  forceRefresh = false,
+): Promise<{ nodes: Map<string, RoadNode>; edges: Map<string, RoadEdge>; adjacency: Map<string, RoadEdge[]>; signals: Map<string, TrafficSignal> }> {
+
+  // ── Phase 0: empty (map renders immediately) ──
+  const empty = { nodes: new Map<string, RoadNode>(), edges: new Map<string, RoadEdge>(), adjacency: new Map<string, RoadEdge[]>(), signals: new Map<string, TrafficSignal>() };
+  onUpdate?.({ ...empty, phase: 'empty', source: 'none' });
+
+  // ── Phase 0.5: signals.json (instant signal markers) ──
+  let signalOnly: typeof empty | null = null;
+  try {
+    const signalPoints = await tryLoadSignalPoints();
+    if (signalPoints) {
+      const nodes = new Map<string, RoadNode>();
+      const signals = new Map<string, TrafficSignal>();
+      for (const sp of signalPoints) {
+        nodes.set(sp.nodeId, { id: sp.nodeId, lat: sp.lat, lng: sp.lng, isIntersection: true });
+        signals.set(sp.nodeId, {
+          id: sp.id, nodeId: sp.nodeId, phases: createPhase('N', 12),
+          currentPhaseIndex: 0, timer: 0, cycleLength: 34, offset: 0,
+          greenWaveDirection: null, congestionLevel: 0, adaptiveTiming: true, approaches: [],
+        });
+      }
+      signalOnly = { nodes, edges: new Map(), adjacency: new Map(), signals };
+      onUpdate?.({ ...signalOnly, phase: 'signals', source: 'signals.json' });
+    }
+  } catch { /* signals.json not available */ }
+
+  // ── Phase 1: cache checks (fastest wins) ──
   if (!forceRefresh) {
-    const cached = loadGraphFromCache(CENTER.lat, CENTER.lng, RADIUS);
-    if (cached) return cached;
+    // Check local IndexedDB cache
+    const cached = await loadGraphFromCache(CENTER.lat, CENTER.lng, RADIUS);
+    if (cached) {
+      const result = { nodes: cached.graph.nodes, edges: cached.graph.edges, adjacency: cached.graph.adjacency, signals: cached.signals };
+      onUpdate?.({ ...result, phase: 'cached', source: 'IndexedDB' });
+      return result;
+    }
+
+    // Check Firebase Storage (single blob download)
+    try {
+      const storageRaw = await loadOSMFromStorage(CENTER.lat, CENTER.lng, RADIUS);
+      if (storageRaw && storageRaw.ways.length > 5) {
+        const result = buildGraphFromOSM(storageRaw.nodes as Map<number, OSMNode>, storageRaw.ways as OSMWay[], CENTER.lat, CENTER.lng);
+        onUpdate?.({ ...result, phase: 'cached', source: 'Firebase Storage' });
+        // Re-cache to IndexedDB for faster next load
+        saveGraphToCache(CENTER.lat, CENTER.lng, RADIUS, { nodes: result.nodes, edges: result.edges, adjacency: result.adjacency }, result.signals);
+        return result;
+      }
+    } catch { /* Storage unavailable */ }
+
+    // Check Firestore chunks (multi-doc)
+    try {
+      const firebaseRaw = await loadOSMFromFirebase(CENTER.lat, CENTER.lng, RADIUS);
+      if (firebaseRaw && firebaseRaw.ways.length > 5) {
+        const result = buildGraphFromOSM(firebaseRaw.nodes as Map<number, OSMNode>, firebaseRaw.ways as OSMWay[], CENTER.lat, CENTER.lng);
+        onUpdate?.({ ...result, phase: 'cached', source: 'Firestore' });
+        saveGraphToCache(CENTER.lat, CENTER.lng, RADIUS, { nodes: result.nodes, edges: result.edges, adjacency: result.adjacency }, result.signals);
+        return result;
+      }
+    } catch { /* Firestore unavailable */ }
   }
 
-  try {
-    console.log('[WayFinder] Fetching OSM data for Bangalore (40km)…');
-    const { nodes, ways } = await fetchOSMRoads(CENTER.lat, CENTER.lng, RADIUS);
-    if (ways.length < 5) {
-      console.warn('[WayFinder] Too few ways from OSM, using fallback');
-      return loadFallback();
+  // ── Phase 2: emit fallback immediately, then fetch Overpass in background ──
+  const fallbackGraph = loadFallback();
+  onUpdate?.({ ...fallbackGraph, phase: 'fallback', source: 'synthetic grid' });
+
+  // Background Overpass fetch (NO timeout — user already has the synthetic grid)
+  (async () => {
+    try {
+      console.log('[WayFinder] Background: fetching OSM data for Bangalore (40km)…');
+      const osmResult = await fetchOSMRoads(CENTER.lat, CENTER.lng, RADIUS);
+      if (!osmResult || osmResult.ways.length < 5) {
+        console.warn('[WayFinder] Background OSM fetch returned too few ways, keeping synthetic');
+        return;
+      }
+      console.log(`[WayFinder] Background OSM: ${osmResult.nodes.size} nodes, ${osmResult.ways.length} ways`);
+      const result = buildGraphFromOSM(osmResult.nodes, osmResult.ways as OSMWay[], CENTER.lat, CENTER.lng);
+      console.log(`[WayFinder] Background graph: ${result.nodes.size}n, ${result.edges.size}e, ${result.signals.size}s`);
+      onUpdate?.({ ...result, phase: 'full', source: 'Overpass API' });
+
+      // Save to all caches
+      const rawData: RawOSMData = { nodes: osmResult.nodes as Map<number, any>, ways: osmResult.ways as any[] };
+      saveGraphToCache(CENTER.lat, CENTER.lng, RADIUS, { nodes: result.nodes, edges: result.edges, adjacency: result.adjacency }, result.signals);
+      const storageOk = await saveOSMToStorage(CENTER.lat, CENTER.lng, RADIUS, rawData);
+      if (storageOk) {
+        console.log('[WayFinder] OSM data saved to Firebase Storage ✓');
+      } else {
+        console.warn('[WayFinder] Storage save failed, trying Firestore fallback');
+        saveOSMToFirebase(CENTER.lat, CENTER.lng, RADIUS, rawData);
+      }
+    } catch (err) {
+      console.error('[WayFinder] Background OSM fetch failed:', err);
     }
-    console.log(`[WayFinder] OSM: ${nodes.size} raw nodes, ${ways.length} ways`);
-    const result = buildGraphFromOSM(nodes, ways, CENTER.lat, CENTER.lng);
-    console.log(`[WayFinder] Graph: ${result.nodes.size} nodes, ${result.edges.size} edges, ${result.signals.size} signals`);
-    saveGraphToCache(CENTER.lat, CENTER.lng, RADIUS, { nodes: result.nodes, edges: result.edges, adjacency: result.adjacency }, result.signals);
-    return result;
-  } catch (err) {
-    console.error('[WayFinder] OSM fetch failed:', err);
-    const cached = loadGraphFromCache(CENTER.lat, CENTER.lng, RADIUS);
-    if (cached) { console.warn('[WayFinder] Using stale cache after fetch failure'); return cached; }
-    return loadFallback();
-  }
+  })();
+
+  return fallbackGraph;
+}
+
+/** Load signals.json quickly, returns null if not available */
+async function tryLoadSignalPoints() {
+  try {
+    const { loadSignalPoints } = await import('./signalStore');
+    return await loadSignalPoints();
+  } catch { return null; }
 }
 
 // ── Fallback grid ─────────────────────────────────────────────────────────────

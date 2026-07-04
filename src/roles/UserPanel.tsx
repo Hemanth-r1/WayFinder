@@ -1,4 +1,7 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import { collection, query, where, orderBy, onSnapshot, addDoc, serverTimestamp } from 'firebase/firestore';
+import { db } from '../config/firebase';
+import { useAuth } from '../context/useAuth';
 import type { RoadGraph } from '../types';
 import type { UserRoute } from '../types/roles';
 import { aStarRoute } from '../engine/pathfinding';
@@ -8,36 +11,74 @@ interface Props {
   graph: RoadGraph; signals: Map<string, TrafficSignal>;
   selectedSource: string | null; selectedDest: string | null;
   onSelectSource: (id: string | null) => void; onSelectDest: (id: string | null) => void;
-  onSubmitRoute: (route: UserRoute) => void; submittedRoutes: UserRoute[];
 }
 
-export default function UserPanel({ graph, signals, selectedSource, selectedDest, onSelectSource, onSelectDest, onSubmitRoute, submittedRoutes }: Props) {
+export default function UserPanel({ graph, signals, selectedSource, selectedDest, onSelectSource, onSelectDest }: Props) {
+  const { user } = useAuth();
   const [sourceName, setSourceName] = useState('');
   const [destName, setDestName] = useState('');
   const [submitted, setSubmitted] = useState(false);
+  const [routes, setRoutes] = useState<UserRoute[]>([]);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => { return () => { if (timerRef.current) clearTimeout(timerRef.current); }; }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    const q = query(
+      collection(db, 'routes'),
+      where('userId', '==', user.uid),
+      orderBy('createdAt', 'desc')
+    );
+    const unsub = onSnapshot(q, (snapshot) => {
+      const results: UserRoute[] = [];
+      snapshot.forEach((doc) => {
+        const d = doc.data();
+        results.push({
+          id: doc.id,
+          userId: d.userId,
+          sourceLat: 0,
+          sourceLng: 0,
+          destLat: 0,
+          destLng: 0,
+          sourceName: d.sourceNodeId,
+          destName: d.destNodeId,
+          timestamp: d.createdAt?.toMillis() ?? Date.now(),
+          signalOverrides: [],
+        });
+      });
+      setRoutes(results);
+    }, (err) => {
+      console.error('Firestore route subscription error:', err);
+    });
+    return unsub;
+  }, [user]);
 
   const route = useMemo(
     () => selectedSource && selectedDest ? aStarRoute(graph, selectedSource, selectedDest, signals) : null,
     [selectedSource, selectedDest, graph, signals]
   );
 
-  const handleSubmit = useCallback(() => {
-    if (!selectedSource || !selectedDest) return;
+  const handleSubmit = useCallback(async () => {
+    if (!selectedSource || !selectedDest || !user) return;
     const src = graph.nodes.get(selectedSource); const dst = graph.nodes.get(selectedDest);
     if (!src || !dst) return;
-    onSubmitRoute({
-      id: `ur_${Date.now()}`, userId: 'current_user',
-      sourceLat: src.lat, sourceLng: src.lng, destLat: dst.lat, destLng: dst.lng,
-      sourceName: sourceName || selectedSource, destName: destName || selectedDest,
-      timestamp: Date.now(), signalOverrides: route?.path.filter(id => signals.has(id)) || [],
-    });
-    setSubmitted(true);
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => setSubmitted(false), 2000);
-  }, [selectedSource, selectedDest, sourceName, destName, graph, signals, route, onSubmitRoute]);
+    try {
+      await addDoc(collection(db, 'routes'), {
+        userId: user.uid,
+        sourceNodeId: selectedSource,
+        destNodeId: selectedDest,
+        avoidCongestion: false,
+        preferMainRoads: false,
+        createdAt: serverTimestamp(),
+      });
+      setSubmitted(true);
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setSubmitted(false), 2000);
+    } catch (err) {
+      console.error('Failed to submit route:', err);
+    }
+  }, [selectedSource, selectedDest, graph, user]);
 
   return (
     <div style={{ padding: '0 14px' }}>
@@ -68,10 +109,10 @@ export default function UserPanel({ graph, signals, selectedSource, selectedDest
           {submitted ? 'Submitted!' : 'Submit Route'}
         </button>
       </div>
-      {submittedRoutes.length > 0 && (
+      {routes.length > 0 && (
         <div style={styles.section}>
-          <div style={styles.sectionTitle}>Recent Routes ({submittedRoutes.length})</div>
-          {submittedRoutes.slice(-5).reverse().map((r) => (
+          <div style={styles.sectionTitle}>Recent Routes ({routes.length})</div>
+          {routes.slice(-5).reverse().map((r) => (
             <div key={r.id} style={{ padding: '6px 0', borderBottom: '1px solid #222' }}>
               <div style={{ fontSize: 12 }}><span style={{ color: '#4CAF50' }}>{r.sourceName}</span> <span style={{ color: '#666' }}>{'\u2192'}</span> <span style={{ color: '#FF5722' }}>{r.destName}</span></div>
               <div style={{ fontSize: 10, color: '#666' }}>{new Date(r.timestamp).toLocaleTimeString()} - {r.signalOverrides.length} signals</div>

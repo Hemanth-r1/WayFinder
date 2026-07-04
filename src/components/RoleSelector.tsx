@@ -1,30 +1,101 @@
 import { useState } from 'react';
 import { useAuth } from '../context/useAuth';
-import { ROLE_INFO, type AppRole } from '../types/roles';
+
+const NEXT_ROLE: Record<string, string> = {
+  user: 'supporter',
+  supporter: 'controller',
+  controller: 'controller',
+};
+
+const ROLE_LABELS: Record<string, string> = {
+  user: 'Want to become a supporter?',
+  supporter: 'Request controller promotion?',
+  controller: 'You have full access',
+};
+
+const ROLE_DESCRIPTION: Record<string, string> = {
+  user: 'Supporters can add signals and manage overrides',
+  supporter: 'Controllers have full system access',
+  controller: '',
+};
 
 export default function RoleSelector() {
-  const { role, setRole } = useAuth();
-  const [open, setOpen] = useState(false);
-  const info = ROLE_INFO[role];
+  const { user, role, signOut, promoteRole } = useAuth();
+  const [showPromote, setShowPromote] = useState(false);
+  const [promoting, setPromoting] = useState(false);
+
+  const roleColors: Record<string, string> = {
+    user: '#4CAF50',
+    supporter: '#4488FF',
+    controller: '#FF6D00',
+  };
+
+  const handlePromote = async () => {
+    const next = NEXT_ROLE[role];
+    if (!next || next === role) return;
+    setPromoting(true);
+    try {
+      await promoteRole(next);
+    } catch (err) {
+      console.error('Role promotion failed:', err);
+    }
+    setPromoting(false);
+    setShowPromote(false);
+  };
+
   return (
-    <div style={{ position: 'relative', zIndex: 1001 }}>
-      <button onClick={() => setOpen(!open)} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 14px', background: 'rgba(10,10,20,0.92)', border: `2px solid ${info.color}`, borderRadius: 8, cursor: 'pointer', fontFamily: 'monospace', fontSize: 13 }}>
-        <span style={{ fontSize: 16 }}>{info.icon}</span>
-        <span style={{ fontWeight: 'bold', color: info.color }}>{info.label}</span>
-        <span style={{ color: '#888', fontSize: 10 }}>{open ? '\u25B2' : '\u25BC'}</span>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, position: 'relative' }}>
+      <span style={{
+        fontSize: 11, color: '#888', maxWidth: 140, overflow: 'hidden',
+        textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+      }}>
+        {user?.email}
+      </span>
+      <span
+        onClick={() => setShowPromote(p => !p)}
+        style={{
+          padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 'bold',
+          background: `${roleColors[role] || '#555'}22`,
+          color: roleColors[role] || '#888',
+          border: `1px solid ${roleColors[role] || '#555'}44`,
+          textTransform: 'capitalize',
+          cursor: role !== 'controller' ? 'pointer' : 'default',
+        }}
+      >
+        {role}
+      </span>
+      <button onClick={signOut} style={{
+        padding: '4px 10px', background: '#333', color: '#ccc',
+        border: '1px solid #555', borderRadius: 4, cursor: 'pointer',
+        fontSize: 11,
+      }}>
+        Sign Out
       </button>
-      {open && (
-        <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, background: 'rgba(10,10,20,0.95)', border: '1px solid #333', borderRadius: 8, overflow: 'hidden', minWidth: 280, boxShadow: '0 8px 24px rgba(0,0,0,0.5)' }}>
-          {(Object.keys(ROLE_INFO) as AppRole[]).map((r) => {
-            const ri = ROLE_INFO[r];
-            return (
-              <div key={r} onClick={() => { setRole(r); setOpen(false); }}
-                style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', cursor: 'pointer', background: r === role ? `${ri.color}22` : 'transparent', borderLeft: r === role ? `3px solid ${ri.color}` : '3px solid transparent' }}>
-                <span style={{ fontSize: 20 }}>{ri.icon}</span>
-                <div><div style={{ fontWeight: 'bold', fontSize: 13, color: ri.color }}>{ri.label}</div><div style={{ color: '#888', fontSize: 11, marginTop: 2 }}>{ri.description}</div></div>
-              </div>
-            );
-          })}
+
+      {showPromote && role !== 'controller' && (
+        <div style={{
+          position: 'absolute', top: '100%', right: 0, marginTop: 6,
+          background: 'rgba(15,15,28,0.98)', border: '1px solid #333',
+          borderRadius: 8, padding: 12, zIndex: 2000, minWidth: 220,
+          boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
+        }}>
+          <div style={{ fontSize: 12, fontWeight: 'bold', color: '#fff', marginBottom: 4 }}>
+            {ROLE_LABELS[role]}
+          </div>
+          <div style={{ fontSize: 10, color: '#888', marginBottom: 10 }}>
+            {ROLE_DESCRIPTION[role]}
+          </div>
+          <button
+            onClick={handlePromote}
+            disabled={promoting}
+            style={{
+              padding: '8px 16px', background: roleColors[NEXT_ROLE[role]] || '#4488FF',
+              color: '#fff', border: 'none', borderRadius: 6, cursor: promoting ? 'wait' : 'pointer',
+              fontSize: 12, fontWeight: 'bold', width: '100%',
+            }}
+          >
+            {promoting ? 'Promoting…' : `Promote to ${NEXT_ROLE[role]}`}
+          </button>
         </div>
       )}
     </div>
