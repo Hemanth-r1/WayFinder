@@ -10,6 +10,8 @@ import 'leaflet/dist/leaflet.css';
 import type { RoadGraph, TrafficSignal, Vehicle, CongestionZone, VehicleType } from '../types';
 import { findNearestNode } from '../data/roadNetwork';
 import MapContextMenu from './MapContextMenu';
+import NavigationPanel from './NavigationPanel';
+import ControlPanel from './ControlPanel';
 
 const VEHICLE_ICONS: Record<string, string> = {
   sedan: '🚗', suv: '🚙', hatchback: '🚗', truck: '🚚',
@@ -335,7 +337,7 @@ export default function MapView({
 
       {/* Live stats HUD */}
       <div style={{
-        position: 'absolute', top: 10, left: 10, zIndex: 1001,
+        position: 'absolute', top: 60, left: 12, zIndex: 1001,
         background: 'rgba(10,10,20,0.85)', border: '1px solid #333', borderRadius: 8,
         padding: '6px 12px', fontFamily: 'monospace', fontSize: 11, color: '#ccc',
         display: 'flex', gap: 14, backdropFilter: 'blur(4px)',
@@ -370,6 +372,9 @@ export default function MapView({
           }}>Cancel (Esc)</button>
         </div>
       )}
+
+      <NavigationPanel />
+      <ControlPanel />
 
       {/* Context menu */}
       {contextMenu && (
