@@ -4,42 +4,55 @@ export interface GeoPoint {
 }
 
 export type Direction = 'N' | 'S' | 'E' | 'W';
-
 export type SignalColor = 'RED' | 'YELLOW' | 'GREEN';
+export type VehicleType = 'sedan' | 'suv' | 'hatchback' | 'truck' | 'bus' | 'emergency' | 'bike' | 'auto' | 'van';
+export type RoadType = 'motorway' | 'trunk' | 'primary' | 'secondary' | 'tertiary' | 'residential';
 
-export type VehicleType = 'car' | 'truck' | 'bus' | 'emergency';
-
-export interface Intersection {
+export interface RoadNode {
   id: string;
-  row: number;
-  col: number;
   lat: number;
   lng: number;
+  isIntersection: boolean;
+  trafficSignalId?: string;
 }
 
-export interface RoadSegment {
+export interface RoadEdge {
   id: string;
-  fromId: string;
-  toId: string;
-  direction: Direction;
-  from: GeoPoint;
-  to: GeoPoint;
+  from: string;
+  to: string;
+  roadType: RoadType;
+  speedLimit: number;
+  lanes: number;
   length: number;
+  bearing: number;
+  name?: string;
+  congestionWeight: number;
+}
+
+export interface RoadGraph {
+  nodes: Map<string, RoadNode>;
+  edges: Map<string, RoadEdge>;
+  adjacency: Map<string, RoadEdge[]>;
 }
 
 export interface SignalPhase {
   direction: Direction;
   color: SignalColor;
   duration: number;
+  yellowDuration: number;
 }
 
 export interface TrafficSignal {
-  intersectionId: string;
+  id: string;
+  nodeId: string;
   phases: SignalPhase[];
   currentPhaseIndex: number;
   timer: number;
+  cycleLength: number;
+  offset: number;
   greenWaveDirection: Direction | null;
   congestionLevel: number;
+  adaptiveTiming: boolean;
 }
 
 export interface Vehicle {
@@ -47,11 +60,14 @@ export interface Vehicle {
   type: VehicleType;
   lat: number;
   lng: number;
-  direction: Direction;
+  bearing: number;
   speed: number;
-  baseSpeed: number;
-  currentSegmentId: string;
-  targetIntersectionId: string;
+  targetSpeed: number;
+  acceleration: number;
+  deceleration: number;
+  currentEdgeId: string;
+  edgeProgress: number;
+  targetNodeId: string;
   route: string[];
   routeIndex: number;
   color: string;
@@ -59,38 +75,97 @@ export interface Vehicle {
   width: number;
   stuckTime: number;
   rerouted: boolean;
+  responseDelay: number;
+  reactionTimer: number;
+  waitingForSignal: boolean;
+  driverAggression: number;
+  routeETA: number;
 }
 
 export interface TrafficStats {
   totalVehicles: number;
   avgSpeed: number;
+  avgDelay: number;
   congestionHotspots: number;
   greenWaveActive: boolean;
   signalCoordinationScore: number;
-  blockedRoutes: string[];
+  throughput: number;
+  maxCongestion: number;
 }
 
-export interface GridConfig {
-  cols: number;
-  rows: number;
+export interface RouteInfo {
+  path: string[];
+  distance: number;
+  estimatedTime: number;
+  signalCount: number;
+  avgCongestion: number;
+  roadNames: string[];
+}
+
+export interface NavigationRequest {
+  sourceNodeId: string;
+  destNodeId: string;
+  avoidCongestion: boolean;
+  preferMainRoads: boolean;
+}
+
+export interface CongestionZone {
   centerLat: number;
   centerLng: number;
-  latSpacing: number;
-  lngSpacing: number;
+  radius: number;
+  level: number;
+  vehicles: number;
+  trend: 'increasing' | 'stable' | 'decreasing';
 }
 
-export const DEFAULT_GRID: GridConfig = {
-  cols: 12,
-  rows: 8,
-  centerLat: 40.7484,
-  centerLng: -73.9856,
-  latSpacing: 0.0012,
-  lngSpacing: 0.0009,
+export interface MapLayer {
+  id: string;
+  name: string;
+  visible: boolean;
+  type: 'roads' | 'signals' | 'vehicles' | 'heatmap' | 'routes' | 'congestion';
+}
+
+export const DEFAULT_SPEED_LIMITS: Record<RoadType, number> = {
+  motorway: 110,
+  trunk: 80,
+  primary: 60,
+  secondary: 50,
+  tertiary: 40,
+  residential: 30,
 };
 
-export const APPROACHING_THRESHOLD = 0.0002;
-export const VEHICLE_GAP = 0.00008;
-export const INTERSECTION_RADIUS = 0.00025;
-export const CLEANUP_DISTANCE = 0.002;
-export const SPEED_SCALE = 0.000003;
-export const MAX_VEHICLES_PER_SEGMENT = 4;
+export const VEHICLE_PHYSICS: Record<VehicleType, {
+  maxSpeed: number;
+  acceleration: number;
+  deceleration: number;
+  length: number;
+  width: number;
+  responseDelay: [number, number];
+}> = {
+  sedan: { maxSpeed: 50, acceleration: 2.8, deceleration: 4.5, length: 4.5, width: 1.8, responseDelay: [0.7, 1.3] },
+  suv: { maxSpeed: 48, acceleration: 2.2, deceleration: 4.0, length: 5.0, width: 2.0, responseDelay: [0.8, 1.4] },
+  hatchback: { maxSpeed: 45, acceleration: 3.0, deceleration: 5.0, length: 4.0, width: 1.7, responseDelay: [0.6, 1.2] },
+  truck: { maxSpeed: 35, acceleration: 1.2, deceleration: 3.0, length: 12, width: 2.5, responseDelay: [1.0, 2.0] },
+  bus: { maxSpeed: 40, acceleration: 1.5, deceleration: 3.5, length: 10, width: 2.4, responseDelay: [0.9, 1.8] },
+  emergency: { maxSpeed: 70, acceleration: 3.5, deceleration: 5.0, length: 5.5, width: 2.0, responseDelay: [0.3, 0.6] },
+  bike: { maxSpeed: 55, acceleration: 3.5, deceleration: 5.5, length: 2.2, width: 0.8, responseDelay: [0.5, 0.9] },
+  auto: { maxSpeed: 35, acceleration: 2.0, deceleration: 4.0, length: 3.0, width: 1.5, responseDelay: [0.7, 1.3] },
+  van: { maxSpeed: 42, acceleration: 1.8, deceleration: 3.5, length: 6.0, width: 2.2, responseDelay: [0.8, 1.5] },
+};
+
+export const GRID_CENTER: GeoPoint = { lat: 40.7580, lng: -73.9855 };
+export const GRID_BOUNDS = {
+  north: 40.7680,
+  south: 40.7480,
+  east: -73.9755,
+  west: -73.9955,
+};
+
+export const SIGNAL_TIMING = {
+  minGreen: 8,
+  maxGreen: 45,
+  yellowDuration: 3,
+  allRedDuration: 2,
+  lostTimePerPhase: 2,
+  criticalGap: 2.0,
+};
