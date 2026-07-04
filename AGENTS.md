@@ -37,7 +37,33 @@ Entry: `src/main.tsx` → `src/App.tsx` → `src/engine/TrafficEngine.ts`
 
 ## Firebase
 
-Config via `VITE_FIREBASE_*` env vars (see `.env.example`). Firestore is initialized at module import time in `src/config/firebase.ts`. The app may function without Firebase for local simulation.
+Real authentication and data persistence via Firebase Auth + Firestore.
+
+### Setup
+
+1. Create a Firebase project at https://console.firebase.google.com
+2. Enable **Authentication → Sign-in method → Email/Password**
+3. Create a **Firestore Database** (start in test mode, then apply rules)
+4. Copy `.env.example` → `.env` and fill in your Firebase project config values
+5. Deploy Firestore security rules from `firestore.rules`:
+   - Via Firebase Console → Firestore → Rules tab, or
+   - Via Firebase CLI: `firebase deploy --only firestore:rules`
+
+### Roles
+
+- Users start with `role: "user"` on first sign-up
+- To promote a user, update their Firestore document:
+  `users/{uid}` → set `role: "supporter"` or `role: "controller"`
+- Role changes take effect on next page load
+
+### Firestore Collections
+
+| Collection | Access | Description |
+|-----------|--------|-------------|
+| `users/{uid}` | Own user only | Profile and role |
+| `routes/{routeId}` | Own user only | Submitted navigation routes (persistent) |
+| `signals/{signalId}` | All authenticated users read, supporters+ write | Community-added traffic signals (real-time) |
+| `overrides/{overrideId}` | All authenticated users read, controllers write | Active signal overrides (real-time) |
 
 ## Runtime gotchas
 

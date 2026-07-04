@@ -3,6 +3,7 @@ import { AuthProvider } from './context/AuthContext';
 import { useAuth } from './context/useAuth';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { LoadingOverlay } from './components/LoadingSpinner';
+import LoginScreen from './components/LoginScreen';
 import MapView from './components/MapView';
 import RoleSelector from './components/RoleSelector';
 import UserPanel from './roles/UserPanel';
@@ -10,7 +11,7 @@ import SupporterPanel from './roles/SupporterPanel';
 import ControllerPanel from './roles/ControllerPanel';
 import { TrafficEngine } from './engine/TrafficEngine';
 import type { Direction, SignalColor, VehicleType, OptimizationResult } from './types';
-import type { UserRoute, SupporterSignal } from './types/roles';
+import type { UserRoute } from './types/roles';
 import { downloadStatsJSON, buildExportPayload } from './utils/exportStats';
 import ToastContainer from './components/Toast';
 
@@ -20,7 +21,7 @@ const TOD_COLOR: Record<string, string> = {
 const TOD_ICON: Record<string, string> = { early_morning: '🌙', morning_rush: '🌅', midday: '☀️', evening_rush: '🌆', night: '🌃' };
 
 function AppContent() {
-  const { role } = useAuth();
+  const { user, role, loading: authLoading } = useAuth();
   const engineRef = useRef<TrafficEngine | null>(null);
   const frameRef = useRef(0);
   const lastTimeRef = useRef(0);
@@ -43,8 +44,6 @@ function AppContent() {
   });
   const [selectedSource, setSelectedSource] = useState<string | null>(null);
   const [selectedDest, setSelectedDest] = useState<string | null>(null);
-  const [userRoutes, setUserRoutes] = useState<UserRoute[]>([]);
-  const [addedSignals, setAddedSignals] = useState<SupporterSignal[]>([]);
   const [speed, setSpeed] = useState(1);
   const speedRef = useRef(1);
   const [showHeatmap, setShowHeatmap] = useState(true);
@@ -173,19 +172,8 @@ function AppContent() {
     setOverrideActive(false); overrideActiveRef.current = false;
   }, []);
 
-  const handleSubmitRoute = useCallback((route: UserRoute) => {
-    setUserRoutes(prev => [...prev, route]);
-  }, []);
-
-  const handleAddSignal = useCallback((nodeId: string, lat: number, lng: number) => {
-    const e = engineRef.current; if (!e) return;
-    const added = e.addSignalAtNode(nodeId);
-    if (added) {
-      setAddedSignals(prev => [
-        ...prev,
-        { id: `sup_${Date.now()}`, supporterId: 'current', lat, lng, roadName: nodeId, signalType: 'smart', timestamp: Date.now(), notes: '' },
-      ]);
-    }
+  const handleAddSignal = useCallback((nodeId: string, _lat: number, _lng: number) => {
+    engineRef.current?.addSignalAtNode(nodeId);
   }, []);
 
   const handleSpawnVehicleAt = useCallback((nodeId: string, type: VehicleType) => {
@@ -198,8 +186,8 @@ function AppContent() {
 
   const handleExportStats = useCallback(() => {
     const e = engineRef.current; if (!e) return;
-    downloadStatsJSON(buildExportPayload(e.stats, e.congestionZones, userRoutes, e.signals.size, e.graph.nodes.size, e.simClock));
-  }, [userRoutes]);
+    downloadStatsJSON(buildExportPayload(e.stats, e.congestionZones, [] as UserRoute[], e.signals.size, e.graph.nodes.size, e.simClock));
+  }, []);
 
   const handleRunOptimizer = useCallback(() => {
     const result = engineRef.current?.runOptimizerNow();
@@ -212,6 +200,9 @@ function AppContent() {
     await engineRef.current.refreshRoadData();
     setLoading(false);
   }, []);
+
+  if (authLoading) return <LoadingOverlay message="Loading..." />;
+  if (!user) return <LoginScreen />;
 
   if (loading) return <LoadingOverlay message="Loading Bangalore road network…" />;
   const e = engineRef.current; if (!e) return null;
@@ -270,19 +261,17 @@ function AppContent() {
               graph={e.graph} signals={e.signals}
               selectedSource={selectedSource} selectedDest={selectedDest}
               onSelectSource={setSelectedSource} onSelectDest={setSelectedDest}
-              onSubmitRoute={handleSubmitRoute} submittedRoutes={userRoutes}
             />
           )}
           {role === 'supporter' && (
             <SupporterPanel
               graph={e.graph} signals={e.signals}
-              onAddSignal={handleAddSignal} addedSignals={addedSignals}
             />
           )}
           {role === 'controller' && (
             <ControllerPanel
               graph={e.graph} signals={e.signals}
-              congestionZones={e.congestionZones} userRoutes={userRoutes}
+              congestionZones={e.congestionZones} userRoutes={[] as UserRoute[]}
               stats={e.stats}
               onOverrideSignal={handleManualOverride}
               onOverrideRoute={handleRouteOverride}

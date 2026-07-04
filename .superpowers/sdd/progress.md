@@ -14,3 +14,17 @@ Task 7: complete (commits 261284f..66b27fb, review clean — heatmap toggle, veh
 Task 8: complete (commits 66b27fb..c806302, review clean — speed slider + heatmap button in sidebar)
 Task 9: complete — build ✅, lint ✅ (0 errors), integration verified
 
+---
+
+# Firebase Backend
+
+Started: 2026-07-04
+Task B1: complete (Firebase config created, ENABLE_FIREBASE flag removed)
+Task B2: complete (AuthContext rewritten with Firebase Auth, RoleSelector updated to match)
+Task B3: complete (LoginScreen created, wired into App.tsx with auth guard)
+Task B4: complete (RoleSelector → profile widget, unused ROLE_INFO removed)
+Task B5: complete (UserPanel reads/writes routes from Firestore)
+Task B6: complete (SupporterPanel reads/writes signals from Firestore real-time)
+Task B7: complete (ControllerPanel syncs overrides to Firestore real-time)
+Task B8: complete (firestore.rules created, AGENTS.md updated with deployment guide)
+

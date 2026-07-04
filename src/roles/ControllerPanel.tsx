@@ -1,6 +1,20 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
+import { collection, query, where, onSnapshot, addDoc, serverTimestamp } from 'firebase/firestore';
+import { db } from '../config/firebase';
+import { useAuth } from '../context/useAuth';
 import type { RoadGraph, TrafficSignal, Direction, SignalColor, CongestionZone } from '../types';
 import type { UserRoute } from '../types/roles';
+
+interface FirestoreOverride {
+  id: string;
+  controllerId: string;
+  signalId: string;
+  direction: Direction;
+  color: SignalColor;
+  active: boolean;
+  expiresAt: { toDate: () => Date };
+  timestamp: ReturnType<typeof serverTimestamp>;
+}
 
 interface Props {
   graph: RoadGraph;
@@ -26,11 +40,13 @@ export default function ControllerPanel({
   onSpawnEmergency, onExportStats, onRunOptimizer, onRefreshRoads, lastOptResult,
   overrideActive, overrideTimeRemaining,
 }: Props) {
+  const { user } = useAuth();
   const [selectedSignal, setSelectedSignal] = useState<string | null>(null);
   const [overrideMode, setOverrideMode] = useState<'individual' | 'route'>('individual');
   const [selectedRouteSignals, setSelectedRouteSignals] = useState<string[]>([]);
   const [showAnalytics, setShowAnalytics] = useState(false);
   const [signalSearch, setSignalSearch] = useState('');
+  const [fsOverrides, setFsOverrides] = useState<FirestoreOverride[]>([]);
 
   const signalList = useMemo(() => Array.from(signals.values()), [signals]);
 
@@ -39,6 +55,28 @@ export default function ControllerPanel({
     const q = signalSearch.toLowerCase();
     return signalList.filter(s => s.id.toLowerCase().includes(q));
   }, [signalList, signalSearch]);
+
+  useEffect(() => {
+    const q = query(collection(db, 'overrides'), where('active', '==', true));
+    const unsub = onSnapshot(q, (snapshot) => {
+      const list: FirestoreOverride[] = [];
+      snapshot.forEach((doc) => {
+        const d = doc.data();
+        list.push({
+          id: doc.id,
+          controllerId: d.controllerId,
+          signalId: d.signalId,
+          direction: d.direction,
+          color: d.color,
+          active: d.active,
+          expiresAt: d.expiresAt,
+          timestamp: d.timestamp,
+        });
+      });
+      setFsOverrides(list);
+    });
+    return unsub;
+  }, []);
 
   const handleSelectRoute = useCallback(() => {
     const counts = new Map<string, number>();
@@ -52,18 +90,35 @@ export default function ControllerPanel({
     setSelectedRouteSignals(top.length > 0 ? top : Array.from(signals.keys()).slice(0, 5));
   }, [userRoutes, signals]);
 
+  const writeOverrideToFirestore = useCallback((signalId: string, direction: Direction, color: SignalColor) => {
+    if (!user) return;
+    addDoc(collection(db, 'overrides'), {
+      controllerId: user.uid,
+      signalId,
+      direction,
+      color,
+      active: true,
+      expiresAt: new Date(Date.now() + 30_000),
+      timestamp: serverTimestamp(),
+    });
+  }, [user]);
+
   const handleOverride = useCallback((direction: Direction, color: SignalColor) => {
     if (overrideMode === 'individual' && selectedSignal) {
       onOverrideSignal(selectedSignal, direction, color);
+      writeOverrideToFirestore(selectedSignal, direction, color);
     } else if (overrideMode === 'route') {
       const sigs = selectedRouteSignals.length > 0
         ? selectedRouteSignals
         : Array.from(signals.keys()).slice(0, 5);
       onOverrideRoute(sigs, direction, color);
+      sigs.forEach(sid => writeOverrideToFirestore(sid, direction, color));
     } else {
-      onOverrideRoute(Array.from(signals.keys()), direction, color);
+      const allSigs = Array.from(signals.keys());
+      onOverrideRoute(allSigs, direction, color);
+      allSigs.forEach(sid => writeOverrideToFirestore(sid, direction, color));
     }
-  }, [overrideMode, selectedSignal, selectedRouteSignals, onOverrideSignal, onOverrideRoute, signals]);
+  }, [overrideMode, selectedSignal, selectedRouteSignals, onOverrideSignal, onOverrideRoute, signals, writeOverrideToFirestore]);
 
   return (
     <div style={{ padding: '0 14px' }}>
@@ -195,6 +250,30 @@ export default function ControllerPanel({
           </button>
         )}
       </div>
+
+      {/* Firestore Overrides */}
+      {user && fsOverrides.filter(o => o.controllerId !== user.uid).length > 0 && (
+        <div style={styles.section}>
+          <div style={styles.sectionTitle}>Firestore Overrides</div>
+          {fsOverrides.filter(o => o.controllerId !== user.uid).map((o) => (
+            <div key={o.id} style={{
+              display: 'flex', gap: 6, padding: '4px 0', fontSize: 10, fontFamily: 'monospace',
+              borderBottom: '1px solid #1a1a2e',
+            }}>
+              <span style={{
+                width: 8, height: 8, borderRadius: '50%', flexShrink: 0, marginTop: 3,
+                background: o.color === 'GREEN' ? '#4CAF50' : o.color === 'YELLOW' ? '#FFD600' : '#f44336',
+              }} />
+              <span style={{ color: '#888' }}>{o.signalId}</span>
+              <span style={{ color: '#555' }}>{o.direction}</span>
+              <span style={{ color: '#fff', fontWeight: 'bold' }}>{o.color}</span>
+              <span style={{ color: '#444', marginLeft: 'auto' }}>
+                {o.controllerId.slice(0, 6)}…
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Signal list with search */}
       <div style={styles.section}>
