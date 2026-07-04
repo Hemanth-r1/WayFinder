@@ -1,7 +1,7 @@
 import type {
   RoadGraph, TrafficSignal, Vehicle, CongestionZone, TrafficStats, Direction, SignalColor, VehicleType, OptimizationResult,
 } from '../types';
-import { loadBangaloreNetwork } from '../data/roadNetwork';
+import { loadBangaloreNetwork, type LoadingPhase } from '../data/roadNetwork';
 import { clearGraphCache } from '../data/graphCache';
 import { updateAdaptiveSignals, coordinateGreenWave, getDominantFlowDirection } from './signalControl';
 import { spawnRandomVehicle, spawnVehicleAt, updateVehicle } from './vehicleSim';
@@ -11,7 +11,7 @@ import { createSimClock, tickClock, getCurrentProfile, type SimClock, type TimeO
 import { applyEmergencyPriority, type EmergencyOverride } from './emergencyPriority';
 import { runOptimizer, applyOptimizationPlan } from './optimizer';
 
-const OPTIMIZER_INTERVAL = 30; // seconds between optimizer runs
+const OPTIMIZER_INTERVAL = 30;
 const CENTER = { lat: 12.9716, lng: 77.5946 };
 const RADIUS = 40000;
 
@@ -28,6 +28,9 @@ export class TrafficEngine {
   running = false;
   loading = false;
   loaded = false;
+  loadingPhase: string = 'empty';
+  dataVersion: number = 0;
+  onGraphUpdate?: (phase: LoadingPhase) => void;
 
   simClock: SimClock = createSimClock(8, 2);
   get timeOfDay(): TimeOfDay { return classifyHour(this.simClock.hour); }
@@ -46,16 +49,23 @@ export class TrafficEngine {
 
   async init(forceRefresh = false): Promise<void> {
     this.loading = true;
-    const result = await loadBangaloreNetwork(forceRefresh);
-    const nodes = 'nodes' in result ? result.nodes : result.graph.nodes;
-    const edges = 'edges' in result ? result.edges : result.graph.edges;
-    const adjacency = 'adjacency' in result ? result.adjacency : result.graph.adjacency;
-    const signals = result.signals;
-    this.graph = { nodes, edges, adjacency };
-    this.signals = signals;
+    this.loadingPhase = 'loading';
+
+    const result = await loadBangaloreNetwork((phase) => {
+      this.graph = { nodes: phase.nodes, edges: phase.edges, adjacency: phase.adjacency };
+      this.signals = phase.signals;
+      this.loadingPhase = phase.phase;
+      this.dataVersion = Date.now();
+      this.onGraphUpdate?.(phase);
+    }, forceRefresh);
+
+    this.graph = { nodes: result.nodes, edges: result.edges, adjacency: result.adjacency };
+    this.signals = result.signals;
+    this.loadingPhase = result.phase;
     this.loading = false;
     this.loaded = true;
-    console.log(`[WayFinder] Engine: ${nodes.size} nodes, ${edges.size} edges, ${signals.size} signals`);
+    this.dataVersion = Date.now();
+    console.log(`[WayFinder] Engine update [${result.phase}]: ${result.nodes.size}n, ${result.edges.size}e, ${result.signals.size}s from ${result.source}`);
   }
 
   start(): void {
@@ -74,7 +84,6 @@ export class TrafficEngine {
     if (!this.running || !this.loaded) return;
     const dt = Math.min(deltaTime, SIMULATION_CONFIG.UPDATE_INTERVAL);
 
-    // Advance simulation clock
     this.simClock = tickClock(this.simClock, dt);
     const profile = this.currentProfile;
     this.maxVehicles = Math.max(10, Math.min(SIMULATION_CONFIG.MAX_VEHICLES, Math.round(SIMULATION_CONFIG.MAX_VEHICLES * profile.volumeMultiplier)));
@@ -87,20 +96,17 @@ export class TrafficEngine {
       }
     }
 
-    // Manual override timer
     if (this.manualOverrideActive) {
       this.manualOverrideTimer += dt;
       if (this.manualOverrideTimer >= this.manualOverrideDuration) this.deactivateManualOverride();
     }
 
-    // Emergency vehicle priority
     if (!this.manualOverrideActive) {
       this.emergencyOverrides = applyEmergencyPriority(
         this.vehicles, this.signals, this.graph.nodes, this.emergencyOverrides, dt,
       );
     }
 
-    // Adaptive signals
     const dominant = getDominantFlowDirection(this.vehicles);
     if (!this.manualOverrideActive) {
       updateAdaptiveSignals(this.signals, this.vehicles, this.graph.nodes, dt);
@@ -109,14 +115,11 @@ export class TrafficEngine {
       }
     }
 
-    // Network optimizer (every 30 seconds, REQ-C1)
     this.optimizerTimer += dt;
     if (this.optimizerTimer >= OPTIMIZER_INTERVAL && !this.manualOverrideActive) {
       this.optimizerTimer = 0;
-      // Run in idle time to avoid blocking (REQ-PERF3)
       const result = runOptimizer(this.signals, this.vehicles, this.graph.nodes, 150);
       this.lastOptimizationResult = result;
-      // Auto-apply if improvement > 10% (REQ-C7)
       if (result.improvement > 0.10) {
         applyOptimizationPlan(result.plan, this.signals);
         console.log(`[WayFinder] Optimizer applied: ${(result.improvement * 100).toFixed(1)}% improvement, ${result.elapsedMs}ms`);
@@ -148,7 +151,6 @@ export class TrafficEngine {
     }
   }
 
-  /** Spawn a specific type at a given node (from context menu, REQ-M1) */
   spawnVehicleAtNode(nodeId: string, type: VehicleType): void {
     const v = spawnVehicleAt(this.graph, nodeId, type, this.signals);
     if (v) this.vehicles.set(v.id, v);
@@ -176,12 +178,10 @@ export class TrafficEngine {
   spawnEmergencyVehicle(): void {
     const v = spawnRandomVehicle(this.graph, this.signals);
     if (!v) return;
-    // Override with emergency type
     const emergency = { ...v, type: 'emergency' as VehicleType, color: '#F44336' };
     this.vehicles.set(emergency.id, emergency);
   }
 
-  /** Add a signal at a node (from Supporter panel / context menu) */
   addSignalAtNode(nodeId: string): boolean {
     if (this.signals.has(nodeId)) return false;
     const node = this.graph.nodes.get(nodeId); if (!node) return false;
@@ -195,7 +195,6 @@ export class TrafficEngine {
     return true;
   }
 
-  /** Force-run the optimizer immediately (Controller panel button) */
   runOptimizerNow(): OptimizationResult {
     const result = runOptimizer(this.signals, this.vehicles, this.graph.nodes, 150);
     this.lastOptimizationResult = result;
@@ -203,9 +202,8 @@ export class TrafficEngine {
     return result;
   }
 
-  /** Force-refresh road data from OSM */
   async refreshRoadData(): Promise<void> {
-    clearGraphCache(CENTER.lat, CENTER.lng, RADIUS);
+    await clearGraphCache(CENTER.lat, CENTER.lng, RADIUS);
     this.vehicles.clear();
     await this.init(true);
     this.start();
@@ -243,5 +241,4 @@ export class TrafficEngine {
   getEmergencyOverrideCount(): number { return this.emergencyOverrides.size; }
 }
 
-// Re-export Vehicle type for TrafficEngine callers
 export type { Vehicle };

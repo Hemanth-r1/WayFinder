@@ -1,13 +1,7 @@
-/**
- * roadNetwork.ts
- * Fetches real Bangalore roads from OSM Overpass API.
- * REQ-G1: Full geometry preserved on every RoadEdge.
- * REQ-G4: One-way streets respected.
- * REQ-G1/PERF1: Intermediate geometry simplified with Ramer-Douglas-Peucker (ε=5m).
- * REQ-G5: Graph cached in localStorage via graphCache.ts.
- */
 import type { RoadNode, RoadEdge, TrafficSignal, SignalPhase, Direction, RoadType, GeoPoint, SignalApproach } from '../types';
 import { saveGraphToCache, loadGraphFromCache } from './graphCache';
+import { loadSignalPoints } from './signalStore';
+import { saveOSMToStorage, loadOSMFromStorage } from './firebaseCache';
 import { ROAD_CONFIG } from '../config';
 
 // ── Geometry helpers ──────────────────────────────────────────────────────────
@@ -33,7 +27,6 @@ function polylineLength(points: GeoPoint[]): number {
   return len;
 }
 
-/** Ramer-Douglas-Peucker simplification (ε in degrees ~5m at Bangalore) */
 function rdp(points: GeoPoint[], epsilon: number): GeoPoint[] {
   if (points.length <= 2) return points;
   let maxDist = 0; let maxIdx = 0;
@@ -59,6 +52,8 @@ function perpendicularDist(p: GeoPoint, a: GeoPoint, b: GeoPoint): number {
 }
 
 // ── Road type helpers ─────────────────────────────────────────────────────────
+
+const MAX_OSM_SIGNALS = 200;
 
 function speedForHighway(type: string): number {
   switch (type) {
@@ -94,16 +89,12 @@ function isReverseOneway(tags: Record<string, string>): boolean {
   return tags.oneway === '-1' || tags.oneway === 'reverse';
 }
 
-// ── Signal phase derivation (REQ-S1) ─────────────────────────────────────────
+// ── Signal phase derivation ──────────────────────────────────────────────────
 
 function deriveApproaches(nodeId: string, adjacency: Map<string, RoadEdge[]>): SignalApproach[] {
   const edges = adjacency.get(nodeId) || [];
-  // Edges arriving at this node are those where to === nodeId; we look at the reverse direction
-  // We want approach bearings = bearing from upstream node toward this node
-  // = (forward edge bearing + 180) % 360 for each outgoing edge from this node
   const approaches: SignalApproach[] = [];
   for (const edge of edges) {
-    // This is an outgoing edge from nodeId, so the vehicle approaches FROM bearing opposite
     const approachBearing = (edge.bearing + 180) % 360;
     approaches.push({
       edgeId: edge.id,
@@ -112,14 +103,13 @@ function deriveApproaches(nodeId: string, adjacency: Map<string, RoadEdge[]>): S
       duration: 12,
     });
   }
-  // Group into NS vs EW halves and set alternating GREEN/RED
   const ns = approaches.filter(a => {
     const b = a.bearing;
     return (b >= 315 || b < 45) || (b >= 135 && b < 225);
   });
   const ew = approaches.filter(a => !ns.includes(a));
-  for (const a of ns) { a.color = 'GREEN'; }
-  for (const a of ew) { a.color = 'RED'; }
+  for (const a of ns) a.color = 'GREEN';
+  for (const a of ew) a.color = 'RED';
   return approaches;
 }
 
@@ -139,8 +129,8 @@ interface OSMNode { id: number; lat: number; lng: number; }
 interface OSMWay { id: number; nodes: number[]; tags: Record<string, string>; }
 interface OSMResponse { elements: Array<{ type: string; id: number; lat?: number; lon?: number; nodes?: number[]; tags?: Record<string, string> }>; }
 
-async function fetchOSMChunk(centerLat: number, centerLng: number, radius: number, highwayFilter: string): Promise<{ nodes: Map<number, OSMNode>; ways: OSMWay[] }> {
-  const query = `[out:json][timeout:60];(way["highway"~"${highwayFilter}"](around:${radius},${centerLat},${centerLng}););out body;>;out skel qt;`;
+async function fetchOSMChunk(east: number, west: number, north: number, south: number, highwayFilter: string): Promise<{ nodes: Map<number, OSMNode>; ways: OSMWay[] }> {
+  const query = `[out:json][timeout:30];(way["highway"~"${highwayFilter}"](${north},${west},${south},${east}););out body;>;out skel qt;`;
   const resp = await fetch('https://overpass-api.de/api/interpreter', {
     method: 'POST',
     body: `data=${encodeURIComponent(query)}`,
@@ -161,29 +151,40 @@ async function fetchOSMChunk(centerLat: number, centerLng: number, radius: numbe
   return { nodes, ways };
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise(r => setTimeout(r, ms));
+}
+
 async function fetchOSMRoads(centerLat: number, centerLng: number, radius: number): Promise<{ nodes: Map<number, OSMNode>; ways: OSMWay[] }> {
+  const dlat = radius / 111320;
+  const dlng = radius / (111320 * Math.cos(centerLat * Math.PI / 180));
+  const hw = dlat * 2 / 2;
+  const hwLng = dlng * 2 / 2;
   const allNodes = new Map<number, OSMNode>();
   const allWays: OSMWay[] = [];
-  const seenWayIds = new Set<number>();
-  const filter = radius > 10000
-    ? 'motorway|trunk|primary|secondary'
-    : 'motorway|trunk|primary|secondary|tertiary|residential|unclassified';
+  const seenIds = new Set<number>();
+  const filter = 'motorway|trunk|primary|secondary|tertiary';
 
-  if (radius > 10000) {
-    const halfR = radius * 0.7;
-    const dlat = halfR / 111320;
-    const dlng = halfR / (111320 * Math.cos(centerLat * Math.PI / 180));
-    const offsets = [[dlat, dlng], [dlat, -dlng], [-dlat, dlng], [-dlat, -dlng]];
-    for (const [odlat, odlng] of offsets) {
-      const { nodes, ways } = await fetchOSMChunk(centerLat + odlat, centerLng + odlng, halfR, filter);
-      for (const [id, n] of nodes) allNodes.set(id, n);
-      for (const w of ways) { if (!seenWayIds.has(w.id)) { seenWayIds.add(w.id); allWays.push(w); } }
+  for (let r = 0; r < 2; r++) {
+    for (let c = 0; c < 2; c++) {
+      const w = centerLng - dlng + c * hwLng;
+      const e = w + hwLng;
+      const s = centerLat - dlat + r * hw;
+      const n = s + hw;
+      if (r > 0 || c > 0) await sleep(1000);
+      try {
+        const { nodes, ways } = await fetchOSMChunk(e, w, n, s, filter);
+        for (const [id, node] of nodes) allNodes.set(id, node);
+        for (const way of ways) {
+          if (!seenIds.has(way.id)) { seenIds.add(way.id); allWays.push(way); }
+        }
+        console.log(`[WayFinder] Tile [${r},${c}]: ${nodes.size} nodes, ${ways.length} ways`);
+      } catch (err) {
+        console.warn(`[WayFinder] Tile [${r},${c}] failed:`, err);
+      }
     }
-  } else {
-    const { nodes, ways } = await fetchOSMChunk(centerLat, centerLng, radius, filter);
-    for (const [id, n] of nodes) allNodes.set(id, n);
-    for (const w of ways) allWays.push(w);
   }
+  console.log(`[WayFinder] OSM total: ${allNodes.size} nodes, ${allWays.length} ways`);
   return { nodes: allNodes, ways: allWays };
 }
 
@@ -202,7 +203,6 @@ function buildGraphFromOSM(
   const nodeIdMap = new Map<number, string>();
   let nodeCounter = 0;
 
-  // Identify intersection/endpoint OSM nodes
   const nodeWayCount = new Map<number, number>();
   for (const way of osmWays) {
     for (const nid of way.nodes) nodeWayCount.set(nid, (nodeWayCount.get(nid) || 0) + 1);
@@ -212,7 +212,6 @@ function buildGraphFromOSM(
     const wayCount = nodeWayCount.get(nid) || 0;
     const dist = Math.sqrt((osmNode.lat - centerLat) ** 2 + (osmNode.lng - centerLng) ** 2);
     if (dist > 0.5) continue;
-    // Graph node only for intersections or endpoints — intermediate nodes kept as geometry
     if (wayCount >= 2 || wayCount === 1) {
       const graphId = `n${nodeCounter++}`;
       nodeIdMap.set(nid, graphId);
@@ -220,18 +219,21 @@ function buildGraphFromOSM(
     }
   }
 
-  const RDP_EPSILON = 0.00005; // ~5m in degrees
+  const RDP_EPSILON = 0.00005;
+  let edgeCount = 0;
+  const MAX_EDGES = 200000;
 
   for (const way of osmWays) {
+    if (edgeCount >= MAX_EDGES) break;
     const highway = way.tags?.highway || 'residential';
     const roadType = roadTypeFromHighway(highway);
+    if (roadType === 'residential') continue;
     const speed = speedForHighway(highway);
     const lanes = lanesForHighway(highway);
     const name = way.tags?.name || '';
     const oneWay = isOneway(way.tags);
     const reverseOneWay = isReverseOneway(way.tags);
 
-    // Collect consecutive graph-node pairs; gather ALL OSM nodes between them as geometry
     let segStart: string | null = null;
     let segGeom: GeoPoint[] = [];
 
@@ -239,60 +241,57 @@ function buildGraphFromOSM(
       const osmNid = way.nodes[i];
       const osmN = osmNodes.get(osmNid);
       if (!osmN) continue;
-
       const graphId = nodeIdMap.get(osmNid);
 
       if (graphId) {
-        // This is a graph node (intersection or endpoint)
         segGeom.push({ lat: osmN.lat, lng: osmN.lng });
-
         if (segStart && segStart !== graphId && segGeom.length >= 2) {
           const fNode = graphNodes.get(segStart)!;
           const tNode = graphNodes.get(graphId)!;
-          // Simplify intermediate geometry
           const simplified = rdp(segGeom, RDP_EPSILON);
           const dist = polylineLength(simplified);
           if (dist < 1) { segStart = graphId; segGeom = [{ lat: osmN.lat, lng: osmN.lng }]; continue; }
           const bearing = bearingFromDeg(fNode.lat, fNode.lng, tNode.lat, tNode.lng);
 
-          const addEdge = (eid: string, from: string, to: string, geom: GeoPoint[], bear: number) => {
-            if (graphEdges.has(eid)) return;
-            const edge: RoadEdge = {
-              id: eid, from, to, roadType, speedLimit: speed, lanes, length: dist,
-              bearing: bear, name, congestionWeight: 1,
-              geometry: geom,
-              oneway: oneWay || reverseOneWay,
-            };
-            graphEdges.set(eid, edge);
-            if (!adjacency.has(from)) adjacency.set(from, []);
-            adjacency.get(from)!.push(edge);
-          };
-
           if (!reverseOneWay) {
-            addEdge(`${segStart}-${graphId}`, segStart, graphId, simplified, bearing);
+            const eid = `${segStart}-${graphId}`;
+            if (!graphEdges.has(eid) && edgeCount < MAX_EDGES) {
+              graphEdges.set(eid, {
+                id: eid, from: segStart, to: graphId, roadType, speedLimit: speed, lanes,
+                length: dist, bearing, name, congestionWeight: 1, geometry: simplified, oneway: oneWay || reverseOneWay,
+              });
+              edgeCount++;
+              if (!adjacency.has(segStart)) adjacency.set(segStart, []);
+              adjacency.get(segStart)!.push(graphEdges.get(eid)!);
+            }
           }
           if (!oneWay) {
-            addEdge(
-              `${graphId}-${segStart}`, graphId, segStart,
-              [...simplified].reverse(),
-              (bearing + 180) % 360,
-            );
+            const eid = `${graphId}-${segStart}`;
+            if (!graphEdges.has(eid) && edgeCount < MAX_EDGES) {
+              graphEdges.set(eid, {
+                id: eid, from: graphId, to: segStart, roadType, speedLimit: speed, lanes,
+                length: dist, bearing: (bearing + 180) % 360, name, congestionWeight: 1,
+                geometry: [...simplified].reverse(), oneway: false,
+              });
+              edgeCount++;
+              if (!adjacency.has(graphId)) adjacency.set(graphId, []);
+              adjacency.get(graphId)!.push(graphEdges.get(eid)!);
+            }
           }
         }
         segStart = graphId;
         segGeom = [{ lat: osmN.lat, lng: osmN.lng }];
       } else {
-        // Intermediate geometry node — add to current segment geometry
         segGeom.push({ lat: osmN.lat, lng: osmN.lng });
       }
     }
   }
 
-  // Place signals at intersections with ≥3 connections (REQ-S1)
   let sigCount = 0;
   for (const [graphId, node] of graphNodes) {
+    if (sigCount >= MAX_OSM_SIGNALS) break;
     const adj = adjacency.get(graphId) || [];
-    if (adj.length >= 3) {
+    if (adj.length >= 3 && adj.some(e => e.roadType !== 'residential')) {
       sigCount++;
       const gd = 12 + Math.floor(Math.random() * 6);
       const approaches = deriveApproaches(graphId, adjacency);
@@ -313,35 +312,116 @@ function buildGraphFromOSM(
   return { nodes: graphNodes, edges: graphEdges, adjacency, signals };
 }
 
-// ── Public API ────────────────────────────────────────────────────────────────
+// ── Progressive loader ────────────────────────────────────────────────────────
+
+export interface LoadingPhase {
+  nodes: Map<string, RoadNode>;
+  edges: Map<string, RoadEdge>;
+  adjacency: Map<string, RoadEdge[]>;
+  signals: Map<string, TrafficSignal>;
+  phase: 'empty' | 'signals' | 'cached' | 'fallback' | 'full';
+  source: string;
+}
 
 const CENTER = { lat: 12.9716, lng: 77.5946 };
 const RADIUS = 40000;
 
-export async function loadBangaloreNetwork(forceRefresh = false) {
+export async function loadBangaloreNetwork(
+  onUpdate?: (phase: LoadingPhase) => void,
+  forceRefresh = false,
+): Promise<LoadingPhase> {
+  onUpdate?.({
+    nodes: new Map(), edges: new Map(), adjacency: new Map(), signals: new Map(),
+    phase: 'empty', source: 'none',
+  });
+
+  // Phase 1: signals (always instant)
+  try {
+    const points = await loadSignalPoints();
+    if (points) {
+      const sn = new Map<string, RoadNode>();
+      const ss = new Map<string, TrafficSignal>();
+      for (const p of points) {
+        sn.set(p.nodeId, { id: p.nodeId, lat: p.lat, lng: p.lng, isIntersection: true });
+        ss.set(p.nodeId, {
+          id: p.id, nodeId: p.nodeId, phases: createPhase('N', 12),
+          currentPhaseIndex: 0, timer: 0, cycleLength: 34, offset: 0,
+          greenWaveDirection: null, congestionLevel: 0, adaptiveTiming: true,
+          approaches: [],
+        });
+      }
+      onUpdate?.({
+        nodes: sn, edges: new Map(), adjacency: new Map(), signals: ss,
+        phase: 'signals', source: 'signals.json',
+      });
+    }
+  } catch { /* ignore */ }
+
+  // Phase 2: cached data (IndexedDB → Firebase Storage)
   if (!forceRefresh) {
-    const cached = loadGraphFromCache(CENTER.lat, CENTER.lng, RADIUS);
-    if (cached) return cached;
+    const cached = await loadGraphFromCache(CENTER.lat, CENTER.lng, RADIUS);
+    if (cached) {
+      const result: LoadingPhase = {
+        nodes: cached.graph.nodes, edges: cached.graph.edges,
+        adjacency: cached.graph.adjacency, signals: cached.signals,
+        phase: 'cached', source: 'IndexedDB',
+      };
+      onUpdate?.(result);
+      return result;
+    }
+
+    // Try Firebase Storage
+    try {
+      const stored = await loadOSMFromStorage(CENTER.lat, CENTER.lng, RADIUS);
+      if (stored && stored.ways.length > 5) {
+        const built = buildGraphFromOSM(stored.nodes, stored.ways, CENTER.lat, CENTER.lng);
+        const result: LoadingPhase = {
+          nodes: built.nodes, edges: built.edges,
+          adjacency: built.adjacency, signals: built.signals,
+          phase: 'cached', source: 'Firebase Storage',
+        };
+        onUpdate?.(result);
+        saveGraphToCache(CENTER.lat, CENTER.lng, RADIUS, { nodes: built.nodes, edges: built.edges, adjacency: built.adjacency }, built.signals);
+        return result;
+      }
+    } catch { /* ignore */ }
   }
 
-  try {
-    console.log('[WayFinder] Fetching OSM data for Bangalore (40km)…');
-    const { nodes, ways } = await fetchOSMRoads(CENTER.lat, CENTER.lng, RADIUS);
-    if (ways.length < 5) {
-      console.warn('[WayFinder] Too few ways from OSM, using fallback');
-      return loadFallback();
+  // Phase 3: fallback synthetic grid
+  const fallbackResult = loadFallback();
+  const fallbackPhase: LoadingPhase = { ...fallbackResult, phase: 'fallback', source: 'synthetic grid' };
+  onUpdate?.(fallbackPhase);
+
+  // Phase 4: background Overpass fetch
+  (async () => {
+    try {
+      console.log('[WayFinder] Background: fetching OSM data for Bangalore (40km).');
+      const rawData = await fetchOSMRoads(CENTER.lat, CENTER.lng, RADIUS);
+      if (!rawData || rawData.ways.length < 5) {
+        console.warn('[WayFinder] Background OSM returned too few ways, keeping synthetic');
+        return;
+      }
+      console.log(`[WayFinder] Background OSM: ${rawData.nodes.size} nodes, ${rawData.ways.length} ways`);
+      const built = buildGraphFromOSM(rawData.nodes, rawData.ways, CENTER.lat, CENTER.lng);
+      console.log(`[WayFinder] Background graph: ${built.nodes.size}n, ${built.edges.size}e, ${built.signals.size}s`);
+      onUpdate?.({
+        nodes: built.nodes, edges: built.edges,
+        adjacency: built.adjacency, signals: built.signals,
+        phase: 'full', source: 'Overpass API',
+      });
+      saveGraphToCache(CENTER.lat, CENTER.lng, RADIUS, { nodes: built.nodes, edges: built.edges, adjacency: built.adjacency }, built.signals);
+      const saved = await saveOSMToStorage(CENTER.lat, CENTER.lng, RADIUS, rawData.nodes, rawData.ways);
+      if (saved) {
+        console.log('[WayFinder] OSM data saved to Firebase Storage');
+      } else {
+        console.warn('[WayFinder] Storage save failed');
+      }
+    } catch (err) {
+      console.error('[WayFinder] Background OSM fetch failed:', err);
     }
-    console.log(`[WayFinder] OSM: ${nodes.size} raw nodes, ${ways.length} ways`);
-    const result = buildGraphFromOSM(nodes, ways, CENTER.lat, CENTER.lng);
-    console.log(`[WayFinder] Graph: ${result.nodes.size} nodes, ${result.edges.size} edges, ${result.signals.size} signals`);
-    saveGraphToCache(CENTER.lat, CENTER.lng, RADIUS, { nodes: result.nodes, edges: result.edges, adjacency: result.adjacency }, result.signals);
-    return result;
-  } catch (err) {
-    console.error('[WayFinder] OSM fetch failed:', err);
-    const cached = loadGraphFromCache(CENTER.lat, CENTER.lng, RADIUS);
-    if (cached) { console.warn('[WayFinder] Using stale cache after fetch failure'); return cached; }
-    return loadFallback();
-  }
+  })();
+
+  return fallbackPhase;
 }
 
 // ── Fallback grid ─────────────────────────────────────────────────────────────
@@ -428,7 +508,6 @@ export function findNearestNode(nodes: Map<string, RoadNode>, lat: number, lng: 
   return best;
 }
 
-/** Returns nodes on the periphery of the network — valid spawn/despawn points */
 export function getEdgeNodes(adjacency: Map<string, RoadEdge[]>): string[] {
   const result: string[] = [];
   for (const [id, edges] of adjacency) {

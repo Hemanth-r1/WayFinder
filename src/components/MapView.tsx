@@ -214,8 +214,16 @@ export default function MapView({
     if (!changed) return;
 
     layer.clearLayers();
+    const hasRoads = graph.edges.size > 0;
+    const mapZoom = mapRef.current?.getZoom() ?? 13;
+    const minEdgeCount = mapZoom <= 13 ? 0 : mapZoom <= 15 ? 2 : 3;
+
     for (const [nodeId, sig] of signals) {
       const node = graph.nodes.get(nodeId); if (!node) continue;
+      if (hasRoads && graph.edges.size > 0) {
+        const adjEdges = graph.adjacency.get(nodeId)?.length ?? 0;
+        if (adjEdges < minEdgeCount) continue;
+      }
       const phase = sig.phases[sig.currentPhaseIndex];
       const isGreen = phase.color === 'GREEN';
       const isYellow = phase.color === 'YELLOW';

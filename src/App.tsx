@@ -2,7 +2,6 @@ import { useRef, useState, useEffect, useCallback } from 'react';
 import { AuthProvider } from './context/AuthContext';
 import { useAuth } from './context/useAuth';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import { LoadingOverlay } from './components/LoadingSpinner';
 import MapView from './components/MapView';
 import RoleSelector from './components/RoleSelector';
 import UserPanel from './roles/UserPanel';
@@ -17,6 +16,7 @@ const TOD_COLOR: Record<string, string> = {
   early_morning: '#1a237e', morning_rush: '#e65100', midday: '#f9a825', evening_rush: '#bf360c', night: '#0d47a1',
 };
 const TOD_ICON: Record<string, string> = { early_morning: '🌙', morning_rush: '🌅', midday: '☀️', evening_rush: '🌆', night: '🌃' };
+const PHASE_LABEL: Record<string, string> = { empty: 'Initializing...', signals: 'Loading signals...', cached: 'Loading cached data...', fallback: 'Using fallback network', full: 'Live OSM data' };
 
 function AppContent() {
   const { role } = useAuth();
@@ -28,6 +28,7 @@ function AppContent() {
 
   const [paused, setPaused] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadingPhase, setLoadingPhase] = useState('empty');
   const [loadError, setLoadError] = useState<string | null>(null);
   const [overrideActive, setOverrideActive] = useState(false);
   const [overrideTimeRemaining, setOverrideTimeRemaining] = useState(0);
@@ -51,10 +52,30 @@ function AppContent() {
     const engine = new TrafficEngine();
     engineRef.current = engine;
 
+    engine.onGraphUpdate = (phase) => {
+      if (!active) return;
+      setEngineState(prev => ({
+        ...prev,
+        nodeCount: phase.nodes.size,
+        edgeCount: phase.edges.size,
+        signalCount: phase.signals.size,
+        graphVersion: Date.now(),
+      }));
+      setLoadingPhase(phase.phase);
+      if (phase.phase === 'fallback' || phase.phase === 'full' || phase.phase === 'cached') {
+        if (active && !engine.loaded) {
+          setLoading(false);
+          engine.loaded = true;
+        }
+      }
+    };
+
     engine.init().then(() => {
       if (!active) return;
       setLoading(false);
+      if (!engine.loaded) engine.loaded = true;
       engine.start();
+      console.log(`[WayFinder] Engine update [${engine.loadingPhase}]: ${engine.graph.nodes.size}n, ${engine.graph.edges.size}e, ${engine.signals.size}s`);
 
       const loop = (time: number) => {
         if (!active) return;
@@ -89,7 +110,6 @@ function AppContent() {
               signalCoordinationScore: engine.stats.signalCoordinationScore,
               graphVersion: Date.now(),
             };
-            // Skip update if nothing changed (avoids unnecessary re-renders)
             if (prev.vehicleCount === next.vehicleCount && prev.signalCount === next.signalCount
                 && prev.nodeCount === next.nodeCount && prev.avgSpeed === next.avgSpeed) return prev;
             return next;
@@ -196,8 +216,7 @@ function AppContent() {
     setLoading(false);
   }, []);
 
-  if (loading) return <LoadingOverlay message="Loading Bangalore road network…" />;
-  const e = engineRef.current; if (!e) return null;
+  const e = engineRef.current;
 
   return (
     <div style={{ width: '100vw', height: '100vh', display: 'flex', margin: 0, padding: 0, overflow: 'hidden' }}>
@@ -218,6 +237,14 @@ function AppContent() {
             <span style={{ fontSize: 14, fontWeight: 'bold', color: '#fff' }}>WayFinder</span>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            {(loading || loadingPhase !== 'full') && (
+              <span style={{
+                fontSize: 9, padding: '2px 6px', borderRadius: 4,
+                background: '#FF6D0022', border: '1px solid #FF6D0044', color: '#FF9800',
+              }}>
+                {PHASE_LABEL[loadingPhase] || loadingPhase}
+              </span>
+            )}
             <div style={{
               background: `${TOD_COLOR[timeOfDay] ?? '#333'}22`,
               border: `1px solid ${TOD_COLOR[timeOfDay] ?? '#444'}55`,
@@ -248,7 +275,7 @@ function AppContent() {
 
         {/* Role panels */}
         <div style={{ flex: 1, overflow: 'auto' }}>
-          {role === 'user' && (
+          {role === 'user' && e && (
             <UserPanel
               graph={e.graph} signals={e.signals}
               selectedSource={selectedSource} selectedDest={selectedDest}
@@ -256,13 +283,13 @@ function AppContent() {
               onSubmitRoute={handleSubmitRoute} submittedRoutes={userRoutes}
             />
           )}
-          {role === 'supporter' && (
+          {role === 'supporter' && e && (
             <SupporterPanel
               graph={e.graph} signals={e.signals}
               onAddSignal={handleAddSignal} addedSignals={addedSignals}
             />
           )}
-          {role === 'controller' && (
+          {role === 'controller' && e && (
             <ControllerPanel
               graph={e.graph} signals={e.signals}
               congestionZones={e.congestionZones} userRoutes={userRoutes}
@@ -303,19 +330,21 @@ function AppContent() {
 
       {/* ── Map ──────────────────────────────────────────────────────────── */}
       <div style={{ flex: 1, height: '100vh', position: 'relative' }}>
-        <MapView
-          graph={e.graph} signals={e.signals} vehicles={e.vehicles}
-          congestionZones={e.congestionZones} onNodeClick={handleNodeClick}
-          onCancelOverride={handleCancelOverride}
-          overrideActive={overrideActive} overrideTimeRemaining={overrideTimeRemaining}
-          selectedSource={selectedSource} selectedDest={selectedDest}
-          onSelectSource={setSelectedSource} onSelectDest={setSelectedDest}
-          role={role} graphVersion={engineState.graphVersion}
-          vehicleVersion={engineState.vehicleCount}
-          stats={engineState}
-          onAddSignal={handleAddSignal}
-          onSpawnVehicleAt={handleSpawnVehicleAt}
-        />
+        {e && (
+          <MapView
+            graph={e.graph} signals={e.signals} vehicles={e.vehicles}
+            congestionZones={e.congestionZones} onNodeClick={handleNodeClick}
+            onCancelOverride={handleCancelOverride}
+            overrideActive={overrideActive} overrideTimeRemaining={overrideTimeRemaining}
+            selectedSource={selectedSource} selectedDest={selectedDest}
+            onSelectSource={setSelectedSource} onSelectDest={setSelectedDest}
+            role={role} graphVersion={engineState.graphVersion}
+            vehicleVersion={engineState.vehicleCount}
+            stats={engineState}
+            onAddSignal={handleAddSignal}
+            onSpawnVehicleAt={handleSpawnVehicleAt}
+          />
+        )}
       </div>
     </div>
   );
