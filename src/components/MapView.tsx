@@ -39,6 +39,9 @@ interface MapViewProps {
   stats: { vehicleCount: number; avgSpeed: number; congestionHotspots: number; greenWaveActive: boolean; signalCoordinationScore: number };
   onAddSignal: (nodeId: string, lat: number, lng: number) => void;
   onSpawnVehicleAt: (nodeId: string, type: VehicleType) => void;
+  showHeatmap?: boolean;
+  speed?: number;
+  onSpeedChange?: (speed: number) => void;
 }
 
 interface ContextMenuState {
@@ -51,7 +54,7 @@ export default function MapView({
   graph, signals, vehicles, congestionZones, onNodeClick, onCancelOverride,
   overrideActive, overrideTimeRemaining, selectedSource, selectedDest,
   onSelectSource, onSelectDest, role, graphVersion, vehicleVersion, stats,
-  onAddSignal, onSpawnVehicleAt,
+  onAddSignal, onSpawnVehicleAt, showHeatmap: _showHeatmap, speed: _speed, onSpeedChange: _onSpeedChange,
 }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);

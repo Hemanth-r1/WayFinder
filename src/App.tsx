@@ -12,6 +12,7 @@ import { TrafficEngine } from './engine/TrafficEngine';
 import type { Direction, SignalColor, VehicleType, OptimizationResult } from './types';
 import type { UserRoute, SupporterSignal } from './types/roles';
 import { downloadStatsJSON, buildExportPayload } from './utils/exportStats';
+import ToastContainer from './components/Toast';
 
 const TOD_COLOR: Record<string, string> = {
   early_morning: '#1a237e', morning_rush: '#e65100', midday: '#f9a825', evening_rush: '#bf360c', night: '#0d47a1',
@@ -44,6 +45,10 @@ function AppContent() {
   const [selectedDest, setSelectedDest] = useState<string | null>(null);
   const [userRoutes, setUserRoutes] = useState<UserRoute[]>([]);
   const [addedSignals, setAddedSignals] = useState<SupporterSignal[]>([]);
+  const [speed, setSpeed] = useState(1);
+  const speedRef = useRef(1);
+  const [showHeatmap, setShowHeatmap] = useState(true);
+  useEffect(() => { speedRef.current = speed; }, [speed]);
 
   // ── Engine boot ───────────────────────────────────────────────────────────
   useEffect(() => {
@@ -58,7 +63,7 @@ function AppContent() {
 
       const loop = (time: number) => {
         if (!active) return;
-        const rawDelta = lastTimeRef.current ? (time - lastTimeRef.current) / 1000 : 0;
+        const rawDelta = lastTimeRef.current ? (time - lastTimeRef.current) / 1000 * speedRef.current : 0;
         lastTimeRef.current = time;
         const dt = Math.min(rawDelta, 0.05);
 
@@ -128,6 +133,18 @@ function AppContent() {
           break;
         case 'e': case 'E':
           engineRef.current?.spawnEmergencyVehicle(); break;
+        case 's': case 'S':
+          engineRef.current?.spawnVehicleFromDirection(
+            (['N', 'S', 'E', 'W'] as Direction[])[Math.floor(Math.random() * 4)]
+          );
+          break;
+        case 'h': case 'H':
+          setShowHeatmap(p => !p);
+          break;
+        case '1': setSpeed(0.5); break;
+        case '2': setSpeed(1); break;
+        case '3': setSpeed(2); break;
+        case '4': setSpeed(4); break;
       }
     };
     window.addEventListener('keydown', handleKey);
@@ -292,8 +309,11 @@ function AppContent() {
           </button>
           <div style={{ fontSize: 9, color: '#444', textAlign: 'center', fontFamily: 'monospace', marginBottom: 3 }}>
             <kbd style={{ background: '#111', padding: '1px 4px', border: '1px solid #333', borderRadius: 2 }}>Space</kbd> pause ·{' '}
+            <kbd style={{ background: '#111', padding: '1px 4px', border: '1px solid #333', borderRadius: 2 }}>S</kbd> spawn ·{' '}
             <kbd style={{ background: '#111', padding: '1px 4px', border: '1px solid #333', borderRadius: 2 }}>E</kbd> emergency ·{' '}
-            <kbd style={{ background: '#111', padding: '1px 4px', border: '1px solid #333', borderRadius: 2 }}>Esc</kbd> cancel override
+            <kbd style={{ background: '#111', padding: '1px 4px', border: '1px solid #333', borderRadius: 2 }}>H</kbd> heatmap ·{' '}
+            <kbd style={{ background: '#111', padding: '1px 4px', border: '1px solid #333', borderRadius: 2 }}>1-4</kbd> speed ·{' '}
+            <kbd style={{ background: '#111', padding: '1px 4px', border: '1px solid #333', borderRadius: 2 }}>Esc</kbd> cancel
           </div>
           <div style={{ fontSize: 10, color: '#555', textAlign: 'center', fontFamily: 'monospace' }}>
             {engineState.vehicleCount}v · {engineState.signalCount}s · {engineState.nodeCount}n
@@ -315,8 +335,12 @@ function AppContent() {
           stats={engineState}
           onAddSignal={handleAddSignal}
           onSpawnVehicleAt={handleSpawnVehicleAt}
+          showHeatmap={showHeatmap}
+          speed={speed}
+          onSpeedChange={setSpeed}
         />
       </div>
+      <ToastContainer />
     </div>
   );
 }
