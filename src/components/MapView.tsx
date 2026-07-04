@@ -43,6 +43,10 @@ interface MapViewProps {
   routePolyline?: [number, number][];
   speed?: number;
   onSpeedChange?: (speed: number) => void;
+  onStartNavigation: () => void;
+  routeInfo: import('../types').RouteInfo | null;
+  clearRoute: () => void;
+  navigatedVehicle: boolean;
 }
 
 interface ContextMenuState {
@@ -56,6 +60,7 @@ export default function MapView({
   overrideActive, overrideTimeRemaining, selectedSource, selectedDest,
   onSelectSource, onSelectDest, role, graphVersion, vehicleVersion, stats,
   onAddSignal, onSpawnVehicleAt, showHeatmap = true, routePolyline, speed: _speed, onSpeedChange: _onSpeedChange,
+  onStartNavigation, routeInfo, clearRoute, navigatedVehicle,
 }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -205,11 +210,11 @@ export default function MapView({
     }
   }, [selectedSource, selectedDest, graph]);
 
-  // ── Update signals (only on phase change) ────────────────────────────────
+  // ── Update signals (circles only, zoom-dependent LOD) ────────────────────
   useEffect(() => {
-    const layer = signalLayerRef.current; if (!layer) return;
+    const layer = signalLayerRef.current; if (!layer || !mapRef.current) return;
+    const map = mapRef.current;
 
-    // Check if any phase changed
     let changed = false;
     for (const [nodeId, sig] of signals) {
       const phase = sig.phases[sig.currentPhaseIndex];
@@ -222,25 +227,41 @@ export default function MapView({
     if (!changed) return;
 
     layer.clearLayers();
+
+    const zoom = map.getZoom();
+    // LOD: at low zoom, only show high-degree intersection signals
+    const minEdgeCount = zoom <= 13 ? 4 : zoom <= 15 ? 3 : 2;
+
     for (const [nodeId, sig] of signals) {
       const node = graph.nodes.get(nodeId); if (!node) continue;
+
+      // LOD filter: skip only when roads exist (signals-only mode shows all)
+      const hasRoads = graph.edges.size > 0;
+      const adjEdges = graph.adjacency.get(nodeId)?.length ?? 0;
+      if (hasRoads && adjEdges < minEdgeCount) continue;
+
       const phase = sig.phases[sig.currentPhaseIndex];
       const isGreen = phase.color === 'GREEN';
       const isYellow = phase.color === 'YELLOW';
       const color = isGreen ? '#00E676' : isYellow ? '#FFD600' : '#FF1744';
       const pulseSize = isGreen ? 9 : 7;
 
-      L.circleMarker([node.lat, node.lng], {
+      const circle = L.circleMarker([node.lat, node.lng], {
         radius: pulseSize, color, fillColor: color, fillOpacity: 0.9, weight: 3,
       }).addTo(layer);
 
-      L.marker([node.lat, node.lng], {
-        icon: L.divIcon({
-          className: '',
-          html: `<div style="position:absolute;top:-26px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.9);color:${color};padding:1px 6px;border-radius:3px;font-size:9px;font-family:monospace;font-weight:bold;white-space:nowrap;border:1px solid ${color}44;pointer-events:none;">${sig.id}<span style="color:#aaa"> ${phase.color}</span></div>`,
-          iconSize: [0, 0], iconAnchor: [0, 12],
-        }),
-      }).addTo(layer);
+      // Click shows popup with signal details
+      circle.bindPopup(`
+        <div style="font-family:monospace;font-size:11px;color:#ccc;background:#111;padding:8px;min-width:160px;">
+          <div style="font-weight:bold;color:#fff;margin-bottom:4px;">${sig.id}</div>
+          <div>Phase: <span style="color:${color}">${phase.color}</span> → ${phase.group}</div>
+          <div>Timer: ${sig.timer.toFixed(1)}s / ${phase.duration.toFixed(0)}s</div>
+          <div>Cycle: ${sig.cycleLength.toFixed(0)}s</div>
+          <div>Congestion: ${(sig.congestionLevel * 100).toFixed(0)}%</div>
+          <div>Edges: ${adjEdges}</div>
+          ${sig.greenWaveDirection ? `<div>Green Wave: ${sig.greenWaveDirection}</div>` : ''}
+        </div>
+      `, { className: 'wf-popup' });
     }
   }, [signals, graph]);
 
@@ -257,8 +278,9 @@ export default function MapView({
 
     for (const [, v] of vehicles) {
       const icon = VEHICLE_ICONS[v.type] || '🚗';
-      const rotation = Math.round(v.bearing / 15) * 15; // bucket to 15-degree increments
-      const iconKey = `${icon}_${rotation}_${v.color}`;
+      const rotation = Math.round(v.bearing / 15) * 15;
+      const navGlow = v.isNavigated ? 'box-shadow:0 0 8px 3px #4488FF;' : '';
+      const iconKey = `${icon}_${rotation}_${v.color}_${v.isNavigated ? 'nav' : ''}`;
       const existing = markers.get(v.id);
 
       if (existing) {
@@ -270,7 +292,7 @@ export default function MapView({
           if (!cachedIcon) {
             cachedIcon = L.divIcon({
               className: '',
-              html: `<div style="font-size:16px;transform:rotate(${rotation}deg);filter:drop-shadow(0 1px 3px ${v.color});transform-origin:center;">${icon}</div>`,
+              html: `<div style="font-size:16px;transform:rotate(${rotation}deg);filter:drop-shadow(0 1px 3px ${v.color});transform-origin:center;${navGlow}">${icon}</div>`,
               iconSize: [20, 20], iconAnchor: [10, 10],
             });
             iconCacheRef.current.set(iconKey, cachedIcon);
@@ -283,7 +305,7 @@ export default function MapView({
         if (!cachedIcon) {
           cachedIcon = L.divIcon({
             className: '',
-            html: `<div style="font-size:16px;transform:rotate(${rotation}deg);filter:drop-shadow(0 1px 3px ${v.color});transform-origin:center;">${icon}</div>`,
+            html: `<div style="font-size:16px;transform:rotate(${rotation}deg);filter:drop-shadow(0 1px 3px ${v.color});transform-origin:center;${navGlow}">${icon}</div>`,
             iconSize: [20, 20], iconAnchor: [10, 10],
           });
           iconCacheRef.current.set(iconKey, cachedIcon);
@@ -396,7 +418,16 @@ export default function MapView({
         </div>
       )}
 
-      <NavigationPanel />
+      <NavigationPanel
+        selectedSource={selectedSource}
+        selectedDest={selectedDest}
+        onSelectSource={onSelectSource}
+        onSelectDest={onSelectDest}
+        onStartNavigation={onStartNavigation}
+        routeInfo={routeInfo}
+        clearRoute={clearRoute}
+        navigatedVehicle={navigatedVehicle}
+      />
       <ControlPanel />
 
       {/* Context menu */}
@@ -420,6 +451,9 @@ export default function MapView({
           font-size: 11px !important;
         }
         .wf-tooltip::before { display: none !important; }
+        .wf-popup .leaflet-popup-content-wrapper { background: #111 !important; color: #ccc !important; border-radius: 6px !important; border: 1px solid #333 !important; }
+        .wf-popup .leaflet-popup-tip { background: #111 !important; border: 1px solid #333 !important; }
+        .wf-popup .leaflet-popup-close-button { color: #666 !important; }
       `}</style>
     </div>
   );

@@ -1,7 +1,16 @@
+# Task B1: Create Firebase config
+
+**Files:**
+- Create: `src/config/firebase.ts`
+
+## Requirements
+
+Create `src/config/firebase.ts` that initializes Firebase using VITE_FIREBASE_* environment variables:
+
+```typescript
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
-import { getStorage } from 'firebase/storage';
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -15,5 +24,13 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const db = getFirestore(app);
-export const storage = getStorage(app);
 export default app;
+```
+
+Also check `src/config/index.ts` — if it contains `FEATURE_FLAGS.ENABLE_FIREBASE: false`, remove that line.
+
+Run `npm run build` to verify.
+
+## Global Constraints
+- `verbatimModuleSyntax: true` — use `import type` for type-only imports
+- No test framework exists — verify with `npm run build`

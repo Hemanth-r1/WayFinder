@@ -169,10 +169,36 @@ function findLeadVehicle(vehicle: Vehicle, allVehicles: Map<string, Vehicle>): V
 
 // ── Signal check ──────────────────────────────────────────────────────────────
 
+/** Map vehicle bearing to NS or EW group */
+function bearingToGroup(bearing: number): 'NS' | 'EW' {
+  // Bearing 0 = N, 90 = E, 180 = S, 270 = W
+  // Vehicle moving N/S → NS group, moving E/W → EW group
+  const norm = ((bearing % 360) + 360) % 360;
+  if (norm > 315 || norm <= 45) return 'NS';  // moving N
+  if (norm > 135 && norm <= 225) return 'NS';  // moving S
+  return 'EW';  // moving E or W
+}
+
 function checkCanProceed(vehicle: Vehicle, signal: TrafficSignal | undefined): boolean {
   if (!signal) return true;
   const phase = signal.phases[signal.currentPhaseIndex];
-  if ((phase.color === 'RED' || phase.color === 'YELLOW') && vehicle.edgeProgress <= 0.85) return false;
+
+  // Check if vehicle's travel axis matches the active phase group
+  const vehicleGroup = bearingToGroup(vehicle.bearing);
+  const matchesGroup = phase.group === vehicleGroup;
+
+  if (phase.color === 'GREEN' && matchesGroup) return true;
+
+  // YELLOW: stop if not already past stop line (85% edge progress)
+  if (phase.color === 'YELLOW' && matchesGroup && vehicle.edgeProgress <= 0.85) return false;
+
+  // RED: stop regardless (unless past stop line during transition)
+  if (phase.color === 'RED' && vehicle.edgeProgress <= 0.85) return false;
+
+  // If phase doesn't match vehicle group (e.g., EW phase, NS vehicle), stop
+  if (!matchesGroup && vehicle.edgeProgress <= 0.85) return false;
+
+  // Already past stop line → clear the intersection
   return true;
 }
 
@@ -377,4 +403,23 @@ export function spawnVehicleAt(
     return createVehicle(type, startId, endId, routeInfo.path, graph);
   }
   return null;
+}
+
+/** Spawn a vehicle that follows a user-chosen origin → destination route */
+export function spawnNavigatedVehicle(
+  graph: RoadGraph,
+  sourceId: string,
+  destId: string,
+  signals: Map<string, TrafficSignal>,
+): Vehicle | null {
+  const routeInfo = aStarRoute(graph, sourceId, destId, signals);
+  if (!routeInfo || routeInfo.path.length < 2) return null;
+
+  const type: VehicleType = 'sedan';
+  const vehicle = createVehicle(type, sourceId, destId, routeInfo.path, graph);
+  if (!vehicle) return null;
+
+  vehicle.isNavigated = true;
+  vehicle.color = '#4488FF';
+  return vehicle;
 }

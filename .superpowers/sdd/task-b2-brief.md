@@ -1,3 +1,16 @@
+# Task B2: Rewrite AuthContext with Firebase Auth
+
+**Files:**
+- Rewrite: `src/context/AuthContext.tsx`
+- Update: `src/context/useAuth.ts`
+
+## Requirements
+
+Rewrite the AuthContext to use real Firebase Auth instead of local state. The current implementation uses a mock dropdown — replace it entirely.
+
+### `src/context/AuthContext.tsx`
+
+```typescript
 import { createContext, useEffect, useState, type ReactNode } from 'react';
 import {
   onAuthStateChanged,
@@ -16,7 +29,6 @@ export interface AuthState {
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
-  promoteRole: (newRole: string) => Promise<void>;
 }
 
 export const AuthContext = createContext<AuthState | null>(null);
@@ -62,15 +74,42 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await firebaseSignOut(auth);
   };
 
-  const promoteRole = async (newRole: string) => {
-    if (!user) return;
-    await setDoc(doc(db, 'users', user.uid), { role: newRole }, { merge: true });
-    setRole(newRole);
-  };
-
   return (
-    <AuthContext.Provider value={{ user, role, loading, signIn, signUp, signOut, promoteRole }}>
+    <AuthContext.Provider value={{ user, role, loading, signIn, signUp, signOut }}>
       {children}
     </AuthContext.Provider>
   );
 }
+```
+
+### `src/context/useAuth.ts`
+
+```typescript
+import { useContext } from 'react';
+import { AuthContext } from './AuthContext';
+import type { AuthState } from './AuthContext';
+
+export function useAuth(): AuthState {
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error('useAuth must be used within AuthProvider');
+  return ctx;
+}
+```
+
+### Interface changes
+
+The `useAuth` hook now returns:
+- `user: User | null` (Firebase User object, has `.email`, `.uid`)
+- `role: string` (from Firestore)
+- `loading: boolean` (true while initial auth check is happening)
+- `signIn(email, password): Promise<void>`
+- `signUp(email, password): Promise<void>`
+- `signOut(): Promise<void>`
+
+### Do NOT change any other files in this task.
+
+Run `npm run build` — must pass.
+
+## Global Constraints
+- `verbatimModuleSyntax: true` — use `import type` for type-only imports. If you import `User` type from firebase/auth, use `import { type User }` or `import { User }` depending on how firebase exports it.
+- `noUnusedLocals` / `noUnusedParameters` are errors

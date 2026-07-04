@@ -27,6 +27,7 @@ interface Props {
   onCancelOverride: () => void;
   onSpawnEmergency: () => void;
   onExportStats: () => void;
+  onExportSignals: () => void;
   onRunOptimizer: () => void;
   onRefreshRoads: () => void;
   lastOptResult: import('../types').OptimizationResult | null;
@@ -37,7 +38,7 @@ interface Props {
 export default function ControllerPanel({
   graph, signals, userRoutes, stats,
   onOverrideSignal, onOverrideRoute, onCancelOverride,
-  onSpawnEmergency, onExportStats, onRunOptimizer, onRefreshRoads, lastOptResult,
+  onSpawnEmergency, onExportStats, onExportSignals, onRunOptimizer, onRefreshRoads, lastOptResult,
   overrideActive, overrideTimeRemaining,
 }: Props) {
   const { user } = useAuth();
@@ -159,7 +160,11 @@ export default function ControllerPanel({
           </button>
           <button onClick={onExportStats}
             style={{ flex: 1, padding: '6px 8px', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 'bold', background: '#37474F' }}>
-            📥 Export
+            📊 Stats
+          </button>
+          <button onClick={onExportSignals}
+            style={{ flex: 1, padding: '6px 8px', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 'bold', background: '#FF6F00' }}>
+            📍 Signals
           </button>
           <button onClick={onRefreshRoads}
             style={{ flex: 1, padding: '6px 8px', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 'bold', background: '#1565C0' }}>

@@ -10,7 +10,7 @@ import UserPanel from './roles/UserPanel';
 import SupporterPanel from './roles/SupporterPanel';
 import ControllerPanel from './roles/ControllerPanel';
 import { TrafficEngine } from './engine/TrafficEngine';
-import type { Direction, SignalColor, VehicleType, OptimizationResult } from './types';
+import type { Direction, SignalColor, VehicleType, OptimizationResult, RouteInfo } from './types';
 import type { UserRoute } from './types/roles';
 import { downloadStatsJSON, buildExportPayload } from './utils/exportStats';
 import ToastContainer from './components/Toast';
@@ -44,16 +44,34 @@ function AppContent() {
   });
   const [selectedSource, setSelectedSource] = useState<string | null>(null);
   const [selectedDest, setSelectedDest] = useState<string | null>(null);
+  const [routeInfo, setRouteInfo] = useState<RouteInfo | null>(null);
+  const [navigatedVehicle, setNavigatedVehicle] = useState(false);
   const [speed, setSpeed] = useState(1);
   const speedRef = useRef(1);
   const [showHeatmap, setShowHeatmap] = useState(true);
   useEffect(() => { speedRef.current = speed; }, [speed]);
 
-  // ── Engine boot ───────────────────────────────────────────────────────────
+  // ── Engine boot (progressive) ─────────────────────────────────────────────
   useEffect(() => {
     let active = true;
     const engine = new TrafficEngine();
     engineRef.current = engine;
+
+    // Map renders immediately — graph updates trickle in
+    engine.onGraphUpdate = (phase: string) => {
+      if (!active) return;
+      setLoading(engine.loading);
+      if (phase !== 'empty' && phase !== 'fetching') {
+        setLoadError(null);
+        setEngineState(prev => ({
+          ...prev,
+          nodeCount: engine.graph.nodes.size,
+          edgeCount: engine.graph.edges.size,
+          signalCount: engine.signals.size,
+          graphVersion: engine.dataVersion,
+        }));
+      }
+    };
 
     engine.init().then(() => {
       if (!active) return;
@@ -91,11 +109,10 @@ function AppContent() {
               congestionHotspots: engine.stats.congestionHotspots,
               greenWaveActive: engine.stats.greenWaveActive,
               signalCoordinationScore: engine.stats.signalCoordinationScore,
-              graphVersion: Date.now(),
+              graphVersion: engine.dataVersion,
             };
-            // Skip update if nothing changed (avoids unnecessary re-renders)
             if (prev.vehicleCount === next.vehicleCount && prev.signalCount === next.signalCount
-                && prev.nodeCount === next.nodeCount && prev.avgSpeed === next.avgSpeed) return prev;
+                && prev.nodeCount === next.nodeCount && prev.avgSpeed === next.avgSpeed && prev.graphVersion === next.graphVersion) return prev;
             return next;
           });
         }
@@ -157,15 +174,21 @@ function AppContent() {
 
   const handleNodeClick = useCallback(() => {}, []);
 
-  const handleManualOverride = useCallback((signalId: string, direction: string, color: string) => {
-    engineRef.current?.manualOverrideSignal(signalId, direction as Direction, color as SignalColor);
-    setOverrideActive(true); overrideActiveRef.current = true;
+  /** Convert Direction (N/S/E/W) to NS/EW group */
+  const toGroup = useCallback((d: string): 'NS' | 'EW' => {
+    if (d === 'NS' || d === 'EW') return d as 'NS' | 'EW';
+    return (d === 'N' || d === 'S') ? 'NS' : 'EW';
   }, []);
 
-  const handleRouteOverride = useCallback((routeSignals: string[], direction: Direction, color: SignalColor) => {
-    for (const sigId of routeSignals) engineRef.current?.manualOverrideSignal(sigId, direction, color);
+  const handleManualOverride = useCallback((signalId: string, direction: string, color: string) => {
+    engineRef.current?.manualOverrideSignal(signalId, toGroup(direction), color as SignalColor);
     setOverrideActive(true); overrideActiveRef.current = true;
-  }, []);
+  }, [toGroup]);
+
+  const handleRouteOverride = useCallback((routeSignals: string[], direction: string, color: SignalColor) => {
+    for (const sigId of routeSignals) engineRef.current?.manualOverrideSignal(sigId, toGroup(direction), color);
+    setOverrideActive(true); overrideActiveRef.current = true;
+  }, [toGroup]);
 
   const handleCancelOverride = useCallback(() => {
     engineRef.current?.deactivateManualOverride();
@@ -201,11 +224,36 @@ function AppContent() {
     setLoading(false);
   }, []);
 
+  const handleStartNavigation = useCallback(() => {
+    const e = engineRef.current; if (!e) return;
+    if (!selectedSource || !selectedDest) return;
+    const r = e.computeRoute(selectedSource, selectedDest);
+    if (!r) return;
+    setRouteInfo(r);
+    const v = e.spawnNavigatedVehicle(selectedSource, selectedDest);
+    if (v) setNavigatedVehicle(true);
+  }, [selectedSource, selectedDest]);
+
+  const handleClearRoute = useCallback(() => {
+    setRouteInfo(null);
+    setNavigatedVehicle(false);
+  }, []);
+
+  const handleExportSignals = useCallback(async () => {
+    const e = engineRef.current; if (!e) return;
+    const json = await e.exportSignalsToJSON();
+    if (!json) return;
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'signals.json'; a.click();
+    URL.revokeObjectURL(url);
+  }, []);
+
   if (authLoading) return <LoadingOverlay message="Loading..." />;
   if (!user) return <LoginScreen />;
 
-  if (loading) return <LoadingOverlay message="Loading Bangalore road network…" />;
-  const e = engineRef.current; if (!e) return null;
+  const e = engineRef.current;
 
   return (
     <div style={{ width: '100vw', height: '100vh', display: 'flex', margin: 0, padding: 0, overflow: 'hidden' }}>
@@ -246,6 +294,13 @@ function AppContent() {
           </div>
         )}
 
+        {/* Loading indicator — always visible until full data arrives */}
+        {loading && (
+          <div style={{ margin: '8px 14px', padding: '6px 10px', background: '#4488FF11', border: '1px solid #4488FF33', borderRadius: 6, fontSize: 10, color: '#4488FF' }}>
+            <span>⏳ Loading: {engineRef.current?.loadingPhase === 'fetching' ? 'Fetching from Overpass API…' : engineRef.current?.loadingPhase === 'signals' ? 'Signal markers loaded, fetching roads…' : 'Loading road network…'}</span>
+          </div>
+        )}
+
         {/* Error banner */}
         {loadError && (
           <div style={{ margin: 8, padding: 8, background: '#FF980011', border: '1px solid #FF980033', borderRadius: 6 }}>
@@ -258,26 +313,33 @@ function AppContent() {
         <div style={{ flex: 1, overflow: 'auto' }}>
           {role === 'user' && (
             <UserPanel
-              graph={e.graph} signals={e.signals}
+              graph={e?.graph ?? { nodes: new Map(), edges: new Map(), adjacency: new Map() }}
+              signals={e?.signals ?? new Map()}
               selectedSource={selectedSource} selectedDest={selectedDest}
               onSelectSource={setSelectedSource} onSelectDest={setSelectedDest}
             />
           )}
           {role === 'supporter' && (
             <SupporterPanel
-              graph={e.graph} signals={e.signals}
+              graph={e?.graph ?? { nodes: new Map(), edges: new Map(), adjacency: new Map() }}
+              signals={e?.signals ?? new Map()}
             />
           )}
           {role === 'controller' && (
             <ControllerPanel
-              graph={e.graph} signals={e.signals}
-              congestionZones={e.congestionZones} userRoutes={[] as UserRoute[]}
-              stats={e.stats}
+              graph={e?.graph ?? { nodes: new Map(), edges: new Map(), adjacency: new Map() }}
+              signals={e?.signals ?? new Map()}
+              congestionZones={e?.congestionZones ?? []} userRoutes={[] as UserRoute[]}
+              stats={e?.stats ?? {
+                totalVehicles: 0, avgSpeed: 0, avgDelay: 0, congestionHotspots: 0,
+                greenWaveActive: false, signalCoordinationScore: 0, throughput: 0, maxCongestion: 0,
+              }}
               onOverrideSignal={handleManualOverride}
               onOverrideRoute={handleRouteOverride}
               onCancelOverride={handleCancelOverride}
               onSpawnEmergency={handleSpawnEmergency}
               onExportStats={handleExportStats}
+              onExportSignals={handleExportSignals}
               onRunOptimizer={handleRunOptimizer}
               onRefreshRoads={handleRefreshRoads}
               lastOptResult={lastOptResult}
@@ -323,23 +385,30 @@ function AppContent() {
         </div>
       </div>
 
-      {/* ── Map ──────────────────────────────────────────────────────────── */}
+      {/* ── Map (always visible) ─────────────────────────────────────────── */}
       <div style={{ flex: 1, height: '100vh', position: 'relative' }}>
         <MapView
-          graph={e.graph} signals={e.signals} vehicles={e.vehicles}
-          congestionZones={e.congestionZones} onNodeClick={handleNodeClick}
+          graph={e?.graph ?? { nodes: new Map(), edges: new Map(), adjacency: new Map() }}
+          signals={e?.signals ?? new Map()}
+          vehicles={e?.vehicles ?? new Map()}
+          congestionZones={e?.congestionZones ?? []}
+          onNodeClick={handleNodeClick}
           onCancelOverride={handleCancelOverride}
           overrideActive={overrideActive} overrideTimeRemaining={overrideTimeRemaining}
           selectedSource={selectedSource} selectedDest={selectedDest}
           onSelectSource={setSelectedSource} onSelectDest={setSelectedDest}
           role={role} graphVersion={engineState.graphVersion}
-          vehicleVersion={engineState.vehicleCount}
+          vehicleVersion={engineState.graphVersion}
           stats={engineState}
           onAddSignal={handleAddSignal}
           onSpawnVehicleAt={handleSpawnVehicleAt}
           showHeatmap={showHeatmap}
           speed={speed}
           onSpeedChange={setSpeed}
+          onStartNavigation={handleStartNavigation}
+          routeInfo={routeInfo}
+          clearRoute={handleClearRoute}
+          navigatedVehicle={navigatedVehicle}
         />
       </div>
       <ToastContainer />
