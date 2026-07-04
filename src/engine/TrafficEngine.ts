@@ -154,13 +154,23 @@ export class TrafficEngine {
     if (v) this.vehicles.set(v.id, v);
   }
 
-  spawnVehicleFromDirection(_direction: Direction, type?: VehicleType): void {
-    const vType = type || (['sedan', 'suv', 'hatchback', 'bike', 'auto'] as VehicleType[])[Math.floor(Math.random() * 5)];
-    const v = spawnRandomVehicle(this.graph, this.signals);
-    if (v) {
-      (v as Vehicle & { type: VehicleType }).type = vType;
-      this.vehicles.set(v.id, v);
-    }
+  spawnVehicleFromDirection(direction: Direction, type?: VehicleType): void {
+    const edgeNodes = Array.from(this.graph.nodes.entries()).filter(([id, _node]) => {
+      const adj = this.graph.adjacency.get(id) || [];
+      return adj.some(e => {
+        const bearing = e.bearing;
+        if (direction === 'N') return bearing > 315 || bearing <= 45;
+        if (direction === 'S') return bearing > 135 && bearing <= 225;
+        if (direction === 'E') return bearing > 45 && bearing <= 135;
+        if (direction === 'W') return bearing > 225 && bearing <= 315;
+        return false;
+      });
+    });
+    if (edgeNodes.length === 0) return;
+    const startId = edgeNodes[Math.floor(Math.random() * edgeNodes.length)][0];
+    const vType = type || (['sedan', 'sedan', 'suv', 'hatchback', 'bike', 'auto'] as VehicleType[])[Math.floor(Math.random() * 6)];
+    const v = spawnVehicleAt(this.graph, startId, vType, this.signals);
+    if (v) this.vehicles.set(v.id, v);
   }
 
   spawnEmergencyVehicle(): void {
@@ -202,32 +212,19 @@ export class TrafficEngine {
   }
 
   manualOverrideSignal(signalId: string, direction: Direction, color: SignalColor): void {
-    const signal = this.signals.get(signalId); if (!signal) return;
+    const signal = this.signals.get(signalId);
+    if (!signal) return;
     this.manualOverrideActive = true;
     this.manualOverrideTimer = 0;
     signal.adaptiveTiming = false;
 
-    for (const [, other] of this.signals) {
-      other.adaptiveTiming = false;
-      if (other.id === signalId) {
-        for (const phase of other.phases) {
-          if (phase.direction === direction) { phase.color = color; phase.duration = color === 'GREEN' ? 30 : 5; }
-          else { phase.color = color === 'GREEN' ? 'RED' : 'GREEN'; phase.duration = color === 'GREEN' ? 5 : 25; }
-        }
+    for (const phase of signal.phases) {
+      if (phase.direction === direction) {
+        phase.color = color;
+        phase.duration = color === 'GREEN' ? 30 : 5;
       } else {
-        const otherNode = this.graph.nodes.get(other.nodeId);
-        const overrideNode = this.graph.nodes.get(signal.nodeId);
-        if (otherNode && overrideNode) {
-          const isNS = Math.abs(otherNode.lat - overrideNode.lat) > Math.abs(otherNode.lng - overrideNode.lng);
-          for (const phase of other.phases) {
-            const dirNS = phase.direction === 'N' || phase.direction === 'S';
-            if ((isNS && dirNS) || (!isNS && !dirNS)) {
-              phase.color = color; phase.duration = color === 'GREEN' ? 25 : 5;
-            } else {
-              phase.color = color === 'GREEN' ? 'RED' : 'GREEN'; phase.duration = color === 'GREEN' ? 5 : 20;
-            }
-          }
-        }
+        phase.color = color === 'GREEN' ? 'RED' : 'GREEN';
+        phase.duration = color === 'GREEN' ? 5 : 25;
       }
     }
   }
