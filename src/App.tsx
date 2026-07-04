@@ -31,7 +31,7 @@ function AppContent() {
 
   const [paused, setPaused] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [loadingPhase, setLoadingPhase] = useState('empty');
+  const [loadingPhase, setLoadingPhase] = useState<string>('empty');
   const [loadError, setLoadError] = useState<string | null>(null);
   const [overrideActive, setOverrideActive] = useState(false);
   const [overrideTimeRemaining, setOverrideTimeRemaining] = useState(0);
@@ -63,6 +63,7 @@ function AppContent() {
     engine.onGraphUpdate = (phase: string) => {
       if (!active) return;
       setLoading(engine.loading);
+      setLoadingPhase(phase);
       if (phase !== 'empty' && phase !== 'fetching') {
         setLoadError(null);
         setEngineState(prev => ({

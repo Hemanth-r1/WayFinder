@@ -212,8 +212,7 @@ export default function MapView({
 
   // ── Update signals (circles only, zoom-dependent LOD) ────────────────────
   useEffect(() => {
-    const layer = signalLayerRef.current; if (!layer || !mapRef.current) return;
-    const map = mapRef.current;
+    const layer = signalLayerRef.current; if (!layer) return;
 
     let changed = false;
     for (const [nodeId, sig] of signals) {
@@ -233,20 +232,6 @@ export default function MapView({
 
     for (const [nodeId, sig] of signals) {
       const node = graph.nodes.get(nodeId); if (!node) continue;
-      if (hasRoads && graph.edges.size > 0) {
-        const adjEdges = graph.adjacency.get(nodeId)?.length ?? 0;
-        if (adjEdges < minEdgeCount) continue;
-      }
-
-    const zoom = map.getZoom();
-    // LOD: at low zoom, only show high-degree intersection signals
-    const minEdgeCount = zoom <= 13 ? 4 : zoom <= 15 ? 3 : 2;
-
-    for (const [nodeId, sig] of signals) {
-      const node = graph.nodes.get(nodeId); if (!node) continue;
-
-      // LOD filter: skip only when roads exist (signals-only mode shows all)
-      const hasRoads = graph.edges.size > 0;
       const adjEdges = graph.adjacency.get(nodeId)?.length ?? 0;
       if (hasRoads && adjEdges < minEdgeCount) continue;
 
