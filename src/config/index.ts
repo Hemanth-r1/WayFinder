@@ -85,7 +85,6 @@ export const UI_CONFIG = {
 
 // Feature Flags
 export const FEATURE_FLAGS = {
-  ENABLE_FIREBASE: false, // Set to true when Firebase is configured
   ENABLE_GOOGLE_MAPS: false, // Set to true when Google Maps is configured
   ENABLE_PERSISTENCE: false,
   ENABLE_ANALYTICS: true,

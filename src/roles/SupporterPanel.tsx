@@ -1,25 +1,56 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import { collection, onSnapshot, addDoc, serverTimestamp } from 'firebase/firestore';
+import { db } from '../config/firebase';
+import { useAuth } from '../context/useAuth';
 import type { RoadGraph, TrafficSignal } from '../types';
 import type { SupporterSignal } from '../types/roles';
 
 interface Props {
   graph: RoadGraph; signals: Map<string, TrafficSignal>;
-  onAddSignal: (nodeId: string, lat: number, lng: number) => void;
-  addedSignals: SupporterSignal[];
 }
 
-export default function SupporterPanel({ graph, signals, onAddSignal, addedSignals }: Props) {
+export default function SupporterPanel({ graph, signals }: Props) {
+  const { user } = useAuth();
   const [mode, setMode] = useState<'view' | 'add'>('view');
   const [roadName, setRoadName] = useState('');
   const [placementPos, setPlacementPos] = useState<{ lat: number; lng: number } | null>(null);
+  const [firebaseSignals, setFirebaseSignals] = useState<SupporterSignal[]>([]);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'signals'), (snapshot) => {
+      const list: SupporterSignal[] = snapshot.docs.map(doc => {
+        const d = doc.data();
+        return {
+          id: doc.id,
+          supporterId: d.supporterId ?? '',
+          lat: d.lat ?? 0,
+          lng: d.lng ?? 0,
+          roadName: d.roadName ?? '',
+          signalType: d.signalType ?? 'smart',
+          timestamp: d.timestamp?.toMillis() ?? Date.now(),
+          notes: d.notes ?? '',
+        };
+      });
+      setFirebaseSignals(list);
+    });
+    return unsub;
+  }, []);
+
   const signalList = useMemo(() => Array.from(signals.values()), [signals]);
   const gapNodes = useMemo(() => Array.from(graph.nodes.values()).filter(n => { const adj = graph.adjacency.get(n.id) || []; return adj.length >= 3 && !signals.has(n.id); }), [graph, signals]);
 
   const handlePlace = useCallback(() => {
-    if (!placementPos) return;
-    onAddSignal(roadName || 'unknown', placementPos.lat, placementPos.lng);
+    if (!placementPos || !user) return;
+    addDoc(collection(db, 'signals'), {
+      supporterId: user.uid,
+      nodeId: roadName || 'unknown',
+      lat: placementPos.lat,
+      lng: placementPos.lng,
+      roadName: roadName || 'unknown',
+      signalType: 'smart',
+      timestamp: serverTimestamp(),
+    });
     setPlacementPos(null); setRoadName(''); setMode('view');
-  }, [placementPos, roadName, onAddSignal]);
+  }, [placementPos, roadName, user]);
 
   return (
     <div style={{ padding: '0 14px' }}>
@@ -62,10 +93,10 @@ export default function SupporterPanel({ graph, signals, onAddSignal, addedSigna
           })}
         </div>
       </div>
-      {addedSignals.length > 0 && (
+      {firebaseSignals.length > 0 && (
         <div style={styles.section}>
-          <div style={styles.sectionTitle}>Your Signals ({addedSignals.length})</div>
-          {addedSignals.map((s) => (
+          <div style={styles.sectionTitle}>Your Signals ({firebaseSignals.length})</div>
+          {firebaseSignals.map((s) => (
             <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' }}>
               <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#FF9800', flexShrink: 0 }} />
               <span style={{ flex: 1, fontSize: 11, fontFamily: 'monospace', color: '#fff' }}>{s.roadName}</span>

@@ -68,28 +68,6 @@ export const ROLE_PERMISSIONS: Record<AppRole, RolePermissions> = {
   },
 };
 
-/** Role display metadata */
-export const ROLE_INFO: Record<AppRole, { label: string; icon: string; color: string; description: string }> = {
-  user: {
-    label: 'User',
-    icon: '\u{1F697}',
-    color: '#2196F3',
-    description: 'Navigate the city, provide route info for analytics',
-  },
-  supporter: {
-    label: 'Supporter',
-    icon: '\u{1F6A7}',
-    color: '#FF9800',
-    description: 'Add and maintain traffic signals on the map',
-  },
-  controller: {
-    label: 'Controller',
-    icon: '\u{1F3EB}',
-    color: '#4CAF50',
-    description: 'Manage all signals, override routes, optimize traffic flow',
-  },
-};
-
 /** User-submitted route information */
 export interface UserRoute {
   id: string;

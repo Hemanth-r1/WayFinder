@@ -47,7 +47,7 @@ function estimateDelay(
 
     // Current phase determines wait
     const phase = sig.phases[sig.currentPhaseIndex];
-    const isNS = phase.direction === 'N' || phase.direction === 'S';
+    const isNS = phase.group === 'NS';
     const greenTime = isNS ? entry.greenNS : entry.greenEW;
     const redTime = entry.cycleLength - greenTime - 3; // subtract yellow
 
@@ -144,8 +144,8 @@ function applyGreenWaveConstraint(
 function buildInitialPlan(signals: Map<string, TrafficSignal>): Map<string, SignalPlanEntry> {
   const plan = new Map<string, SignalPlanEntry>();
   for (const [, sig] of signals) {
-    const greenNS = Math.max(SIGNAL_TIMING.minGreen, sig.phases.find(p => p.direction === 'N')?.duration ?? 15);
-    const greenEW = Math.max(SIGNAL_TIMING.minGreen, sig.phases.find(p => p.direction === 'E')?.duration ?? 12);
+    const greenNS = Math.max(SIGNAL_TIMING.minGreen, sig.phases.find(p => p.group === 'NS' && p.color === 'GREEN')?.duration ?? 15);
+    const greenEW = Math.max(SIGNAL_TIMING.minGreen, sig.phases.find(p => p.group === 'EW' && p.color === 'GREEN')?.duration ?? 12);
     plan.set(sig.id, {
       signalId: sig.id,
       greenNS,
@@ -224,7 +224,7 @@ export function applyOptimizationPlan(
       sig.offset = entry.offset;
       // Update phase durations
       for (const phase of sig.phases) {
-        const isNS = phase.direction === 'N' || phase.direction === 'S';
+        const isNS = phase.group === 'NS';
         if (phase.color === 'GREEN' || phase.color === 'RED') {
           phase.duration = Math.max(SIGNAL_TIMING.minGreen, isNS ? entry.greenNS : entry.greenEW);
         }

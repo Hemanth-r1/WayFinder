@@ -1,10 +1,12 @@
 import type {
   RoadGraph, TrafficSignal, Vehicle, CongestionZone, TrafficStats, Direction, SignalColor, VehicleType, OptimizationResult,
 } from '../types';
-import { loadBangaloreNetwork, type LoadingPhase } from '../data/roadNetwork';
+import { loadBangaloreNetwork, type LoadUpdate, type LoadPhase } from '../data/roadNetwork';
 import { clearGraphCache } from '../data/graphCache';
-import { updateAdaptiveSignals, coordinateGreenWave, getDominantFlowDirection } from './signalControl';
-import { spawnRandomVehicle, spawnVehicleAt, updateVehicle } from './vehicleSim';
+import { updateAdaptiveSignals, coordinateGreenWave } from './signalControl';
+import { spawnRandomVehicle, spawnVehicleAt, spawnNavigatedVehicle, updateVehicle } from './vehicleSim';
+import { aStarRoute } from './pathfinding';
+import type { RouteInfo } from '../types';
 import { detectCongestionZones, computeStats } from './congestion';
 import { SIMULATION_CONFIG, SIGNAL_CONFIG } from '../config';
 import { createSimClock, tickClock, getCurrentProfile, type SimClock, type TimeOfDay, classifyHour } from './timeOfDay';
@@ -28,9 +30,11 @@ export class TrafficEngine {
   running = false;
   loading = false;
   loaded = false;
-  loadingPhase: string = 'empty';
-  dataVersion: number = 0;
-  onGraphUpdate?: (phase: LoadingPhase) => void;
+  loadingPhase: LoadPhase = 'empty';
+  /** Incremented whenever graph/signals data is replaced, triggers MapView re-render */
+  dataVersion = 0;
+
+  onGraphUpdate?: (phase: LoadPhase) => void;
 
   simClock: SimClock = createSimClock(8, 2);
   get timeOfDay(): TimeOfDay { return classifyHour(this.simClock.hour); }
@@ -49,23 +53,27 @@ export class TrafficEngine {
 
   async init(forceRefresh = false): Promise<void> {
     this.loading = true;
-    this.loadingPhase = 'loading';
+    this.dataVersion++;
 
-    const result = await loadBangaloreNetwork((phase) => {
-      this.graph = { nodes: phase.nodes, edges: phase.edges, adjacency: phase.adjacency };
-      this.signals = phase.signals;
-      this.loadingPhase = phase.phase;
-      this.dataVersion = Date.now();
-      this.onGraphUpdate?.(phase);
+    await loadBangaloreNetwork((update: LoadUpdate) => {
+      if (update.phase === 'fetching') {
+        // Don't replace graph during fetch — just show status
+        this.loadingPhase = 'fetching';
+        this.onGraphUpdate?.(this.loadingPhase);
+        return;
+      }
+      this.graph = { nodes: update.nodes, edges: update.edges, adjacency: update.adjacency };
+      this.signals = update.signals;
+      this.loadingPhase = update.phase;
+      this.dataVersion++;
+      this.loading = false;
+      this.loaded = true;
+      this.onGraphUpdate?.(this.loadingPhase);
+      console.log(`[WayFinder] Engine update [${update.phase}]: ${update.nodes.size}n, ${update.edges.size}e, ${update.signals.size}s from ${update.source}`);
     }, forceRefresh);
 
-    this.graph = { nodes: result.nodes, edges: result.edges, adjacency: result.adjacency };
-    this.signals = result.signals;
-    this.loadingPhase = result.phase;
     this.loading = false;
     this.loaded = true;
-    this.dataVersion = Date.now();
-    console.log(`[WayFinder] Engine update [${result.phase}]: ${result.nodes.size}n, ${result.edges.size}e, ${result.signals.size}s from ${result.source}`);
   }
 
   start(): void {
@@ -107,11 +115,11 @@ export class TrafficEngine {
       );
     }
 
-    const dominant = getDominantFlowDirection(this.vehicles);
+    // Adaptive signals
     if (!this.manualOverrideActive) {
-      updateAdaptiveSignals(this.signals, this.vehicles, this.graph.nodes, dt);
+      updateAdaptiveSignals(this.signals, this.vehicles, this.graph.nodes, this.graph, dt);
       if (this.vehicles.size > SIGNAL_CONFIG.GREEN_WAVE_MIN_VEHICLES) {
-        coordinateGreenWave(this.signals, this.graph.nodes, dominant);
+        coordinateGreenWave(this.signals, this.graph.nodes, this.graph, this.vehicles);
       }
     }
 
@@ -182,6 +190,19 @@ export class TrafficEngine {
     this.vehicles.set(emergency.id, emergency);
   }
 
+  /** Spawn a navigation vehicle from user-chosen source → dest */
+  spawnNavigatedVehicle(sourceId: string, destId: string): Vehicle | null {
+    const v = spawnNavigatedVehicle(this.graph, sourceId, destId, this.signals);
+    if (v) { this.vehicles.set(v.id, v); }
+    return v ?? null;
+  }
+
+  /** Compute A* route for display without spawning a vehicle */
+  computeRoute(sourceId: string, destId: string): RouteInfo | null {
+    return aStarRoute(this.graph, sourceId, destId, this.signals);
+  }
+
+  /** Add a signal at a node (from Supporter panel / context menu) */
   addSignalAtNode(nodeId: string): boolean {
     if (this.signals.has(nodeId)) return false;
     const node = this.graph.nodes.get(nodeId); if (!node) return false;
@@ -209,7 +230,7 @@ export class TrafficEngine {
     this.start();
   }
 
-  manualOverrideSignal(signalId: string, direction: Direction, color: SignalColor): void {
+  manualOverrideSignal(signalId: string, group: 'NS' | 'EW', color: SignalColor): void {
     const signal = this.signals.get(signalId);
     if (!signal) return;
     this.manualOverrideActive = true;
@@ -217,8 +238,8 @@ export class TrafficEngine {
     signal.adaptiveTiming = false;
 
     for (const phase of signal.phases) {
-      if (phase.direction === direction) {
-        phase.color = color;
+      if (phase.group === group) {
+        phase.color = color === 'GREEN' ? 'GREEN' : 'RED';
         phase.duration = color === 'GREEN' ? 30 : 5;
       } else {
         phase.color = color === 'GREEN' ? 'RED' : 'GREEN';
@@ -239,6 +260,14 @@ export class TrafficEngine {
   getManualOverrideTimeRemaining(): number { return Math.max(0, this.manualOverrideDuration - this.manualOverrideTimer); }
   hasEmergencyOverride(): boolean { return this.emergencyOverrides.size > 0; }
   getEmergencyOverrideCount(): number { return this.emergencyOverrides.size; }
+
+  /** Build downloadable JSON of signal positions */
+  async exportSignalsToJSON(): Promise<string | null> {
+    if (this.signals.size === 0 || this.graph.nodes.size === 0) return null;
+    const { serializeSignals, extractSignalPoints } = await import('../data/signalStore');
+    const points = extractSignalPoints(this.signals, this.graph.nodes);
+    return serializeSignals(points);
+  }
 }
 
 export type { Vehicle };
