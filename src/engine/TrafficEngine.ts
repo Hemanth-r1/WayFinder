@@ -1,15 +1,12 @@
 import type {
-  RoadGraph, TrafficSignal, Vehicle, CongestionZone, TrafficStats, Direction, SignalColor, VehicleType, SLAStats, CorridorInfo,
+  RoadGraph, TrafficSignal, Vehicle, CongestionZone, TrafficStats, Direction, SignalColor, VehicleType,
 } from '../types';
 import { loadBangaloreNetwork, type LoadUpdate, type LoadPhase } from '../data/roadNetwork';
 import { clearGraphCache } from '../data/graphCache';
-import { computeSLAStats } from './slaMonitor';
-import { detectCorridors } from './corridorDetector';
 import { spawnRandomVehicle, spawnVehicleAt, spawnNavigatedVehicle, updateVehicle } from './vehicleSim';
 import { aStarRoute } from './pathfinding';
 import type { RouteInfo } from '../types';
-import { detectCongestionZones, computeStats } from './congestion';
-import { SIMULATION_CONFIG, SIGNAL_CONFIG } from '../config';
+import { SIMULATION_CONFIG } from '../config';
 import { SIGNAL_TIMING } from '../types';
 import { createSimClock, tickClock, getCurrentProfile, type SimClock, type TimeOfDay, classifyHour } from './timeOfDay';
 import { ControllerManager } from './controller/ControllerManager';
@@ -48,12 +45,6 @@ export class TrafficEngine {
 
   private spawnTimer = 0;
   private maxVehicles: number = SIMULATION_CONFIG.MAX_VEHICLES;
-  private slaStats: SLAStats = {
-    fleetAvgSpeedKmh: 0, slaCompliant: false, vehicleCount: 0,
-    emergencyAvgSpeedKmh: 0, emergencyCompliant: false,
-  };
-  private corridors: CorridorInfo[] = [];
-  private corridorTimer = 0;
 
   async init(forceRefresh = false): Promise<void> {
     this.loading = true;
@@ -111,24 +102,8 @@ export class TrafficEngine {
       this.signals, this.vehicles, this.graph, dt, this.simSeconds, profile,
     );
 
-    this.slaStats = computeSLAStats(this.vehicles);
-    this.stats.slaSpeed = this.slaStats.fleetAvgSpeedKmh;
-    this.stats.slaCompliant = this.slaStats.slaCompliant;
-    this.stats.emergencySlaSpeed = this.slaStats.emergencyAvgSpeedKmh;
-
-    this.corridorTimer += dt;
-    if (this.corridorTimer >= SIGNAL_CONFIG.CORRIDOR.DETECT_INTERVAL) {
-      this.corridorTimer = 0;
-      this.corridors = detectCorridors(this.vehicles, this.graph, this.signals);
-    }
-    this.stats.activeCorridors = this.corridors.length;
-
-    this.congestionZones = detectCongestionZones(this.vehicles, this.graph.nodes);
-    this.stats = computeStats(this.vehicles, this.congestionZones);
-    this.stats.slaSpeed = this.slaStats.fleetAvgSpeedKmh;
-    this.stats.slaCompliant = this.slaStats.slaCompliant;
-    this.stats.emergencySlaSpeed = this.slaStats.emergencyAvgSpeedKmh;
-    this.stats.activeCorridors = this.corridors.length;
+    // Heavy computation removed — client only simulates vehicle movement
+    // Congestion, SLA, corridors computed server-side via serverSync
 
     const active = Array.from(this.signals.values()).filter(s => s.greenWaveDirection !== null).length;
     this.stats.greenWaveActive = active > this.signals.size * 0.3;

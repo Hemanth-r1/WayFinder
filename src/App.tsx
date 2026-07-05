@@ -14,6 +14,7 @@ import type { Direction, SignalColor, VehicleType, RouteInfo } from './types';
 import type { UserRoute } from './types/roles';
 import { downloadStatsJSON, buildExportPayload } from './utils/exportStats';
 import ToastContainer from './components/Toast';
+import { fetchCongestion } from './engine/serverSync';
 
 const TOD_COLOR: Record<string, string> = {
   early_morning: '#1a237e', morning_rush: '#e65100', midday: '#f9a825', evening_rush: '#bf360c', night: '#0d47a1',
@@ -175,6 +176,20 @@ function AppContent() {
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
+  }, []);
+
+  // ── Server polling ────────────────────────────────────────────────────
+  useEffect(() => {
+    const ival = setInterval(async () => {
+      const e = engineRef.current;
+      if (!e || !e.loaded) return;
+      try {
+        const { zones, stats } = await fetchCongestion(e.vehicles, e.graph.nodes);
+        e.congestionZones = zones;
+        e.stats = { ...e.stats, ...stats };
+      } catch { /* server offline — use local defaults */ }
+    }, 5000);
+    return () => clearInterval(ival);
   }, []);
 
   // ── Handlers ──────────────────────────────────────────────────────────────
