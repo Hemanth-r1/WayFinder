@@ -72,7 +72,6 @@ export default function MapView({
   const sourceDestLayerRef = useRef<L.LayerGroup | null>(null);
   const vehicleMarkersRef = useRef<Map<string, L.Marker>>(new Map());
   const lastGraphVersion = useRef(0);
-  const lastSignalPhases = useRef<Map<string, string>>(new Map());
   const firstFitDone = useRef(false);
   const iconCacheRef = useRef<Map<string, L.DivIcon>>(new Map());
 
@@ -209,17 +208,6 @@ export default function MapView({
   // ── Update signals (circles only, zoom-dependent LOD) ────────────────────
   useEffect(() => {
     const layer = signalLayerRef.current; if (!layer) return;
-
-    let changed = false;
-    for (const [nodeId, sig] of signals) {
-      const phase = sig.phases[sig.currentPhaseIndex];
-      const key = `${nodeId}:${phase.color}:${sig.currentPhaseIndex}`;
-      if (lastSignalPhases.current.get(nodeId) !== key) {
-        changed = true;
-        lastSignalPhases.current.set(nodeId, key);
-      }
-    }
-    if (!changed) return;
 
     layer.clearLayers();
     const hasRoads = graph.edges.size > 0;

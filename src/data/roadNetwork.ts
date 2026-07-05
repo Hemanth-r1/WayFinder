@@ -394,12 +394,14 @@ export async function loadBangaloreNetwork(
   // ── Phase 1: cache checks (fastest wins) ──
   if (!forceRefresh) {
     // Check local IndexedDB cache
-    const cached = await loadGraphFromCache(CENTER.lat, CENTER.lng, RADIUS);
-    if (cached) {
-      const result = { nodes: cached.graph.nodes, edges: cached.graph.edges, adjacency: cached.graph.adjacency, signals: cached.signals };
-      onUpdate?.({ ...result, phase: 'cached', source: 'IndexedDB' });
-      return result;
-    }
+    try {
+      const cached = await loadGraphFromCache(CENTER.lat, CENTER.lng, RADIUS);
+      if (cached) {
+        const result = { nodes: cached.graph.nodes, edges: cached.graph.edges, adjacency: cached.graph.adjacency, signals: cached.signals };
+        onUpdate?.({ ...result, phase: 'cached', source: 'IndexedDB' });
+        return result;
+      }
+    } catch { /* IndexedDB unavailable — fall through to fallback */ }
 
     // Check Firebase Storage (single blob download)
     try {
