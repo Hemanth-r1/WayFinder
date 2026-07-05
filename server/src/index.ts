@@ -1,4 +1,5 @@
 import express from 'express';
+import { initFirebase, getDb } from './firebaseClient.js';
 import { getGraph } from './graphService.js';
 import { computeCongestionZones, computeStats } from './congestionService.js';
 import { computeSLA } from './slaService.js';
@@ -7,6 +8,26 @@ import { findRoute } from './pathfindingService.js';
 
 const app = express();
 app.use(express.json());
+
+initFirebase();
+const db = getDb();
+
+// Listen for unprocessed commands
+const unsubCommands = db.collection('commands')
+  .where('processed', '==', false)
+  .onSnapshot(async (snapshot) => {
+    for (const doc of snapshot.docs) {
+      try {
+        const cmd = doc.data();
+        console.log('[WayFinder Server] Processing command:', cmd.type, doc.id);
+        await db.collection('commands').doc(doc.id).update({ processed: true, processedAt: new Date() });
+      } catch (err) {
+        console.error('Command processing error:', err);
+      }
+    }
+  });
+
+process.on('SIGTERM', () => { unsubCommands(); process.exit(0); });
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok' });
