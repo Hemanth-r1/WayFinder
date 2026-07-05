@@ -27,6 +27,7 @@ export interface TrafficSignal {
   cycleLength: number; offset: number;
   greenWaveDirection: string | null;
   congestionLevel: number; adaptiveTiming: boolean;
+  approaches: { edgeId: string; bearing: number; color: string; duration: number }[];
 }
 
 export interface Vehicle {
