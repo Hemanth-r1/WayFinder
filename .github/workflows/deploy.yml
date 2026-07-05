@@ -1,0 +1,67 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  REGION: us-central1
+  SERVICE: wayfinder-server
+  PROJECT_ID: project-7d0d26b8-5887-43f6-804
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # ── Server: build & deploy to Cloud Run ──────────────────
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+
+      - id: deploy-server
+        if: github.ref == 'refs/heads/main'
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.SERVICE }}
+          region: ${{ env.REGION }}
+          source: server/
+          env_vars: >
+            GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }}
+
+      - name: Show server URL
+        if: github.ref == 'refs/heads/main'
+        run: echo "Server deployed to ${{ steps.deploy-server.outputs.url }}"
+
+      # ── Client: build & deploy to Firebase Hosting ───────────
+      - run: npm ci
+
+      - run: npm run build
+        env:
+          VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ env.PROJECT_ID }}.firebaseapp.com
+          VITE_FIREBASE_PROJECT_ID: ${{ env.PROJECT_ID }}
+          VITE_FIREBASE_STORAGE_BUCKET: ${{ env.PROJECT_ID }}.firebasestorage.app
+          VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_SENDER_ID }}
+          VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
+
+      - uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          channelId: live
+          projectId: ${{ env.PROJECT_ID }}

@@ -1,7 +1,7 @@
 import type { RoadGraph, TrafficSignal, Vehicle, CongestionZone, TrafficStats } from '../types';
 import type { RouteInfo } from '../types';
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:8080';
+const SERVER_URL = import.meta.env.VITE_SERVER_URL || '';
 
 export function graphFromJSON(data: {
   nodes: any[]; edges: any[]; adjacency: [string, string[]][];

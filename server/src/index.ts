@@ -5,29 +5,18 @@ import { computeCongestionZones, computeStats } from './congestionService.js';
 import { computeSLA } from './slaService.js';
 import { detectActiveCorridors } from './corridorService.js';
 import { findRoute } from './pathfindingService.js';
+import type { Firestore } from 'firebase-admin/firestore';
 
 const app = express();
 app.use(express.json());
 
-initFirebase();
-const db = getDb();
-
-// Listen for unprocessed commands
-const unsubCommands = db.collection('commands')
-  .where('processed', '==', false)
-  .onSnapshot(async (snapshot) => {
-    for (const doc of snapshot.docs) {
-      try {
-        const cmd = doc.data();
-        console.log('[WayFinder Server] Processing command:', cmd.type, doc.id);
-        await db.collection('commands').doc(doc.id).update({ processed: true, processedAt: new Date() });
-      } catch (err) {
-        console.error('Command processing error:', err);
-      }
-    }
-  });
-
-process.on('SIGTERM', () => { unsubCommands(); process.exit(0); });
+let db: Firestore | null = null;
+try {
+  initFirebase();
+  db = getDb();
+} catch (e) {
+  console.warn('[WayFinder Server] Firebase init failed — running without Firestore:', e);
+}
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok' });
@@ -68,4 +57,30 @@ app.post('/api/route', (req, res) => {
 const PORT = parseInt(process.env.PORT || '8080', 10);
 app.listen(PORT, () => {
   console.log(`[WayFinder Server] Listening on ${PORT}`);
+
+  // Firestore command listener — deferred so server boots even if Firebase is down
+  if (!db) {
+    console.warn('[WayFinder Server] Skipping command listener — Firestore unavailable');
+    return;
+  }
+  const unsubCommands = db.collection('commands')
+    .where('processed', '==', false)
+    .onSnapshot(
+      async (snapshot) => {
+        for (const doc of snapshot.docs) {
+          try {
+            const cmd = doc.data();
+            console.log('[WayFinder Server] Processing command:', cmd.type, doc.id);
+            await db!.collection('commands').doc(doc.id).update({ processed: true, processedAt: new Date() });
+          } catch (err) {
+            console.error('Command processing error:', err);
+          }
+        }
+      },
+      (err) => {
+        console.error('[WayFinder Server] Firestore listener error:', err.message);
+      },
+    );
+
+  process.on('SIGTERM', () => { unsubCommands(); process.exit(0); });
 });

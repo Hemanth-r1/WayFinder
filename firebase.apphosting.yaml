@@ -8,5 +8,3 @@ runConfig:
 env:
   - variable: GOOGLE_CLOUD_PROJECT
     value: project-7d0d26b8-5887-43f6-804
-  - variable: SERVER_URL
-    value: https://api-wayfinder-abc123.web.app
