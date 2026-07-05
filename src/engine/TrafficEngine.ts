@@ -4,7 +4,6 @@ import type {
 import { loadBangaloreNetwork, type LoadUpdate, type LoadPhase } from '../data/roadNetwork';
 import { clearGraphCache } from '../data/graphCache';
 import { spawnRandomVehicle, spawnVehicleAt, spawnNavigatedVehicle, updateVehicle } from './vehicleSim';
-import { aStarRoute } from './pathfinding';
 import type { RouteInfo } from '../types';
 import { SIMULATION_CONFIG } from '../config';
 import { SIGNAL_TIMING } from '../types';
@@ -158,14 +157,19 @@ export class TrafficEngine {
     this.vehicles.set(emergency.id, emergency);
   }
 
-  spawnNavigatedVehicle(sourceId: string, destId: string): Vehicle | null {
-    const v = spawnNavigatedVehicle(this.graph, sourceId, destId, this.signals);
+  spawnNavigatedVehicle(sourceId: string, destId: string, precomputedPath?: string[]): Vehicle | null {
+    const v = spawnNavigatedVehicle(this.graph, sourceId, destId, this.signals, precomputedPath);
     if (v) { this.vehicles.set(v.id, v); }
     return v ?? null;
   }
 
-  computeRoute(sourceId: string, destId: string): RouteInfo | null {
-    return aStarRoute(this.graph, sourceId, destId, this.signals);
+  async computeRoute(sourceId: string, destId: string): Promise<RouteInfo | null> {
+    try {
+      const { fetchRoute } = await import('./serverSync');
+      return await fetchRoute(this.graph, this.signals, sourceId, destId);
+    } catch {
+      return null;
+    }
   }
 
   addSignalAtNode(nodeId: string): boolean {

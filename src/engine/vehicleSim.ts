@@ -414,8 +414,11 @@ export function spawnNavigatedVehicle(
   sourceId: string,
   destId: string,
   signals: Map<string, TrafficSignal>,
+  precomputedPath?: string[],
 ): Vehicle | null {
-  const routeInfo = aStarRoute(graph, sourceId, destId, signals);
+  const routeInfo = precomputedPath
+    ? { path: precomputedPath, distance: 0, estimatedTime: 0, signalCount: 0, roadNames: [] as string[] }
+    : aStarRoute(graph, sourceId, destId, signals);
   if (!routeInfo || routeInfo.path.length < 2) return null;
 
   const type: VehicleType = 'sedan';

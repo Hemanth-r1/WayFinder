@@ -246,13 +246,13 @@ function AppContent() {
     setLoading(false);
   }, []);
 
-  const handleStartNavigation = useCallback(() => {
+  const handleStartNavigation = useCallback(async () => {
     const e = engineRef.current; if (!e) return;
     if (!selectedSource || !selectedDest) return;
-    const r = e.computeRoute(selectedSource, selectedDest);
+    const r = await e.computeRoute(selectedSource, selectedDest);
     if (!r) return;
     setRouteInfo(r);
-    const v = e.spawnNavigatedVehicle(selectedSource, selectedDest);
+    const v = e.spawnNavigatedVehicle(selectedSource, selectedDest, r.path);
     if (v) setNavigatedVehicle(true);
   }, [selectedSource, selectedDest]);
 
