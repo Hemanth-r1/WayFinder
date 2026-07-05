@@ -15,8 +15,6 @@ interface Props {
 
 export default function UserPanel({ graph, signals, selectedSource, selectedDest, onSelectSource, onSelectDest }: Props) {
   const { user } = useAuth();
-  const [sourceName, setSourceName] = useState('');
-  const [destName, setDestName] = useState('');
   const [submitted, setSubmitted] = useState(false);
   const [routes, setRoutes] = useState<UserRoute[]>([]);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -82,19 +80,39 @@ export default function UserPanel({ graph, signals, selectedSource, selectedDest
 
   return (
     <div style={{ padding: '0 14px' }}>
-      <div style={styles.section}>
-        <div style={styles.sectionTitle}>Navigation</div>
-        <div style={styles.inputGroup}>
-          <label style={styles.label}>From</label>
-          <input type="text" value={sourceName} onChange={(e) => setSourceName(e.target.value)} placeholder={selectedSource || 'Click map to set'} style={styles.input} />
-          {selectedSource && <button onClick={() => onSelectSource(null)} style={styles.clearBtn}>x</button>}
+        <div style={styles.section}>
+          <div style={styles.sectionTitle}>Navigation</div>
+          <div style={styles.inputGroup}>
+            <label style={styles.label}>Origin</label>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 4,
+              background: '#1a1a2e', borderRadius: 4, padding: '8px 10px',
+            }}>
+              <span style={{ color: '#4CAF50', fontSize: 14 }}>●</span>
+              <span style={{ fontSize: 12, flex: 1, color: selectedSource ? '#ccc' : '#555' }}>
+                {selectedSource ?? 'Right-click a road to set'}
+              </span>
+              {selectedSource && (
+                <button onClick={() => onSelectSource(null)} style={{ background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: 14, padding: 0 }}>✕</button>
+              )}
+            </div>
+          </div>
+          <div style={styles.inputGroup}>
+            <label style={styles.label}>Destination</label>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 4,
+              background: '#1a1a2e', borderRadius: 4, padding: '8px 10px',
+            }}>
+              <span style={{ color: '#F44336', fontSize: 14 }}>●</span>
+              <span style={{ fontSize: 12, flex: 1, color: selectedDest ? '#ccc' : '#555' }}>
+                {selectedDest ?? 'Right-click a road to set'}
+              </span>
+              {selectedDest && (
+                <button onClick={() => onSelectDest(null)} style={{ background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: 14, padding: 0 }}>✕</button>
+              )}
+            </div>
+          </div>
         </div>
-        <div style={styles.inputGroup}>
-          <label style={styles.label}>To</label>
-          <input type="text" value={destName} onChange={(e) => setDestName(e.target.value)} placeholder={selectedDest || 'Click map to set'} style={styles.input} />
-          {selectedDest && <button onClick={() => onSelectDest(null)} style={styles.clearBtn}>x</button>}
-        </div>
-      </div>
       {route && (
         <div style={styles.section}>
           <div style={{ background: '#ffffff08', borderRadius: 6, padding: 8 }}>
@@ -105,7 +123,7 @@ export default function UserPanel({ graph, signals, selectedSource, selectedDest
         </div>
       )}
       <div style={styles.section}>
-        <button onClick={handleSubmit} disabled={!selectedSource || !selectedDest} style={{ width: '100%', padding: '10px', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 'bold', background: submitted ? '#4CAF50' : '#2196F3', opacity: selectedSource && selectedDest ? 1 : 0.5 }}>
+        <button onClick={handleSubmit} disabled={!selectedSource || !selectedDest} title={selectedSource && selectedDest ? 'Submit route to Firestore' : 'Select origin and destination first'} style={{ width: '100%', padding: '10px', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 'bold', background: submitted ? '#4CAF50' : '#2196F3', opacity: selectedSource && selectedDest ? 1 : 0.5 }}>
           {submitted ? 'Submitted!' : 'Submit Route'}
         </button>
       </div>
@@ -127,10 +145,8 @@ export default function UserPanel({ graph, signals, selectedSource, selectedDest
 const styles: Record<string, React.CSSProperties> = {
   section: { padding: '10px 0', borderBottom: '1px solid #222' },
   sectionTitle: { fontSize: 11, color: '#888', textTransform: 'uppercase' as const, marginBottom: 8, fontWeight: 'bold' },
-  inputGroup: { marginBottom: 8, position: 'relative' },
+  inputGroup: { marginBottom: 8 },
   label: { display: 'block', fontSize: 11, color: '#888', marginBottom: 4, textTransform: 'uppercase' as const },
-  input: { width: '100%', padding: '8px 10px', background: '#1a1a2e', border: '1px solid #444', borderRadius: 6, color: '#fff', fontSize: 12, boxSizing: 'border-box' as const },
-  clearBtn: { position: 'absolute', right: 8, top: 28, background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: 14 },
   statRow: { display: 'flex', justifyContent: 'space-between', marginBottom: 4 },
   statLabel: { color: '#888', fontSize: 12 },
   statValue: { color: '#fff', fontWeight: 'bold', fontSize: 12 },

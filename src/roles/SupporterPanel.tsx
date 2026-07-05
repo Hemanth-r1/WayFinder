@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { collection, onSnapshot, addDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, addDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { useAuth } from '../context/useAuth';
 import type { RoadGraph, TrafficSignal } from '../types';
@@ -16,7 +16,9 @@ export default function SupporterPanel({ graph, signals }: Props) {
   const [placementPos, setPlacementPos] = useState<{ lat: number; lng: number } | null>(null);
   const [firebaseSignals, setFirebaseSignals] = useState<SupporterSignal[]>([]);
   useEffect(() => {
-    const unsub = onSnapshot(collection(db, 'signals'), (snapshot) => {
+    if (!user) return;
+    const q = query(collection(db, 'signals'), where('supporterId', '==', user.uid));
+    const unsub = onSnapshot(q, (snapshot) => {
       const list: SupporterSignal[] = snapshot.docs.map(doc => {
         const d = doc.data();
         return {
@@ -33,7 +35,7 @@ export default function SupporterPanel({ graph, signals }: Props) {
       setFirebaseSignals(list);
     });
     return unsub;
-  }, []);
+  }, [user]);
 
   const signalList = useMemo(() => Array.from(signals.values()), [signals]);
   const gapNodes = useMemo(() => Array.from(graph.nodes.values()).filter(n => { const adj = graph.adjacency.get(n.id) || []; return adj.length >= 3 && !signals.has(n.id); }), [graph, signals]);
@@ -57,8 +59,8 @@ export default function SupporterPanel({ graph, signals }: Props) {
       <div style={styles.section}>
         <div style={styles.sectionTitle}>Supporter Tools</div>
         <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-          <button onClick={() => setMode('view')} style={{ flex: 1, padding: '6px 8px', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 'bold', background: mode === 'view' ? '#FF9800' : '#333' }}>View</button>
-          <button onClick={() => setMode('add')} style={{ flex: 1, padding: '6px 8px', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 'bold', background: mode === 'add' ? '#4CAF50' : '#333' }}>Add Signal</button>
+          <button onClick={() => setMode('view')} style={{ flex: 1, padding: '6px 8px', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 'bold', background: mode === 'view' ? '#FF9800' : '#333' }} title="View existing signals">View</button>
+          <button onClick={() => setMode('add')} style={{ flex: 1, padding: '6px 8px', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 'bold', background: mode === 'add' ? '#4CAF50' : '#333' }} title="Add a new signal">Add Signal</button>
         </div>
         {mode === 'add' && (
           <div>

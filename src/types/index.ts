@@ -44,6 +44,8 @@ export interface Vehicle {
   route: string[]; routeIndex: number; color: string; length: number; width: number;
   stuckTime: number; rerouted: boolean; responseDelay: number; reactionTimer: number;
   waitingForSignal: boolean; driverAggression: number; routeETA: number;
+  distanceTravelled: number;  // meters accumulated across edges
+  timeTravelled: number;      // seconds accumulated
   /** Lane index (0 = leftmost in direction of travel) */
   laneIndex: number;
   /** Segment index within current edge geometry */
@@ -54,6 +56,10 @@ export interface Vehicle {
 export interface TrafficStats {
   totalVehicles: number; avgSpeed: number; avgDelay: number; congestionHotspots: number;
   greenWaveActive: boolean; signalCoordinationScore: number; throughput: number; maxCongestion: number;
+  slaSpeed: number;         // fleet average km/h
+  slaCompliant: boolean;    // fleetAvgSpeedKmh >= SLA_TARGET_SPEED
+  emergencySlaSpeed: number;// emergency fleet average km/h
+  activeCorridors: number;  // number of active corridors
 }
 export interface RouteInfo {
   path: string[]; distance: number; estimatedTime: number; signalCount: number;
@@ -62,6 +68,21 @@ export interface RouteInfo {
 export interface NavigationRequest {
   sourceNodeId: string; destNodeId: string; avoidCongestion: boolean; preferMainRoads: boolean;
 }
+export interface SLAStats {
+  fleetAvgSpeedKmh: number;
+  slaCompliant: boolean;
+  vehicleCount: number;
+  emergencyAvgSpeedKmh: number;
+  emergencyCompliant: boolean;
+}
+
+export interface CorridorInfo {
+  id: string;
+  signalIds: string[];
+  weight: number;
+  avgSpeedKmh: number;
+}
+
 export interface CongestionZone {
   centerLat: number; centerLng: number; radius: number; level: number;
   vehicles: number; trend: 'increasing' | 'stable' | 'decreasing';

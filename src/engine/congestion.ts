@@ -34,5 +34,6 @@ export function computeStats(vehicles: Map<string, Vehicle>, congestionZones: Co
     congestionHotspots: congestionZones.filter(z => z.level > 0.5).length,
     greenWaveActive: false, signalCoordinationScore: 0,
     throughput: movingCount, maxCongestion: congestionZones.length > 0 ? congestionZones[0].level : 0,
+    slaSpeed: 0, slaCompliant: false, emergencySlaSpeed: 0, activeCorridors: 0,
   };
 }

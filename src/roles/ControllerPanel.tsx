@@ -155,19 +155,23 @@ export default function ControllerPanel({
         </div>
         <div style={{ marginTop: 6, display: 'flex', gap: 6 }}>
           <button onClick={onSpawnEmergency}
-            style={{ flex: 1, padding: '6px 8px', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 'bold', background: '#F44336' }}>
+            style={{ flex: 1, padding: '6px 8px', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 'bold', background: '#F44336' }}
+            title="Spawn emergency vehicle">
             🚨 Emergency
           </button>
           <button onClick={onExportStats}
-            style={{ flex: 1, padding: '6px 8px', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 'bold', background: '#37474F' }}>
-            📊 Stats
+            style={{ flex: 1, padding: '6px 8px', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 'bold', background: '#37474F' }}
+            title="Download stats as JSON">
+            📊 Export Stats
           </button>
           <button onClick={onExportSignals}
-            style={{ flex: 1, padding: '6px 8px', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 'bold', background: '#FF6F00' }}>
-            📍 Signals
+            style={{ flex: 1, padding: '6px 8px', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 'bold', background: '#FF6F00' }}
+            title="Export signals to JSON">
+            📍 Export Signals
           </button>
           <button onClick={onRefreshRoads}
-            style={{ flex: 1, padding: '6px 8px', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 'bold', background: '#1565C0' }}>
+            style={{ flex: 1, padding: '6px 8px', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 'bold', background: '#1565C0' }}
+            title="Re-fetch road network from Overpass API">
             🗺 Re-fetch
           </button>
         </div>
@@ -177,7 +181,8 @@ export default function ControllerPanel({
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
             <span style={{ fontSize: 10, color: '#555', textTransform: 'uppercase' as const, letterSpacing: 1 }}>Network Optimizer</span>
             <button onClick={onRunOptimizer}
-              style={{ padding: '3px 8px', background: '#1a237e', color: '#82b1ff', border: '1px solid #283593', borderRadius: 4, cursor: 'pointer', fontSize: 10 }}>
+              style={{ padding: '3px 8px', background: '#1a237e', color: '#82b1ff', border: '1px solid #283593', borderRadius: 4, cursor: 'pointer', fontSize: 10 }}
+              title="Run network optimizer">
               ▶ Run Now
             </button>
           </div>
@@ -211,12 +216,14 @@ export default function ControllerPanel({
           <button
             onClick={() => setOverrideMode('individual')}
             style={{ flex: 1, padding: '6px 8px', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 'bold', background: overrideMode === 'individual' ? '#4CAF50' : '#333' }}
+            title="Override a single signal"
           >
             Individual
           </button>
           <button
             onClick={() => { setOverrideMode('route'); handleSelectRoute(); }}
             style={{ flex: 1, padding: '6px 8px', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 'bold', background: overrideMode === 'route' ? '#FF9800' : '#333' }}
+            title="Override all signals on a route"
           >
             Route ({selectedRouteSignals.length})
           </button>
@@ -230,18 +237,21 @@ export default function ControllerPanel({
           <button
             onClick={() => handleOverride('N', 'GREEN')}
             style={{ flex: 1, padding: '8px 6px', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 'bold', background: '#4CAF50' }}
+            title="Override: North-South green"
           >
             NS Green
           </button>
           <button
             onClick={() => handleOverride('E', 'GREEN')}
             style={{ flex: 1, padding: '8px 6px', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 'bold', background: '#2196F3' }}
+            title="Override: East-West green"
           >
             EW Green
           </button>
           <button
             onClick={() => handleOverride('N', 'RED')}
             style={{ flex: 1, padding: '8px 6px', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 'bold', background: '#f44336' }}
+            title="Override: All red"
           >
             All Red
           </button>
@@ -250,6 +260,7 @@ export default function ControllerPanel({
           <button
             onClick={onCancelOverride}
             style={{ width: '100%', padding: '6px', background: '#FF9800', color: '#000', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 'bold', marginTop: 8 }}
+            title="Cancel all manual overrides"
           >
             Cancel Override (Esc)
           </button>

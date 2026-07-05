@@ -25,7 +25,6 @@ interface MapViewProps {
   signals: Map<string, TrafficSignal>;
   vehicles: Map<string, Vehicle>;
   congestionZones: CongestionZone[];
-  onNodeClick: (id: string) => void;
   onCancelOverride: () => void;
   overrideActive: boolean;
   overrideTimeRemaining: number;
@@ -56,7 +55,7 @@ interface ContextMenuState {
 }
 
 export default function MapView({
-  graph, signals, vehicles, congestionZones, onNodeClick, onCancelOverride,
+  graph, signals, vehicles, congestionZones, onCancelOverride,
   overrideActive, overrideTimeRemaining, selectedSource, selectedDest,
   onSelectSource, onSelectDest, role, graphVersion, vehicleVersion, stats,
   onAddSignal, onSpawnVehicleAt, showHeatmap = true, routePolyline, speed: _speed, onSpeedChange: _onSpeedChange,
@@ -86,7 +85,6 @@ export default function MapView({
   const selectedDestRef = useRef(selectedDest);
   const onSelectSourceRef = useRef(onSelectSource);
   const onSelectDestRef = useRef(onSelectDest);
-  const onNodeClickRef = useRef(onNodeClick);
 
   graphRef.current = graph;
   roleRef.current = role;
@@ -94,7 +92,6 @@ export default function MapView({
   selectedDestRef.current = selectedDest;
   onSelectSourceRef.current = onSelectSource;
   onSelectDestRef.current = onSelectDest;
-  onNodeClickRef.current = onNodeClick;
 
   // ── Init map once ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -131,7 +128,6 @@ export default function MapView({
         lat: e.latlng.lat, lng: e.latlng.lng, nodeId, nodeDegree, roadNames,
         screenX: e.originalEvent.clientX, screenY: e.originalEvent.clientY,
       });
-      if (nodeId) onNodeClickRef.current(nodeId);
     });
 
     // Mini-map
@@ -377,7 +373,7 @@ export default function MapView({
 
       {/* Live stats HUD */}
       <div style={{
-        position: 'absolute', top: 60, left: 12, zIndex: 1001,
+        position: 'absolute', top: 12, left: 270, zIndex: 1001,
         background: 'rgba(10,10,20,0.85)', border: '1px solid #333', borderRadius: 8,
         padding: '6px 12px', fontFamily: 'monospace', fontSize: 11, color: '#ccc',
         display: 'flex', gap: 14, backdropFilter: 'blur(4px)',

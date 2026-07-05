@@ -148,6 +148,7 @@ export function createVehicle(
     stuckTime: 0, rerouted: false,
     responseDelay: rnd(physics.responseDelay[0], physics.responseDelay[1]),
     reactionTimer: 0, waitingForSignal: false, driverAggression: agg, routeETA: 0,
+    distanceTravelled: 0, timeTravelled: 0,
     laneIndex, segmentIndex: 0,
   };
 }
@@ -275,6 +276,8 @@ export function updateVehicle(
 
   vehicle.speed = Math.max(0, Math.min(vehicle.targetSpeed * 1.1, vehicle.speed + accel * deltaTime * 3.6));
   const moveDist = (vehicle.speed / 3.6) * deltaTime;
+  vehicle.distanceTravelled += moveDist;
+  vehicle.timeTravelled += deltaTime;
 
   // Walk geometry (REQ-V1, REQ-V2)
   const geom = edge.geometry;

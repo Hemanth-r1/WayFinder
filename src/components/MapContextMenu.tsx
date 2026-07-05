@@ -39,7 +39,7 @@ export default function MapContextMenu({
   // Clamp to viewport
   const menuWidth = 220;
   const left = Math.min(screenX, window.innerWidth - menuWidth - 10);
-  const top = Math.min(screenY, window.innerHeight - 380);
+  const top = Math.min(screenY, Math.max(10, window.innerHeight - 420));
 
   return (
     <>
@@ -53,6 +53,7 @@ export default function MapContextMenu({
         position: 'fixed', left, top, zIndex: 2001,
         background: 'rgba(12,12,22,0.97)', border: '1px solid #333',
         borderRadius: 10, padding: '6px 0', minWidth: menuWidth,
+        maxHeight: 'calc(100vh - 20px)', overflowY: 'auto',
         boxShadow: '0 8px 32px rgba(0,0,0,0.7)',
         fontFamily: 'system-ui, sans-serif', color: '#fff',
       }}>

@@ -21,9 +21,11 @@ button:active {
 }
 
 kbd {
-  background: #333;
-  padding: 2px 6px;
-  border-radius: 3px;
-  border: 1px solid #555;
+  background: #111;
+  padding: 1px 4px;
+  border-radius: 2px;
+  border: 1px solid #333;
   font-family: monospace;
+  font-size: 10px;
+  color: #aaa;
 }

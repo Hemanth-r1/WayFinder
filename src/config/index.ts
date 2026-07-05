@@ -57,6 +57,41 @@ export const SIGNAL_CONFIG = {
   DETECTION_RADIUS: 150, // meters
   ADAPTIVE_UPDATE_INTERVAL: 1, // seconds
   GREEN_WAVE_MIN_VEHICLES: 20,
+  SLA: {
+    TARGET_SPEED: 24,
+    EMERGENCY_TARGET: 60,
+    ROLLING_WINDOW: 60,
+    MIN_DISTANCE: 100,
+    EMA_ALPHA: 0.1,
+  } as const,
+  CORRIDOR: {
+    DETECT_INTERVAL: 10,
+    MAX_CORRIDORS: 5,
+    MIN_SIGNALS: 3,
+    MAX_SIGNAL_DISTANCE: 800,
+    EDGE_FLOW_RADIUS: 50,
+    BONUS_GREEN_MAX: 15,
+    BONUS_GREEN_FACTOR: 3,
+  } as const,
+  REFINER: {
+    MAX_OFFSET_SHIFT: 2,
+    LOOKAHEAD_DISTANCE: 500,
+    EARLY_GREEN_THRESHOLD: 5,
+  } as const,
+} as const;
+
+// Controller Manager Configuration
+export const CONTROLLER = {
+  WEIGHTS: {
+    DELAY: 1.0,
+    THROUGHPUT: 0.5,
+    QUEUE: 0.8,
+    FAIRNESS: 0.3,
+  },
+  MAX_PRESSURE_CAP: 30,
+  REFINEMENT_DELTA: 2,
+  EMERGENCY_HOLD_TIME: 15,
+  EMERGENCY_RADIUS: 200,
 } as const;
 
 // UI Configuration
@@ -112,6 +147,7 @@ export default {
   ROAD_CONFIG,
   SIMULATION_CONFIG,
   SIGNAL_CONFIG,
+  CONTROLLER,
   UI_CONFIG,
   FEATURE_FLAGS,
   ENV,

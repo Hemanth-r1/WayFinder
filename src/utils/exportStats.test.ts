@@ -12,6 +12,7 @@ const mockStats: TrafficStats = {
   signalCoordinationScore: 75,
   throughput: 40,
   maxCongestion: 0.6,
+  slaSpeed: 0, slaCompliant: false, emergencySlaSpeed: 0, activeCorridors: 0,
 };
 
 const mockZones: CongestionZone[] = [

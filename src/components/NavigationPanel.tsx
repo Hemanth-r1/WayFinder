@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, type CSSProperties } from 'react';
 import type { RouteInfo } from '../types';
 
 interface NavPanelProps {
@@ -25,21 +25,28 @@ export default function NavigationPanel({
     clearRoute();
   }, [onSelectSource, onSelectDest, clearRoute]);
 
+  const containerStyle: CSSProperties = {
+    position: 'absolute', top: 12, left: 12,
+    zIndex: 1000,
+    background: 'rgba(10,10,20,0.92)',
+    border: navigatedVehicle ? '1px solid #4488FF' : '1px solid #333',
+    borderRadius: 8,
+    fontFamily: 'system-ui, sans-serif', fontSize: 12, color: '#ccc',
+    backdropFilter: 'blur(4px)',
+    transition: 'width 0.2s',
+    ...(expanded
+      ? { width: 260, padding: 10, overflow: 'hidden' }
+      : { width: 44, height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }
+    ),
+  };
+
   return (
-    <div style={{
-      position: 'absolute', top: 12, left: 12,
-      zIndex: 1000,
-      background: 'rgba(10,10,20,0.92)',
-      border: navigatedVehicle ? '1px solid #4488FF' : '1px solid #333',
-      borderRadius: 8, padding: 0,
-      fontFamily: 'system-ui, sans-serif', fontSize: 12, color: '#ccc',
-      backdropFilter: 'blur(4px)',
-      transition: 'width 0.2s',
-      width: expanded ? 260 : 36,
-      overflow: 'hidden',
-    }}>
+    <div
+      style={containerStyle}
+      onClick={expanded ? undefined : () => setExpanded(true)}
+    >
       {expanded ? (
-        <div style={{ padding: 10 }}>
+        <>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
             <span style={{ fontWeight: 'bold', color: '#fff', fontSize: 13 }}>
               {navigatedVehicle ? '🛣️ Navigating' : '🧭 Navigation'}
@@ -47,6 +54,7 @@ export default function NavigationPanel({
             <button
               onClick={() => setExpanded(false)}
               style={{ background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: 14, padding: '0 2px' }}
+              title="Collapse"
             >✕</button>
           </div>
 
@@ -62,7 +70,7 @@ export default function NavigationPanel({
                 {selectedSource ?? 'Right-click a road to set'}
               </span>
               {selectedSource && (
-                <button onClick={() => onSelectSource(null)} style={{ background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: 10, padding: 0 }}>✕</button>
+                <button onClick={() => onSelectSource(null)} style={{ background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: 10, padding: 0 }} title="Clear origin">✕</button>
               )}
             </div>
           </div>
@@ -79,7 +87,7 @@ export default function NavigationPanel({
                 {selectedDest ?? 'Right-click a road to set'}
               </span>
               {selectedDest && (
-                <button onClick={() => onSelectDest(null)} style={{ background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: 10, padding: 0 }}>✕</button>
+                <button onClick={() => onSelectDest(null)} style={{ background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: 10, padding: 0 }} title="Clear destination">✕</button>
               )}
             </div>
           </div>
@@ -122,6 +130,7 @@ export default function NavigationPanel({
                   border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11,
                   fontWeight: 'bold',
                 }}
+                title="Start navigation"
               >▶ Start Navigation</button>
             )}
             {(selectedSource || selectedDest || navigatedVehicle) && (
@@ -131,6 +140,7 @@ export default function NavigationPanel({
                   padding: '8px 12px', background: '#222', color: '#888',
                   border: '1px solid #444', borderRadius: 4, cursor: 'pointer', fontSize: 11,
                 }}
+                title="Clear route"
               >Clear</button>
             )}
           </div>
@@ -138,17 +148,9 @@ export default function NavigationPanel({
           <div style={{ marginTop: 6, fontSize: 9, color: '#444', lineHeight: 1.4 }}>
             Right-click a road → <span style={{ color: '#4CAF50' }}>Set Origin</span> / <span style={{ color: '#F44336' }}>Set Destination</span>
           </div>
-        </div>
+        </>
       ) : (
-        <button
-          onClick={() => setExpanded(true)}
-          style={{
-            position: 'absolute', top: '50%', left: 12, transform: 'translateY(-50%)',
-            background: 'rgba(10,10,20,0.92)', border: navigatedVehicle ? '1px solid #4488FF' : '1px solid #333',
-            borderRadius: 8, color: navigatedVehicle ? '#4488FF' : '#888', cursor: 'pointer', fontSize: 16,
-            padding: '8px 6px', lineHeight: '1',
-          }}
-        >🧭</button>
+        <span style={{ fontSize: 18 }}>🧭</span>
       )}
     </div>
   );

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useAuth } from '../context/useAuth';
+import { pushToast } from './Toast';
 
 const NEXT_ROLE: Record<string, string> = {
   user: 'supporter',
@@ -36,8 +37,9 @@ export default function RoleSelector() {
     setPromoting(true);
     try {
       await promoteRole(next);
-    } catch (err) {
-      console.error('Role promotion failed:', err);
+      pushToast(`Promoted to ${next}`, 'success');
+    } catch {
+      pushToast('Role promotion failed', 'error');
     }
     setPromoting(false);
     setShowPromote(false);

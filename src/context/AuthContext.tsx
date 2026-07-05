@@ -4,6 +4,7 @@ import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   signOut as firebaseSignOut,
+  sendPasswordResetEmail,
   type User,
 } from 'firebase/auth';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
@@ -17,6 +18,7 @@ export interface AuthState {
   signUp: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
   promoteRole: (newRole: string) => Promise<void>;
+  resetPassword: (email: string) => Promise<void>;
 }
 
 export const AuthContext = createContext<AuthState | null>(null);
@@ -68,8 +70,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setRole(newRole);
   };
 
+  const resetPassword = async (email: string) => {
+    await sendPasswordResetEmail(auth, email);
+  };
+
   return (
-    <AuthContext.Provider value={{ user, role, loading, signIn, signUp, signOut, promoteRole }}>
+    <AuthContext.Provider value={{ user, role, loading, signIn, signUp, signOut, promoteRole, resetPassword }}>
       {children}
     </AuthContext.Provider>
   );

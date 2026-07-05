@@ -1,6 +1,6 @@
 import type { RoadNode, RoadEdge, TrafficSignal, SignalPhase, RoadGraph, SignalApproach } from '../types';
 
-const CACHE_VERSION = 'v2';
+const CACHE_VERSION = 'v3';
 const TTL_MS = 24 * 60 * 60 * 1e3;
 const IDB_NAME = 'WayFinderCache';
 const IDB_VERSION = 1;

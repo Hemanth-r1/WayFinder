@@ -220,10 +220,10 @@ function buildGraphFromOSM(
     const wayCount = nodeWayCount.get(nid) || 0;
     const dist = Math.sqrt((osmNode.lat - centerLat) ** 2 + (osmNode.lng - centerLng) ** 2);
     if (dist > 0.5) continue;
-    if (wayCount >= 2 || wayCount === 1) {
+    if (wayCount >= 2) {
       const graphId = `n${nodeCounter++}`;
       nodeIdMap.set(nid, graphId);
-      graphNodes.set(graphId, { id: graphId, lat: osmNode.lat, lng: osmNode.lng, isIntersection: wayCount >= 2 });
+      graphNodes.set(graphId, { id: graphId, lat: osmNode.lat, lng: osmNode.lng, isIntersection: true });
     }
   }
 

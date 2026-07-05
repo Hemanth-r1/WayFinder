@@ -2,12 +2,13 @@ import { useState, type FormEvent } from 'react';
 import { useAuth } from '../context/useAuth';
 
 export default function LoginScreen() {
-  const { signIn, signUp } = useAuth();
+  const { signIn, signUp, resetPassword } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isSignUp, setIsSignUp] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -70,6 +71,26 @@ export default function LoginScreen() {
         }}>
           {isSignUp ? 'Already have an account? Sign in' : "Don't have an account? Sign up"}
         </button>
+        {!isSignUp && (
+          <button type="button" onClick={async () => {
+            if (!email) return;
+            setBusy(true);
+            try {
+              await resetPassword(email);
+              setResetSent(true);
+              setTimeout(() => setResetSent(false), 4000);
+            } catch (err: any) {
+              setError(err.message || 'Failed to send reset email');
+            }
+            setBusy(false);
+          }} disabled={!email || resetSent} style={{
+            background: 'none', border: 'none', color: resetSent ? '#4CAF50' : '#555',
+            cursor: email ? 'pointer' : 'default', fontSize: 11,
+            textDecoration: 'underline',
+          }}>
+            {resetSent ? '✓ Reset link sent!' : 'Forgot password?'}
+          </button>
+        )}
       </form>
     </div>
   );

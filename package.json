@@ -9,6 +9,7 @@
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "test": "vitest",
+    "test:run": "vitest --run --pool=forks",
     "test:watch": "vitest --watch",
     "test:coverage": "vitest --coverage",
     "test:ui": "vitest --ui",

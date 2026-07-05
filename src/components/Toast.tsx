@@ -46,7 +46,7 @@ export default function ToastContainer() {
 
   return (
     <div style={{
-      position: 'fixed', bottom: 80, left: 12, zIndex: 9999,
+      position: 'fixed', bottom: 80, right: 12, zIndex: 9999,
       display: 'flex', flexDirection: 'column', gap: 6, pointerEvents: 'none',
     }}>
       {items.map(msg => (

@@ -10,7 +10,7 @@ import UserPanel from './roles/UserPanel';
 import SupporterPanel from './roles/SupporterPanel';
 import ControllerPanel from './roles/ControllerPanel';
 import { TrafficEngine } from './engine/TrafficEngine';
-import type { Direction, SignalColor, VehicleType, OptimizationResult, RouteInfo } from './types';
+import type { Direction, SignalColor, VehicleType, RouteInfo } from './types';
 import type { UserRoute } from './types/roles';
 import { downloadStatsJSON, buildExportPayload } from './utils/exportStats';
 import ToastContainer from './components/Toast';
@@ -38,11 +38,12 @@ function AppContent() {
   const [emergencyCount, setEmergencyCount] = useState(0);
   const [simTime, setSimTime] = useState('08:00');
   const [timeOfDay, setTimeOfDay] = useState('morning_rush');
-  const [lastOptResult, setLastOptResult] = useState<OptimizationResult | null>(null);
+  const lastOptResult = null;
   const [engineState, setEngineState] = useState({
     nodeCount: 0, edgeCount: 0, signalCount: 0, vehicleCount: 0,
     avgSpeed: 0, congestionHotspots: 0, greenWaveActive: false,
     signalCoordinationScore: 0, graphVersion: 0,
+    slaSpeed: 0, slaCompliant: false, emergencySlaSpeed: 0, activeCorridors: 0,
   });
   const [selectedSource, setSelectedSource] = useState<string | null>(null);
   const [selectedDest, setSelectedDest] = useState<string | null>(null);
@@ -103,7 +104,6 @@ function AppContent() {
         if (Math.floor(time / 100) % 2 === 0) {
           setSimTime(`${String(engine.simClock.hour).padStart(2, '0')}:${String(engine.simClock.minute).padStart(2, '0')}`);
           setTimeOfDay(engine.timeOfDay);
-          if (engine.lastOptimizationResult) setLastOptResult(engine.lastOptimizationResult);
           setEngineState(prev => {
             const next = {
               nodeCount: engine.graph.nodes.size,
@@ -115,9 +115,14 @@ function AppContent() {
               greenWaveActive: engine.stats.greenWaveActive,
               signalCoordinationScore: engine.stats.signalCoordinationScore,
               graphVersion: engine.dataVersion,
+              slaSpeed: engine.stats.slaSpeed ?? 0,
+              slaCompliant: engine.stats.slaCompliant ?? false,
+              emergencySlaSpeed: engine.stats.emergencySlaSpeed ?? 0,
+              activeCorridors: engine.stats.activeCorridors ?? 0,
             };
             if (prev.vehicleCount === next.vehicleCount && prev.signalCount === next.signalCount
-                && prev.nodeCount === next.nodeCount && prev.avgSpeed === next.avgSpeed && prev.graphVersion === next.graphVersion) return prev;
+                && prev.nodeCount === next.nodeCount && prev.avgSpeed === next.avgSpeed
+                && prev.graphVersion === next.graphVersion && prev.slaSpeed === next.slaSpeed) return prev;
             return next;
           });
         }
@@ -177,8 +182,6 @@ function AppContent() {
     pausedRef.current = !pausedRef.current; setPaused(pausedRef.current);
   }, []);
 
-  const handleNodeClick = useCallback(() => {}, []);
-
   /** Convert Direction (N/S/E/W) to NS/EW group */
   const toGroup = useCallback((d: string): 'NS' | 'EW' => {
     if (d === 'NS' || d === 'EW') return d as 'NS' | 'EW';
@@ -218,8 +221,7 @@ function AppContent() {
   }, []);
 
   const handleRunOptimizer = useCallback(() => {
-    const result = engineRef.current?.runOptimizerNow();
-    if (result) setLastOptResult(result);
+    // Optimizer removed — L3+L4 run per tick via ControllerManager
   }, []);
 
   const handleRefreshRoads = useCallback(async () => {
@@ -364,23 +366,39 @@ function AppContent() {
 
         {/* Footer */}
         <div style={{ padding: '8px 14px', borderTop: '1px solid #1a1a2e', background: 'rgba(15,15,28,0.98)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 }}>
             <span style={{ fontSize: 10, color: '#888', minWidth: 40 }}>Speed</span>
             <input
               type="range" min="0.5" max="4" step="0.5"
               value={speed}
               onChange={(e) => setSpeed(parseFloat(e.target.value))}
               style={{ flex: 1, accentColor: '#FF6D00', height: 4 }}
+              title={`Simulation speed: ${speed}×`}
             />
             <span style={{ color: '#fff', fontWeight: 'bold', fontSize: 12, minWidth: 28, textAlign: 'right' }}>
               {speed}×
             </span>
           </div>
+          <div style={{ display: 'flex', gap: 0, marginLeft: 48, marginBottom: 6 }}>
+            {[0.5, 1, 2, 4].map(v => (
+              <button
+                key={v}
+                onClick={() => setSpeed(v)}
+                style={{
+                  flex: 1, padding: '2px 0', background: speed === v ? '#FF6D0044' : 'transparent',
+                  border: 'none', color: speed === v ? '#FF6D00' : '#555', cursor: 'pointer',
+                  fontSize: 10, fontFamily: 'monospace', fontWeight: speed === v ? 'bold' : 'normal',
+                  borderRadius: 3,
+                }}
+                title={`Set speed to ${v}×`}
+              >{v}×</button>
+            ))}
+          </div>
           <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
-            <button onClick={handleTogglePause} style={{ flex: 1, padding: '9px', background: paused ? '#4CAF50' : '#FF6D00', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 'bold' }}>
+            <button onClick={handleTogglePause} title={paused ? 'Resume simulation' : 'Pause simulation'} style={{ flex: 1, padding: '9px', background: paused ? '#4CAF50' : '#FF6D00', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 'bold' }}>
               {paused ? '▶ Resume' : '⏸ Pause'}
             </button>
-            <button onClick={() => setShowHeatmap(p => !p)} style={{ flex: 1, padding: '9px', background: showHeatmap ? 'rgba(68,136,255,0.25)' : '#222', color: '#fff', border: `1px solid ${showHeatmap ? '#4488FF' : '#444'}`, borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 'bold' }}>
+            <button onClick={() => setShowHeatmap(p => !p)} title={showHeatmap ? 'Hide congestion heatmap' : 'Show congestion heatmap'} style={{ flex: 1, padding: '9px', background: showHeatmap ? 'rgba(68,136,255,0.25)' : '#222', color: '#fff', border: `1px solid ${showHeatmap ? '#4488FF' : '#444'}`, borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 'bold' }}>
               🔥 Heatmap
             </button>
           </div>
@@ -395,6 +413,17 @@ function AppContent() {
           <div style={{ fontSize: 10, color: '#555', textAlign: 'center', fontFamily: 'monospace' }}>
             {engineState.vehicleCount}v · {engineState.signalCount}s · {engineState.nodeCount}n
           </div>
+          <div style={{ fontSize: 10, textAlign: 'center', fontFamily: 'monospace', marginTop: 2, display: 'flex', justifyContent: 'center', gap: 8, alignItems: 'center' }}>
+            <span style={{ color: engineState.slaCompliant ? '#4CAF50' : engineState.slaSpeed >= 20 ? '#FF9800' : '#F44336' }}>
+              {engineState.slaCompliant ? '✅' : '⚠️'} {engineState.slaSpeed.toFixed(1)} km/h
+            </span>
+            {engineState.activeCorridors > 0 && (
+              <span style={{ color: '#4488FF' }}>🛣️ {engineState.activeCorridors} cor</span>
+            )}
+            {engineState.emergencySlaSpeed > 0 && (
+              <span style={{ color: '#FF5252' }}>🚨 {engineState.emergencySlaSpeed.toFixed(1)} km/h</span>
+            )}
+          </div>
         </div>
       </div>
 
@@ -405,7 +434,6 @@ function AppContent() {
           signals={e?.signals ?? new Map()}
           vehicles={e?.vehicles ?? new Map()}
           congestionZones={e?.congestionZones ?? []}
-          onNodeClick={handleNodeClick}
           onCancelOverride={handleCancelOverride}
           overrideActive={overrideActive} overrideTimeRemaining={overrideTimeRemaining}
           selectedSource={selectedSource} selectedDest={selectedDest}

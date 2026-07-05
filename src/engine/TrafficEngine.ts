@@ -1,19 +1,20 @@
 import type {
-  RoadGraph, TrafficSignal, Vehicle, CongestionZone, TrafficStats, Direction, SignalColor, VehicleType, OptimizationResult,
+  RoadGraph, TrafficSignal, Vehicle, CongestionZone, TrafficStats, Direction, SignalColor, VehicleType, SLAStats, CorridorInfo,
 } from '../types';
 import { loadBangaloreNetwork, type LoadUpdate, type LoadPhase } from '../data/roadNetwork';
 import { clearGraphCache } from '../data/graphCache';
-import { updateAdaptiveSignals, coordinateGreenWave } from './signalControl';
+import { computeSLAStats } from './slaMonitor';
+import { detectCorridors } from './corridorDetector';
 import { spawnRandomVehicle, spawnVehicleAt, spawnNavigatedVehicle, updateVehicle } from './vehicleSim';
 import { aStarRoute } from './pathfinding';
 import type { RouteInfo } from '../types';
 import { detectCongestionZones, computeStats } from './congestion';
 import { SIMULATION_CONFIG, SIGNAL_CONFIG } from '../config';
+import { SIGNAL_TIMING } from '../types';
 import { createSimClock, tickClock, getCurrentProfile, type SimClock, type TimeOfDay, classifyHour } from './timeOfDay';
-import { applyEmergencyPriority, type EmergencyOverride } from './emergencyPriority';
-import { runOptimizer, applyOptimizationPlan } from './optimizer';
+import { ControllerManager } from './controller/ControllerManager';
+import type { OverrideRequest } from './controller/types';
 
-const OPTIMIZER_INTERVAL = 30;
 const CENTER = { lat: 12.9716, lng: 77.5946 };
 const RADIUS = 40000;
 
@@ -25,13 +26,13 @@ export class TrafficEngine {
   stats: TrafficStats = {
     totalVehicles: 0, avgSpeed: 0, avgDelay: 0, congestionHotspots: 0,
     greenWaveActive: false, signalCoordinationScore: 0, throughput: 0, maxCongestion: 0,
+    slaSpeed: 0, slaCompliant: false, emergencySlaSpeed: 0, activeCorridors: 0,
   };
 
   running = false;
   loading = false;
   loaded = false;
   loadingPhase: LoadPhase = 'empty';
-  /** Incremented whenever graph/signals data is replaced, triggers MapView re-render */
   dataVersion = 0;
 
   onGraphUpdate?: (phase: LoadPhase) => void;
@@ -39,17 +40,20 @@ export class TrafficEngine {
   simClock: SimClock = createSimClock(8, 2);
   get timeOfDay(): TimeOfDay { return classifyHour(this.simClock.hour); }
   get currentProfile() { return getCurrentProfile(this.simClock); }
+  get simSeconds(): number {
+    return this.simClock.elapsed * this.simClock.simMinutesPerRealSecond * 60;
+  }
 
-  emergencyOverrides: Map<string, EmergencyOverride> = new Map();
-
-  lastOptimizationResult: OptimizationResult | null = null;
-  private optimizerTimer = 0;
+  controllerManager = new ControllerManager();
 
   private spawnTimer = 0;
   private maxVehicles: number = SIMULATION_CONFIG.MAX_VEHICLES;
-  private manualOverrideActive = false;
-  private manualOverrideTimer = 0;
-  private manualOverrideDuration = 30;
+  private slaStats: SLAStats = {
+    fleetAvgSpeedKmh: 0, slaCompliant: false, vehicleCount: 0,
+    emergencyAvgSpeedKmh: 0, emergencyCompliant: false,
+  };
+  private corridors: CorridorInfo[] = [];
+  private corridorTimer = 0;
 
   async init(forceRefresh = false): Promise<void> {
     this.loading = true;
@@ -57,7 +61,6 @@ export class TrafficEngine {
 
     await loadBangaloreNetwork((update: LoadUpdate) => {
       if (update.phase === 'fetching') {
-        // Don't replace graph during fetch — just show status
         this.loadingPhase = 'fetching';
         this.onGraphUpdate?.(this.loadingPhase);
         return;
@@ -104,38 +107,28 @@ export class TrafficEngine {
       }
     }
 
-    if (this.manualOverrideActive) {
-      this.manualOverrideTimer += dt;
-      if (this.manualOverrideTimer >= this.manualOverrideDuration) this.deactivateManualOverride();
-    }
+    this.controllerManager.solve(
+      this.signals, this.vehicles, this.graph, dt, this.simSeconds, profile,
+    );
 
-    if (!this.manualOverrideActive) {
-      this.emergencyOverrides = applyEmergencyPriority(
-        this.vehicles, this.signals, this.graph.nodes, this.emergencyOverrides, dt,
-      );
-    }
+    this.slaStats = computeSLAStats(this.vehicles);
+    this.stats.slaSpeed = this.slaStats.fleetAvgSpeedKmh;
+    this.stats.slaCompliant = this.slaStats.slaCompliant;
+    this.stats.emergencySlaSpeed = this.slaStats.emergencyAvgSpeedKmh;
 
-    // Adaptive signals
-    if (!this.manualOverrideActive) {
-      updateAdaptiveSignals(this.signals, this.vehicles, this.graph.nodes, this.graph, dt);
-      if (this.vehicles.size > SIGNAL_CONFIG.GREEN_WAVE_MIN_VEHICLES) {
-        coordinateGreenWave(this.signals, this.graph.nodes, this.graph, this.vehicles);
-      }
+    this.corridorTimer += dt;
+    if (this.corridorTimer >= SIGNAL_CONFIG.CORRIDOR.DETECT_INTERVAL) {
+      this.corridorTimer = 0;
+      this.corridors = detectCorridors(this.vehicles, this.graph, this.signals);
     }
-
-    this.optimizerTimer += dt;
-    if (this.optimizerTimer >= OPTIMIZER_INTERVAL && !this.manualOverrideActive) {
-      this.optimizerTimer = 0;
-      const result = runOptimizer(this.signals, this.vehicles, this.graph.nodes, 150);
-      this.lastOptimizationResult = result;
-      if (result.improvement > 0.10) {
-        applyOptimizationPlan(result.plan, this.signals);
-        console.log(`[WayFinder] Optimizer applied: ${(result.improvement * 100).toFixed(1)}% improvement, ${result.elapsedMs}ms`);
-      }
-    }
+    this.stats.activeCorridors = this.corridors.length;
 
     this.congestionZones = detectCongestionZones(this.vehicles, this.graph.nodes);
     this.stats = computeStats(this.vehicles, this.congestionZones);
+    this.stats.slaSpeed = this.slaStats.fleetAvgSpeedKmh;
+    this.stats.slaCompliant = this.slaStats.slaCompliant;
+    this.stats.emergencySlaSpeed = this.slaStats.emergencyAvgSpeedKmh;
+    this.stats.activeCorridors = this.corridors.length;
 
     const active = Array.from(this.signals.values()).filter(s => s.greenWaveDirection !== null).length;
     this.stats.greenWaveActive = active > this.signals.size * 0.3;
@@ -190,37 +183,82 @@ export class TrafficEngine {
     this.vehicles.set(emergency.id, emergency);
   }
 
-  /** Spawn a navigation vehicle from user-chosen source → dest */
   spawnNavigatedVehicle(sourceId: string, destId: string): Vehicle | null {
     const v = spawnNavigatedVehicle(this.graph, sourceId, destId, this.signals);
     if (v) { this.vehicles.set(v.id, v); }
     return v ?? null;
   }
 
-  /** Compute A* route for display without spawning a vehicle */
   computeRoute(sourceId: string, destId: string): RouteInfo | null {
     return aStarRoute(this.graph, sourceId, destId, this.signals);
   }
 
-  /** Add a signal at a node (from Supporter panel / context menu) */
   addSignalAtNode(nodeId: string): boolean {
     if (this.signals.has(nodeId)) return false;
     const node = this.graph.nodes.get(nodeId); if (!node) return false;
     const id = `SIG-U${Date.now().toString(36).toUpperCase()}`;
+    const yellowS = SIGNAL_TIMING.yellowDuration;
     this.signals.set(nodeId, {
-      id, nodeId, phases: [], currentPhaseIndex: 0, timer: 0,
-      cycleLength: 30, offset: 0, greenWaveDirection: null,
+      id, nodeId,
+      phases: [
+        { group: 'NS', color: 'GREEN', duration: SIGNAL_TIMING.minGreen, yellowDuration: yellowS },
+        { group: 'NS', color: 'YELLOW', duration: yellowS, yellowDuration: 0 },
+        { group: 'EW', color: 'GREEN', duration: SIGNAL_TIMING.minGreen, yellowDuration: yellowS },
+        { group: 'EW', color: 'YELLOW', duration: yellowS, yellowDuration: 0 },
+      ],
+      currentPhaseIndex: 0, timer: 0,
+      cycleLength: SIGNAL_TIMING.minGreen * 2 + yellowS * 2, offset: 0, greenWaveDirection: null,
       congestionLevel: 0, adaptiveTiming: true, approaches: [],
     });
     node.trafficSignalId = id;
     return true;
   }
 
-  runOptimizerNow(): OptimizationResult {
-    const result = runOptimizer(this.signals, this.vehicles, this.graph.nodes, 150);
-    this.lastOptimizationResult = result;
-    if (result.improvement > 0) applyOptimizationPlan(result.plan, this.signals);
-    return result;
+  manualOverrideSignal(signalId: string, group: 'NS' | 'EW', color: SignalColor): void {
+    const duration = color === 'GREEN' ? 30 : 5;
+    const req: OverrideRequest = {
+      id: `ovr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      signalId,
+      targetGroup: group,
+      targetColor: color,
+      duration,
+      priority: 80,
+      source: 'user',
+      expiresAt: this.simSeconds + duration,
+      createdAt: Date.now(),
+    };
+    this.controllerManager.enqueueRequest(req);
+  }
+
+  deactivateManualOverride(): void {
+    const simTime = this.simSeconds;
+    const active = this.controllerManager.getActiveOverrides();
+    for (const req of active) {
+      req.expiresAt = simTime;
+    }
+  }
+
+  isManualOverrideActive(): boolean {
+    return this.controllerManager.getActiveOverrides().length > 0;
+  }
+
+  getManualOverrideTimeRemaining(): number {
+    const simTime = this.simSeconds;
+    const active = this.controllerManager.getActiveOverrides();
+    let maxRemaining = 0;
+    for (const req of active) {
+      const remaining = req.expiresAt - simTime;
+      if (remaining > maxRemaining) maxRemaining = remaining;
+    }
+    return maxRemaining;
+  }
+
+  hasEmergencyOverride(): boolean {
+    return this.controllerManager.hasEmergencyOverride();
+  }
+
+  getEmergencyOverrideCount(): number {
+    return this.controllerManager.getEmergencyOverrideCount();
   }
 
   async refreshRoadData(): Promise<void> {
@@ -230,38 +268,6 @@ export class TrafficEngine {
     this.start();
   }
 
-  manualOverrideSignal(signalId: string, group: 'NS' | 'EW', color: SignalColor): void {
-    const signal = this.signals.get(signalId);
-    if (!signal) return;
-    this.manualOverrideActive = true;
-    this.manualOverrideTimer = 0;
-    signal.adaptiveTiming = false;
-
-    for (const phase of signal.phases) {
-      if (phase.group === group) {
-        phase.color = color === 'GREEN' ? 'GREEN' : 'RED';
-        phase.duration = color === 'GREEN' ? 30 : 5;
-      } else {
-        phase.color = color === 'GREEN' ? 'RED' : 'GREEN';
-        phase.duration = color === 'GREEN' ? 5 : 25;
-      }
-    }
-  }
-
-  deactivateManualOverride(): void {
-    this.manualOverrideActive = false; this.manualOverrideTimer = 0;
-    for (const [, signal] of this.signals) {
-      signal.adaptiveTiming = true; signal.currentPhaseIndex = 0; signal.timer = 0;
-      for (const phase of signal.phases) phase.duration = 12;
-    }
-  }
-
-  isManualOverrideActive(): boolean { return this.manualOverrideActive; }
-  getManualOverrideTimeRemaining(): number { return Math.max(0, this.manualOverrideDuration - this.manualOverrideTimer); }
-  hasEmergencyOverride(): boolean { return this.emergencyOverrides.size > 0; }
-  getEmergencyOverrideCount(): number { return this.emergencyOverrides.size; }
-
-  /** Build downloadable JSON of signal positions */
   async exportSignalsToJSON(): Promise<string | null> {
     if (this.signals.size === 0 || this.graph.nodes.size === 0) return null;
     const { serializeSignals, extractSignalPoints } = await import('../data/signalStore');
