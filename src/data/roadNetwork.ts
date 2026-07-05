@@ -5,6 +5,8 @@ import { saveOSMToFirebase, loadOSMFromFirebase, saveOSMToStorage, loadOSMFromSt
 import type { RawOSMData } from './firebaseCache';
 import { ROAD_CONFIG } from '../config';
 
+const SERVER_URL = import.meta.env.VITE_SERVER_URL;
+
 // ── Geometry helpers ──────────────────────────────────────────────────────────
 
 function bearingFromDeg(lat1: number, lng1: number, lat2: number, lng2: number): number {
@@ -421,6 +423,21 @@ export async function loadBangaloreNetwork(
         return result;
       }
     } catch { /* Firestore unavailable */ }
+  }
+
+  // ── Phase 2a: try server fetch if configured ──
+  if (SERVER_URL) {
+    try {
+      const res = await fetch(`${SERVER_URL}/api/graph`);
+      if (res.ok) {
+        const data = await res.json();
+        const { graphFromJSON } = await import('../engine/serverSync');
+        const { graph: g, signals: sigs } = graphFromJSON(data);
+        const result = { nodes: g.nodes, edges: g.edges, adjacency: g.adjacency, signals: sigs };
+        onUpdate?.({ ...result, phase: 'full', source: data.source || 'server' });
+        return result;
+      }
+    } catch { /* fall through to client-side fetch */ }
   }
 
   // ── Phase 2: emit fallback immediately, then fetch Overpass in background ──
