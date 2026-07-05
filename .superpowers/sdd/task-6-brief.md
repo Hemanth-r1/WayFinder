@@ -1,121 +1,144 @@
-# Task 6: App.tsx overhaul — speed control, keyboard shortcuts, toasts, RAF optimization
+### Task 6: Client Sync Layer
 
 **Files:**
-- Modify: `src/App.tsx`
+- Create: `src/engine/serverSync.ts`
+- Modify: `src/data/roadNetwork.ts` — add server fetch path
 
-## Requirements
+**Step 1: Create `src/engine/serverSync.ts`**
 
-### 1. Speed multiplier
-Add state and logic to multiply the deltaTime passed to engine.update.
-
-Add:
 ```typescript
-const [speed, setSpeed] = useState(1);
-const speedRef = useRef(1);
-```
-```typescript
-useEffect(() => { speedRef.current = speed; }, [speed]);
-```
+import type { RoadGraph, TrafficSignal, Vehicle, CongestionZone, TrafficStats } from '../types';
+import type { RouteInfo } from '../types';
 
-In the RAF loop, change:
-```typescript
-const rawDelta = lastTimeRef.current ? (time - lastTimeRef.current) / 1000 : 0;
-```
-to:
-```typescript
-const rawDelta = lastTimeRef.current ? (time - lastTimeRef.current) / 1000 * speedRef.current : 0;
-```
+const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:8080';
 
-### 2. Proper RAF pause (cancelAnimationFrame)
-Currently the RAF loop runs forever even when paused, just skipping engine.update. Instead, cancel when paused and restart on resume.
-
-Add a pause effect:
-```typescript
-const [paused, setPaused] = useState(false);
-const [simRunning, setSimRunning] = useState(false);
-
-// Track whether loop should be active
-const loopActiveRef = useRef(false);
-```
-
-After engine.start() in the init effect:
-```typescript
-setSimRunning(true);
-loopActiveRef.current = true;
-```
-
-Replace the end of the init effect (the `frameRef.current = requestAnimationFrame(loop)`) with:
-```typescript
-function startLoop() {
-  if (!loopActiveRef.current) return;
-  lastTimeRef.current = 0;
-  frameRef.current = requestAnimationFrame(loop);
+function graphFromJSON(data: {
+  nodes: any[]; edges: any[]; adjacency: [string, string[]][];
+  signals: any[];
+}): { graph: RoadGraph; signals: Map<string, TrafficSignal> } {
+  const nodes = new Map(data.nodes.map((n: any) => [n.id, n]));
+  const edges = new Map(data.edges.map((e: any) => [e.id, e]));
+  const adjacency = new Map<string, string[]>(data.adjacency);
+  const signals = new Map(data.signals.map((s: any) => [s.nodeId, s]));
+  return { graph: { nodes, edges, adjacency }, signals };
 }
-startLoop();
+
+export async function fetchGraphFromServer(): Promise<{
+  graph: RoadGraph; signals: Map<string, TrafficSignal>; source: string; version: number;
+}> {
+  const res = await fetch(`${SERVER_URL}/api/graph`);
+  if (!res.ok) throw new Error(`Server error: ${res.status}`);
+  const data = await res.json();
+  const { graph, signals } = graphFromJSON(data);
+  return { graph, signals, source: data.source, version: data.version };
+}
+
+export async function fetchCongestion(
+  vehicles: Map<string, Vehicle>, nodes: Map<string, any>
+): Promise<{ zones: CongestionZone[]; stats: TrafficStats }> {
+  const vehicleArray = Array.from(vehicles.values()).map(v => ({
+    id: v.id, lat: v.lat, lng: v.lng, speed: v.speed, bearing: v.bearing,
+    type: v.type, color: v.color, isNavigated: v.isNavigated,
+  }));
+  const nodeArray = Array.from(nodes.values()).map(n => ({
+    id: n.id, lat: n.lat, lng: n.lng,
+  }));
+  const res = await fetch(`${SERVER_URL}/api/congestion`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ vehicles: vehicleArray, nodes: nodeArray }),
+  });
+  if (!res.ok) return { zones: [], stats: {} as TrafficStats };
+  return res.json();
+}
+
+export async function fetchSLA(vehicles: Map<string, Vehicle>): Promise<{
+  slaSpeed: number; slaCompliant: boolean; emergencySlaSpeed: number;
+}> {
+  const vehicleArray = Array.from(vehicles.values()).map(v => ({
+    id: v.id, lat: v.lat, lng: v.lng, speed: v.speed, type: v.type,
+  }));
+  const res = await fetch(`${SERVER_URL}/api/sla`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ vehicles: vehicleArray }),
+  });
+  if (!res.ok) return { slaSpeed: 0, slaCompliant: false, emergencySlaSpeed: 0 };
+  return res.json();
+}
+
+export async function fetchRoute(
+  graph: RoadGraph, signals: Map<string, TrafficSignal>,
+  sourceId: string, destId: string
+): Promise<RouteInfo | null> {
+  const graphArray = {
+    nodes: Array.from(graph.nodes.values()).map(n => ({ id: n.id, lat: n.lat, lng: n.lng })),
+    edges: Array.from(graph.edges.values()).map(e => ({
+      id: e.id, from: e.from, to: e.to, name: e.name,
+      roadType: e.roadType, speedLimit: e.speedLimit, length: e.length, bearing: e.bearing,
+      geometry: e.geometry,
+    })),
+    adjacency: Array.from(graph.adjacency.entries()),
+  };
+  const signalArray = Array.from(signals.values()).map(s => ({
+    id: s.id, nodeId: s.nodeId,
+    phases: s.phases, currentPhaseIndex: s.currentPhaseIndex,
+    timer: s.timer, cycleLength: s.cycleLength, offset: s.offset,
+    greenWaveDirection: s.greenWaveDirection,
+    congestionLevel: s.congestionLevel, adaptiveTiming: s.adaptiveTiming,
+  }));
+  const res = await fetch(`${SERVER_URL}/api/route`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      graph: graphArray, signals: signalArray,
+      sourceId, destId,
+    }),
+  });
+  if (!res.ok) return null;
+  const data = await res.json();
+  return data.route;
+}
 ```
 
-Add a pause/resume effect:
+**Step 2: Update `src/data/roadNetwork.ts`**
+
+Start by reading the file (especially `loadBangaloreNetwork`). Add near the top after the imports:
+
 ```typescript
-useEffect(() => {
-  if (paused) {
-    cancelAnimationFrame(frameRef.current);
-  } else if (simRunning) {
-    lastTimeRef.current = 0;
-    frameRef.current = requestAnimationFrame(loop);
-  }
-  return () => {};
-}, [paused, simRunning]);
+const SERVER_URL = import.meta.env.VITE_SERVER_URL;
 ```
 
-Make sure `loop` function is defined above these effects (move it outside the init effect or use a ref).
+Then inside `loadBangaloreNetwork`, BEFORE the Overpass fetch (the try block that does `POST https://overpass-api.de/api/interpreter`), add:
 
-### 3. Add keyboard shortcuts for S, H, 1-4
-
-Add to the existing keyboard handler switch:
 ```typescript
-case 's': case 'S':
-  engineRef.current?.spawnVehicleFromDirection(
-    (['N', 'S', 'E', 'W'] as Direction[])[Math.floor(Math.random() * 4)]
-  );
-  break;
-case 'h': case 'H':
-  setShowHeatmap(p => !p);
-  break;
-case '1': setSpeed(0.5); break;
-case '2': setSpeed(1); break;
-case '3': setSpeed(2); break;
-case '4': setSpeed(4); break;
+if (SERVER_URL) {
+  try {
+    const res = await fetch(`${SERVER_URL}/api/graph`);
+    if (res.ok) {
+      const data = await res.json();
+      const { graphFromJSON } = await import('../engine/serverSync');
+      const { graph: g, signals: sigs } = graphFromJSON(data);
+      callback({
+        phase: 'full', nodes: g.nodes, edges: g.edges,
+        adjacency: g.adjacency, signals: sigs, source: data.source || 'server',
+      });
+      return;
+    }
+  } catch { /* fall through to client-side fetch */ }
+}
 ```
 
-Add state: `const [showHeatmap, setShowHeatmap] = useState(true);`
+**Step 3: Verify build**
 
-Update footer keyboard legend:
-```jsx
-<kbd>Space</kbd> pause ·{' '}
-<kbd>S</kbd> spawn ·{' '}
-<kbd>E</kbd> emergency ·{' '}
-<kbd>H</kbd> heatmap ·{' '}
-<kbd>1-4</kbd> speed ·{' '}
-<kbd>Esc</kbd> cancel
+```bash
+npm run build
 ```
+Expected: tsc + vite build succeed.
 
-### 4. Wire ToastContainer
+**Step 4: Commit**
 
-Import: `import ToastContainer from './components/Toast';`
-
-Add `<ToastContainer />` inside the root div (before the closing `</div>` of the outermost wrapper).
-
-### 5. Pass showHeatmap and speed to MapView
-
-Add to MapView props:
-```typescript
-showHeatmap={showHeatmap}
-speed={speed}
+```bash
+git add src/engine/serverSync.ts src/data/roadNetwork.ts
+git commit -m "feat(client): server sync layer — fetch graph, congestion, SLA, route from API"
 ```
-
-Also add `onSpeedChange` prop:
-```typescript
-onSpeedChange={setSpeed}
-```
-
-Run `npm run build` and `npm run lint` — both must pass. Commit.

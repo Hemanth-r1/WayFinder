@@ -1,50 +1,55 @@
-# Task 8: Speed control UI + heatmap toggle button
+### Task 8: Firebase App Hosting Deployment Config
 
 **Files:**
-- Modify: `src/App.tsx`
+- Create: `firebase.apphosting.yaml`
+- Modify: `server/Dockerfile` — multi-stage build
 
-## Requirements
+**Step 1: Create `firebase.apphosting.yaml`**
 
-### 1. Speed control in sidebar footer
-In `src/App.tsx`, above the keyboard legend in the sidebar footer, add a speed control row:
+Project ID: `project-7d0d26b8-5887-43f6-804` (from .env.example)
 
-```tsx
-<div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-  <span style={{ fontSize: 10, color: '#888', minWidth: 40 }}>Speed</span>
-  <input
-    type="range" min="0.5" max="4" step="0.5"
-    value={speed}
-    onChange={(e) => setSpeed(parseFloat(e.target.value))}
-    style={{ flex: 1, accentColor: '#FF6D00', height: 4 }}
-  />
-  <span style={{ color: '#fff', fontWeight: 'bold', fontSize: 12, minWidth: 28, textAlign: 'right' }}>
-    {speed}×
-  </span>
-</div>
+```yaml
+runConfig:
+  minInstances: 0
+  maxInstances: 1
+  concurrency: 80
+  cpu: 1
+  memoryMiB: 512
+
+env:
+  - variable: GOOGLE_CLOUD_PROJECT
+    value: project-7d0d26b8-5887-43f6-804
+  - variable: SERVER_URL
+    value: https://api-wayfinder-abc123.web.app
 ```
 
-### 2. Heatmap toggle button next to pause button
-In the footer, next to the pause button, add a heatmap toggle:
+Note: The `SERVER_URL` value is a placeholder — the actual URL will be known after the first deployment.
 
-Currently the pause button is `width: '100%'` — change it and add a row of two buttons:
+**Step 2: Update `server/Dockerfile`**
 
-Replace:
-```tsx
-<button onClick={handleTogglePause} style={{ width: '100%', ... }}>
-  {paused ? '▶ Resume' : '⏸ Pause'}
-</button>
+Read the existing Dockerfile first, then replace with multi-stage build:
+
+```dockerfile
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY tsconfig.json ./
+COPY src/ ./src/
+RUN npm run build
+
+FROM node:20-alpine AS runner
+WORKDIR /app
+COPY --from=builder /app/dist/ ./dist/
+COPY package*.json ./
+RUN npm ci --omit=dev
+EXPOSE 8080
+CMD ["node", "dist/index.js"]
 ```
 
-With:
-```tsx
-<div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
-  <button onClick={handleTogglePause} style={{ flex: 1, padding: '9px', background: paused ? '#4CAF50' : '#FF6D00', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 'bold' }}>
-    {paused ? '▶ Resume' : '⏸ Pause'}
-  </button>
-  <button onClick={() => setShowHeatmap(p => !p)} style={{ flex: 1, padding: '9px', background: showHeatmap ? 'rgba(68,136,255,0.25)' : '#222', color: '#fff', border: `1px solid ${showHeatmap ? '#4488FF' : '#444'}`, borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 'bold' }}>
-    🔥 Heatmap
-  </button>
-</div>
-```
+**Step 3: Commit**
 
-Run `npm run build` and `npm run lint` — both must pass. Commit.
+```bash
+git add firebase.apphosting.yaml server/Dockerfile
+git commit -m "deploy: Firebase App Hosting config for server container"
+```

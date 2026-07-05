@@ -1,64 +1,120 @@
-# Task 7: MapView enhancements — heatmap toggle, vehicle tooltips, route display
+### Task 7: Trim TrafficEngine — Strip Heavy Computation
 
 **Files:**
-- Modify: `src/components/MapView.tsx`
+- Modify: `src/engine/TrafficEngine.ts`
+- Modify: `src/App.tsx` — add server polling
 
-## Requirements
+**Step 1: Edit `src/engine/TrafficEngine.ts`**
 
-### 1. Add `showHeatmap` and `routePolyline` props
-Add to `MapViewProps` interface:
+Make these EXACT changes:
+
+**a) Line 2 — remove SLAStats and CorridorInfo from type import:**
 ```typescript
-showHeatmap?: boolean;
-routePolyline?: [number, number][];
+// Before:
+import type { RoadGraph, TrafficSignal, Vehicle, CongestionZone, TrafficStats, Direction, SignalColor, VehicleType, SLAStats, CorridorInfo } from '../types';
+// After:
+import type { RoadGraph, TrafficSignal, Vehicle, CongestionZone, TrafficStats, Direction, SignalColor, VehicleType } from '../types';
 ```
 
-### 2. Conditional heatmap rendering
-Wrap the congestion heatmap effect body so it returns early when `showHeatmap` is false:
+**b) Remove lines 6-7 (slaMonitor, corridorDetector imports):**
 ```typescript
-if (!showHeatmap) { layer.clearLayers(); return; }
-```
-(Place this after `layer.clearLayers()` or before the for loop — clear any existing circles when toggled off.)
-
-### 3. Vehicle tooltips
-In the vehicle update effect, add a tooltip when creating new markers:
-```typescript
-const tooltipText = `${v.type.toUpperCase()} · ${Math.round(v.speed)} km/h`;
-const newMarker = L.marker([v.lat, v.lng], {
-  icon: cachedIcon,
-  zIndexOffset: v.type === 'emergency' ? 1000 : 0,
-}).bindTooltip(tooltipText, {
-  direction: 'top', offset: [0, -2], className: 'wf-tooltip',
-}).addTo(layer);
+// Remove:
+import { computeSLAStats } from './slaMonitor';
+import { detectCorridors } from './corridorDetector';
 ```
 
-Also update existing markers' tooltips when they move:
+**c) Remove line 11 (congestion import):**
 ```typescript
-existing.setLatLng([v.lat, v.lng]);
-existing.setTooltipContent(`${v.type.toUpperCase()} · ${Math.round(v.speed)} km/h`);
+// Remove:
+import { detectCongestionZones, computeStats } from './congestion';
 ```
 
-### 4. Route display layer
-Add a new ref:
+**d) Line 12 — remove SIGNAL_CONFIG from import:**
 ```typescript
-const routeLayerRef = useRef<L.LayerGroup | null>(null);
-```
-Initialize it after heatmapLayerRef in the init effect:
-```typescript
-routeLayerRef.current = L.layerGroup().addTo(map);
+// Before:
+import { SIMULATION_CONFIG, SIGNAL_CONFIG } from '../config';
+// After:
+import { SIMULATION_CONFIG } from '../config';
 ```
 
-Add an effect to draw/clear the route polyline:
+**e) Lines 51-56 — remove private properties (slaStats, corridors, corridorTimer):**
 ```typescript
-useEffect(() => {
-  const layer = routeLayerRef.current;
-  if (!layer) return;
-  layer.clearLayers();
-  if (routePolyline && routePolyline.length > 1) {
-    L.polyline(routePolyline, {
-      color: '#4488FF', weight: 5, opacity: 0.8, dashArray: '12, 8',
-    }).addTo(layer);
-  }
-}, [routePolyline]);
+// Remove these lines:
+  private slaStats: SLAStats = {
+    fleetAvgSpeedKmh: 0, slaCompliant: false, vehicleCount: 0,
+    emergencyAvgSpeedKmh: 0, emergencyCompliant: false,
+  };
+  private corridors: CorridorInfo[] = [];
+  private corridorTimer = 0;
 ```
 
-Run `npm run build` and `npm run lint` — both must pass. Commit.
+**f) In `update(dt)` method — remove lines 114-131, replace with single comment:**
+
+Replace this entire block (lines 114-131):
+```typescript
+    this.slaStats = computeSLAStats(this.vehicles);
+    this.stats.slaSpeed = this.slaStats.fleetAvgSpeedKmh;
+    this.stats.slaCompliant = this.slaStats.slaCompliant;
+    this.stats.emergencySlaSpeed = this.slaStats.emergencyAvgSpeedKmh;
+
+    this.corridorTimer += dt;
+    if (this.corridorTimer >= SIGNAL_CONFIG.CORRIDOR.DETECT_INTERVAL) {
+      this.corridorTimer = 0;
+      this.corridors = detectCorridors(this.vehicles, this.graph, this.signals);
+    }
+    this.stats.activeCorridors = this.corridors.length;
+
+    this.congestionZones = detectCongestionZones(this.vehicles, this.graph.nodes);
+    this.stats = computeStats(this.vehicles, this.congestionZones);
+    this.stats.slaSpeed = this.slaStats.fleetAvgSpeedKmh;
+    this.stats.slaCompliant = this.slaStats.slaCompliant;
+    this.stats.emergencySlaSpeed = this.slaStats.emergencyAvgSpeedKmh;
+    this.stats.activeCorridors = this.corridors.length;
+```
+
+With just:
+```typescript
+    // Heavy computation removed — client only simulates vehicle movement
+    // Congestion, SLA, corridors computed server-side via serverSync
+```
+
+Keep lines 133-136 (greenWaveActive, signalCoordinationScore stats) — those stay.
+
+**Step 2: Edit `src/App.tsx`**
+
+**a) Add import after line 15 (the RouteInfo import line):**
+```typescript
+import { fetchCongestion } from './engine/serverSync';
+```
+
+**b) Add server polling useEffect BEFORE the handlers section (before `// ── Handlers` line). Insert after line 178 (closing of keyboard shortcut useEffect):**
+
+```typescript
+  // ── Server polling ────────────────────────────────────────────────────
+  useEffect(() => {
+    const ival = setInterval(async () => {
+      const e = engineRef.current;
+      if (!e || !e.loaded) return;
+      try {
+        const { zones, stats } = await fetchCongestion(e.vehicles, e.graph.nodes);
+        e.congestionZones = zones;
+        e.stats = { ...e.stats, ...stats };
+      } catch { /* server offline — use local defaults */ }
+    }, 5000);
+    return () => clearInterval(ival);
+  }, []);
+```
+
+**Step 3: Verify build**
+
+```bash
+npm run build
+```
+Expected: tsc + vite build succeed.
+
+**Step 4: Commit**
+
+```bash
+git add src/engine/TrafficEngine.ts src/App.tsx
+git commit -m "refactor(client): strip heavy computation, add server polling"
+```

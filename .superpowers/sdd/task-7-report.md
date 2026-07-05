@@ -1,14 +1,13 @@
-# Task 7 Report: MapView enhancements
+# Task 7 Report: Trim TrafficEngine — Strip Heavy Computation
 
-**Status:** Complete
+**Status:** ✅ Complete
 
-**Changes made to `src/components/MapView.tsx`:**
-1. Added `routePolyline?: [number, number][]` to `MapViewProps` (line 43)
-2. Made heatmap effect conditional — early return when `showHeatmap` is false (line 308); added `showHeatmap` to dep array
-3. Added vehicle tooltips — `.bindTooltip(...)` on new markers (lines 291–297), `.setTooltipContent(...)` on existing markers (line 266)
-4. Added `routeLayerRef`, initialized in init effect, and a new effect to draw/clear a dashed route polyline (lines 67, 319–329)
+**SHA:** `d03577b63ea533abbaa0f8128878117da671d4e2`
 
-**Build:** `npm run build` — passed (tsc + vite)
-**Lint:** `npm run lint` — passed (0 errors, 2 pre-existing warnings)
+**Changes applied:**
+- `src/engine/TrafficEngine.ts` — Removed `SLAStats`/`CorridorInfo` from type import, removed `computeSLAStats`, `detectCorridors`, `detectCongestionZones`, `computeStats` imports, removed `SIGNAL_CONFIG` import, removed private properties (`slaStats`, `corridors`, `corridorTimer`), replaced heavy computation block in `update()` with comment
+- `src/App.tsx` — Added `fetchCongestion` import and server polling `useEffect` (5s interval)
 
-**Commit:** `66b27fb` — "Task 7: MapView enhancements — heatmap toggle, vehicle tooltips, route display"
+**Verification:** `npm run build` passed (tsc + vite build succeed)
+
+**Concerns:** None

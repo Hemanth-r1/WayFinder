@@ -1,13 +1,12 @@
-# Task 2 Report
+# Task 2: Shared Types Package — Report
 
 **Status:** DONE
 
-**Commits:**
-- `02bdccb` Fix TrafficEngine bugs: spawnVehicleFromDirection uses direction param, manualOverrideSignal scoped to target signal
+**Commit:** `8d3ae9b` feat(server): add serializable shared types
 
-**Changes:**
-1. `src/engine/TrafficEngine.ts:157` — Replaced `spawnVehicleFromDirection` body: now filters edge nodes by bearing matching the given direction (N/S/E/W), picks a random matching node, and spawns a vehicle there. Removed underscore prefix from `_direction` param. Added missing `this.signals` 4th arg to `spawnVehicleAt` call (brief's snippet was missing it — function expects 4 params).
-2. `src/engine/TrafficEngine.ts:204` — Replaced `manualOverrideSignal` body: now only sets `adaptiveTiming = false` on the target signal (was setting it on ALL signals). Only iterates the target signal's phases instead of all signals' phases.
+**Files created:**
+- `server/src/types.ts` — 55 lines, 9 interfaces (RoadNode, RoadEdge, RoadGraph, SignalPhase, TrafficSignal, Vehicle, CongestionZone, TrafficStats, RouteInfo)
 
-**Build:** `npm run build` — passed (tsc + vite build)
-**Lint:** `npm run lint` — passed (1 pre-existing warning in AuthContext.tsx, 0 errors)
+**Verification:** `npx tsc --noEmit` passed with zero errors.
+
+**Notes:** All interfaces use arrays instead of Maps for JSON serialization compatibility. The `adjacency` field on `RoadGraph` uses `[string, string[]][]` (tuple array) matching the brief exactly. `verbatimModuleSyntax` is satisfied by the absence of type-only imports.

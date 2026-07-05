@@ -1,60 +1,75 @@
-# Task 2: Fix TrafficEngine bugs
+### Task 2: Shared Types Package
 
 **Files:**
-- Modify: `src/engine/TrafficEngine.ts`
+- Create: `server/src/types.ts` — mirror of shared types (serializable versions)
 
-## Requirements
+**Interfaces:**
+- Produces: Serializable versions of `RoadGraph`, `Vehicle`, `TrafficSignal`, `CongestionZone`, `TrafficStats`, `RouteInfo`
+- Consumes: (none — standalone type definitions)
 
-1. **Fix `spawnVehicleFromDirection`** — currently ignores the `_direction` param (has underscore prefix). Replace the body to pick a start edge matching the bearing of the given direction:
+**Step 1: Create `server/src/types.ts` with serializable graph types**
 
-   ```typescript
-   spawnVehicleFromDirection(direction: Direction, type?: VehicleType): void {
-     const edgeNodes = Array.from(this.graph.nodes.entries()).filter(([id, _node]) => {
-       const adj = this.graph.adjacency.get(id) || [];
-       return adj.some(e => {
-         const bearing = e.bearing;
-         if (direction === 'N') return bearing > 315 || bearing <= 45;
-         if (direction === 'S') return bearing > 135 && bearing <= 225;
-         if (direction === 'E') return bearing > 45 && bearing <= 135;
-         if (direction === 'W') return bearing > 225 && bearing <= 315;
-         return false;
-       });
-     });
-     if (edgeNodes.length === 0) return;
-     const startId = edgeNodes[Math.floor(Math.random() * edgeNodes.length)][0];
-     const vType = type || (['sedan', 'sedan', 'suv', 'hatchback', 'bike', 'auto'] as VehicleType[])[Math.floor(Math.random() * 6)];
-     const v = spawnVehicleAt(this.graph, startId, vType);
-     if (v) this.vehicles.set(v.id, v);
-   }
-   ```
+```typescript
+// Serializable versions — Maps converted to arrays for JSON transfer
 
-   Remove the underscore from the first param name: `_direction` → `direction`.
+export interface RoadNode {
+  id: string; lat: number; lng: number; trafficSignalId?: string;
+}
 
-2. **Fix manual override scope** — currently disables `adaptiveTiming` on ALL signals. Should only disable it on the target signal. Replace the method body:
+export interface RoadEdge {
+  id: string; from: string; to: string;
+  name: string; roadType: string; speedLimit: number; length: number;
+  bearing: number; lanes: number; geometry: { lat: number; lng: number }[];
+}
 
-   ```typescript
-   manualOverrideSignal(signalId: string, direction: Direction, color: SignalColor): void {
-     const signal = this.signals.get(signalId);
-     if (!signal) return;
-     this.manualOverrideActive = true;
-     this.manualOverrideTimer = 0;
-     signal.adaptiveTiming = false;
+export interface RoadGraph {
+  nodes: RoadNode[];
+  edges: RoadEdge[];
+  adjacency: [string, string[]][];
+}
 
-     for (const phase of signal.phases) {
-       if (phase.direction === direction) {
-         phase.color = color;
-         phase.duration = color === 'GREEN' ? 30 : 5;
-       } else {
-         phase.color = color === 'GREEN' ? 'RED' : 'GREEN';
-         phase.duration = color === 'GREEN' ? 5 : 25;
-       }
-     }
-   }
-   ```
+export interface SignalPhase {
+  group: string; color: string; duration: number; yellowDuration: number;
+}
 
-3. Run `npm run build` and `npm run lint` — both must pass.
+export interface TrafficSignal {
+  id: string; nodeId: string;
+  phases: SignalPhase[];
+  currentPhaseIndex: number; timer: number;
+  cycleLength: number; offset: number;
+  greenWaveDirection: string | null;
+  congestionLevel: number; adaptiveTiming: boolean;
+}
 
-## Global Constraints
-- `verbatimModuleSyntax: true`
-- `erasableSyntaxOnly: true`
-- `noUnusedLocals` / `noUnusedParameters` are errors
+export interface Vehicle {
+  id: string; lat: number; lng: number;
+  speed: number; bearing: number;
+  type: string; color: string;
+  isNavigated: boolean;
+}
+
+export interface CongestionZone {
+  centerLat: number; centerLng: number;
+  level: number; vehicles: number;
+}
+
+export interface TrafficStats {
+  totalVehicles: number; avgSpeed: number; avgDelay: number;
+  congestionHotspots: number; greenWaveActive: boolean;
+  signalCoordinationScore: number; throughput: number; maxCongestion: number;
+  slaSpeed: number; slaCompliant: boolean;
+  emergencySlaSpeed: number; activeCorridors: number;
+}
+
+export interface RouteInfo {
+  path: string[]; distance: number; estimatedTime: number;
+  signalCount: number; roadNames: string[];
+}
+```
+
+**Step 2: Commit**
+
+```bash
+git add server/src/types.ts
+git commit -m "feat(server): add serializable shared types"
+```

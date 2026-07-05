@@ -1,19 +1,21 @@
-# Task 4 Report: Toast notification system
+# Task 4 Report: Server Heavy Computation Endpoints
 
-**Status:** Complete
+## Status: DONE
 
-**Created:** `src/components/Toast.tsx`
+### Files Created
+- `server/src/congestionService.ts` — congestion zone clustering + stats computation
+- `server/src/slaService.ts` — SLA speed/compliance/emergency avg
+- `server/src/corridorService.ts` — active corridor detection by speed threshold
+- `server/src/pathfindingService.ts` — A* shortest path with heuristic
 
-**Build result:** ✅ `npm run build` — passed (tsc + vite)
-**Lint result:** ✅ `npm run lint` — 0 errors, 2 warnings (pre-existing + expected react-refresh warning for mixed exports)
+### File Modified
+- `server/src/index.ts` — added 4 POST routes: `/api/congestion`, `/api/sla`, `/api/corridors`, `/api/route`
 
-**Commit:** `09c9b95` — Add toast notification system (pushToast + ToastContainer)
+### Fix Applied
+Fixed a typo in the brief's `slaService.ts` — the return type had an extra `>` on the closing brace (`}> {` → `} {`).
 
-**Details:**
-- Exports `pushToast(text, type?, duration?)` global function
-- Default exports `ToastContainer` React component
-- Module-level array + listener pattern (no React context)
-- Supports `info`/`success`/`warning`/`error` types with color-coded backgrounds
-- Auto-dismiss with configurable duration (default 4000ms)
-- Slide-in animation via `@keyframes toastIn`
-- Click to dismiss
+### Verification
+`cd server && npx tsc --noEmit` — **no errors**
+
+### Commit
+`d6912e5` — `feat(server): congestion, SLA, corridor, and route endpoints`
