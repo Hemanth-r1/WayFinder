@@ -9,10 +9,12 @@
   },
   "dependencies": {
     "express": "^4.21.0",
-    "firebase-admin": "^12.6.0"
+    "firebase-admin": "^12.6.0",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
+    "@types/ws": "^8.5.13",
     "tsx": "^4.19.0",
     "typescript": "~5.7.0"
   }

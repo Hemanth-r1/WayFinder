@@ -1,10 +1,15 @@
 import express from 'express';
+import { createServer } from 'http';
 import { initFirebase, getDb } from './firebaseClient.js';
 import { getGraph } from './graphService.js';
 import { computeCongestionZones, computeStats } from './congestionService.js';
 import { computeSLA } from './slaService.js';
 import { detectActiveCorridors } from './corridorService.js';
 import { findRoute } from './pathfindingService.js';
+import { initSimulationEngine, getSimulationEngine } from './simulationEngine.js';
+import { addUserVehicle, removeUserVehicle, getUserVehiclePosition } from './userVehicleService.js';
+import { startNavigation, getNavigationUpdate } from './navigationService.js';
+import { initializeWebSocket, handleWebSocketUpgrade } from './websocketService.js';
 import type { Firestore } from 'firebase-admin/firestore';
 
 const app = express();
@@ -22,10 +27,107 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
 
-app.get('/api/graph', async (_req, res) => {
+app.get('/api/graph', async (req, res) => {
   try {
-    const result = await getGraph();
+    const forceRefresh = req.query.refresh === 'true';
+    const result = await getGraph(forceRefresh);
     res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/vehicles', async (_req, res) => {
+  try {
+    const engine = getSimulationEngine();
+    if (!engine) {
+      return res.status(503).json({ error: 'Simulation engine not running' });
+    }
+    const vehicles = engine.getVehicles();
+    res.json({ vehicles });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/signals', async (_req, res) => {
+  try {
+    const engine = getSimulationEngine();
+    if (!engine) {
+      return res.status(503).json({ error: 'Simulation engine not running' });
+    }
+    const signals = engine.getSignals();
+    res.json({ signals });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/stats', async (_req, res) => {
+  try {
+    const engine = getSimulationEngine();
+    if (!engine) {
+      return res.status(503).json({ error: 'Simulation engine not running' });
+    }
+    const stats = engine.getStats();
+    res.json(stats);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/user/start', async (req, res) => {
+  try {
+    const { userId, sourceNodeId, destNodeId } = req.body;
+    if (!userId || !sourceNodeId || !destNodeId) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const engine = getSimulationEngine();
+    if (!engine) {
+      return res.status(503).json({ error: 'Simulation engine not running' });
+    }
+
+    const { graph, signals } = await getGraph();
+    const navigation = await startNavigation({ userId, sourceNodeId, destNodeId }, graph, signals);
+    res.json(navigation);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/user/:userId/position', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const position = getUserVehiclePosition(userId);
+    if (!position) {
+      return res.status(404).json({ error: 'User vehicle not found' });
+    }
+    res.json(position);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/user/:userId/navigation', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { graph, signals } = await getGraph();
+    const navigation = await getNavigationUpdate(userId, graph, signals);
+    if (!navigation) {
+      return res.status(404).json({ error: 'User navigation not found' });
+    }
+    res.json(navigation);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/user/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    removeUserVehicle(userId);
+    res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -54,9 +156,31 @@ app.post('/api/route', (req, res) => {
   res.json({ route });
 });
 
-const PORT = parseInt(process.env.PORT || '8080', 10);
-app.listen(PORT, () => {
+const PORT = parseInt(process.env.PORT || '5000', 10);
+
+// Initialize simulation engine on startup
+async function initializeServer() {
+  try {
+    const { graph, signals } = await getGraph();
+    const engine = initSimulationEngine(graph, signals);
+    engine.start();
+    console.log('[WayFinder Server] Simulation engine started');
+    initializeWebSocket();
+    console.log('[WayFinder Server] WebSocket initialized');
+  } catch (err) {
+    console.error('[WayFinder Server] Failed to initialize simulation interface:', err);
+  }
+}
+
+const server = createServer(app);
+
+server.on('upgrade', (request, socket, head) => {
+  handleWebSocketUpgrade(request, socket, head);
+});
+
+server.listen(PORT, () => {
   console.log(`[WayFinder Server] Listening on ${PORT}`);
+  initializeServer();
 
   // Firestore command listener — deferred so server boots even if Firebase is down
   if (!db) {
