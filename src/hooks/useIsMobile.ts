@@ -1,15 +1,19 @@
 import { useEffect, useState } from 'react';
 
-const QUERY = '(max-width: 768px)';
-
-/** True on phone-sized viewports; updates on resize/rotation. */
-export function useIsMobile(): boolean {
-  const [mobile, setMobile] = useState(() => typeof window !== 'undefined' && window.matchMedia(QUERY).matches);
+/** Whether a CSS media query matches; updates on resize/rotation. */
+export function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() => typeof window !== 'undefined' && window.matchMedia(query).matches);
   useEffect(() => {
-    const mql = window.matchMedia(QUERY);
-    const onChange = () => setMobile(mql.matches);
+    const mql = window.matchMedia(query);
+    const onChange = () => setMatches(mql.matches);
+    onChange();
     mql.addEventListener('change', onChange);
     return () => mql.removeEventListener('change', onChange);
-  }, []);
-  return mobile;
+  }, [query]);
+  return matches;
+}
+
+/** True on phone-sized viewports. */
+export function useIsMobile(): boolean {
+  return useMediaQuery('(max-width: 768px)');
 }

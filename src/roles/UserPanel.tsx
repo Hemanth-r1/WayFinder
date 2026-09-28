@@ -147,15 +147,15 @@ export default function UserPanel(p: Props) {
 
           {selected && (
             <>
-              {/* Kept in reach on small screens where the option list scrolls */}
+              {/* Start stays in reach on small screens where the option list scrolls */}
               <div style={{ position: 'sticky', bottom: 0, background: 'rgba(8,8,18,0.99)', paddingBottom: 8 }}>
                 <button onClick={p.onStart} disabled={p.starting} style={styles.primary}>
                   {p.starting ? 'Starting…' : '▶ Start'}
                 </button>
-                <button onClick={p.onOpenGoogleMaps} disabled={p.starting} style={styles.secondary}>
-                  Open this route in Google Maps
-                </button>
               </div>
+              <button onClick={p.onOpenGoogleMaps} disabled={p.starting} style={styles.secondary}>
+                Open this route in Google Maps
+              </button>
               <div style={{ ...styles.muted, fontSize: 11, marginTop: 4 }}>
                 Routes use live traffic and the routes other WayFinder drivers were given, so people going the same way are spread across nearby roads.
               </div>

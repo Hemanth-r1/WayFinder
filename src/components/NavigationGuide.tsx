@@ -1,6 +1,7 @@
 import type { CSSProperties } from 'react';
 import type { NavigationResponse, ReportVote } from '../services/serverClient';
 import { REPORT_LABEL } from '../utils/reports';
+import { useMediaQuery } from '../hooks/useIsMobile';
 
 interface Props {
   navigation: NavigationResponse;
@@ -39,6 +40,8 @@ export default function NavigationGuide({
   showReroute, rerouting, onAcceptReroute, onDismissReroute, onAnswerReport,
 }: Props) {
   const prompt = navigation.reportPrompt;
+  // Phones in landscape: keep the card short so the map stays visible
+  const shortScreen = useMediaQuery('(max-height: 500px)');
   const offer = showReroute ? navigation.reroute : null;
   const nextSignal = navigation.signals[0];
   const traffic = navigation.trafficConditions;
@@ -132,7 +135,7 @@ export default function NavigationGuide({
       </div>
 
       {/* Next signal + traffic */}
-      <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+      <div style={{ display: shortScreen ? 'none' : 'flex', gap: 8, marginTop: 12 }}>
         <div style={{ flex: 1, background: '#1a1a2e', borderRadius: 10, padding: '8px 10px', display: 'flex', alignItems: 'center', gap: 10 }}>
           {nextSignal ? (
             <>

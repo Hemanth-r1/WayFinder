@@ -458,7 +458,7 @@ export default function MapView({
         position: 'absolute', top: 12, left: 270, zIndex: 1001,
         background: 'rgba(10,10,20,0.85)', border: '1px solid #333', borderRadius: 8,
         padding: '6px 12px', fontFamily: 'monospace', fontSize: 11, color: '#ccc',
-        display: 'flex', gap: 14, backdropFilter: 'blur(4px)',
+        display: 'flex', gap: 14, backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
       }}>
         <span>🚗 {stats.vehicleCount}</span>
         <span>⚡ {stats.avgSpeed.toFixed(1)} km/h</span>
@@ -480,7 +480,7 @@ export default function MapView({
           zIndex: 1002, background: 'rgba(255,152,0,0.12)', border: '1px solid #FF9800',
           borderRadius: 8, padding: '7px 16px', display: 'flex', alignItems: 'center',
           gap: 12, fontFamily: 'monospace', fontSize: 12, fontWeight: 'bold',
-          backdropFilter: 'blur(4px)',
+          backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
         }}>
           <span style={{ color: '#FF9800' }}>⚡ OVERRIDE</span>
           <span style={{ color: '#fff' }}>{Math.round(overrideTimeRemaining)}s</span>

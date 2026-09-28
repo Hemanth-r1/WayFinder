@@ -460,14 +460,15 @@ function AppContent() {
 
   return (
     <div style={{
-      width: '100vw', height: '100dvh', display: 'flex', margin: 0, padding: 0, overflow: 'hidden',
+      // % of the full-height #root rather than dvh, which older Safari/Firefox don't support
+      width: '100vw', height: '100%', display: 'flex', margin: 0, padding: 0, overflow: 'hidden',
       flexDirection: isMobile ? 'column-reverse' : 'row',
     }}>
       {/* Sidebar (bottom sheet on phones) */}
       <div style={{
         display: hideSidebar ? 'none' : 'flex', flexDirection: 'column',
         ...(isMobile
-          ? { width: '100%', maxHeight: '52dvh', borderTop: '1px solid #222', borderRadius: '14px 14px 0 0' }
+          ? { width: '100%', maxHeight: '52%', borderTop: '1px solid #222', borderRadius: '14px 14px 0 0' }
           : { width: 340, minWidth: 340, height: '100%', borderRight: '1px solid #222' }),
         background: 'rgba(8,8,18,0.99)', zIndex: 1001,
         fontFamily: 'system-ui, sans-serif',

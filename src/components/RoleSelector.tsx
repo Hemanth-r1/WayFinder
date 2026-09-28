@@ -62,9 +62,9 @@ export default function RoleSelector() {
         {role}
       </span>
       <button onClick={signOut} style={{
-        padding: '4px 10px', background: '#333', color: '#ccc',
-        border: '1px solid #555', borderRadius: 4, cursor: 'pointer',
-        fontSize: 11,
+        padding: '0 12px', minHeight: 32, background: '#333', color: '#ccc',
+        border: '1px solid #555', borderRadius: 6, cursor: 'pointer',
+        fontSize: 12,
       }}>
         Sign Out
       </button>
