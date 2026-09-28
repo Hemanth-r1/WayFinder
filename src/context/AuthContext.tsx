@@ -33,7 +33,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!isFirebaseReady) {
       // Firebase not configured - use demo mode
       console.log('[Auth] Firebase not configured, using demo mode');
-      setUser({ uid: 'demo-user', email: 'demo@example.com' } as User);
+      // One ID per browser so demo users are routed as different drivers
+      let uid = 'demo-user';
+      try {
+        uid = localStorage.getItem('wayfinder_demo_uid') ?? `demo-${Math.random().toString(36).slice(2, 10)}`;
+        localStorage.setItem('wayfinder_demo_uid', uid);
+      } catch { /* storage unavailable: shared demo ID */ }
+      setUser({ uid, email: 'demo@example.com' } as User);
       setRole('user');
       setLoading(false);
       return;

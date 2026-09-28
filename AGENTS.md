@@ -73,4 +73,6 @@ Real authentication and data persistence via Firebase Auth + Firestore.
 - Inline styles throughout (no CSS modules, no Tailwind).
 - Mini-map is a second Leaflet map instance drawing on `#mini-map`.
 - User navigation routing runs on the server (`server/src/pathfindingService.ts`): time-based A* with live edge congestion, signal delay, and a penalty per other navigator already routed over an edge, so users with similar trips are spread across nearby routes. `POST /api/route` returns up to 3 options; `POST /api/user/start` accepts the chosen `edgeIds`.
+- Driver UI (`role === 'user'`): search box (`src/utils/places.ts` — road names from the loaded graph, plus OSM Nominatim for addresses, limited to Bangalore), GPS "My location", and an "Open in Google Maps" hand-off that passes 3 waypoints along the user's route. Operator overlays (stats HUD, legend, mini-map, floating nav panel) are hidden for drivers. Phones (≤768px, `useIsMobile`) get a bottom-sheet layout.
+- Demo mode (no Firebase config) gives each browser its own `demo-…` user ID so route spreading can be tried with several tabs/devices.
 - The server listens on 8080 (matches Vite proxy, client default and Dockerfile); `CORS_ORIGIN` controls the allowed browser origin.

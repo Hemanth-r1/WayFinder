@@ -47,14 +47,9 @@ export default function RoleSelector() {
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, position: 'relative' }}>
-      <span style={{
-        fontSize: 11, color: '#888', maxWidth: 140, overflow: 'hidden',
-        textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-      }}>
-        {user?.email}
-      </span>
       <span
         onClick={() => setShowPromote(p => !p)}
+        title={user?.email ?? undefined}
         style={{
           padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 'bold',
           background: `${roleColors[role] || '#555'}22`,
