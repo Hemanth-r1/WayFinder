@@ -72,4 +72,5 @@ Real authentication and data persistence via Firebase Auth + Firestore.
 - Manual signal override lasts 30 seconds, then resets all signals to adaptive mode.
 - Inline styles throughout (no CSS modules, no Tailwind).
 - Mini-map is a second Leaflet map instance drawing on `#mini-map`.
-- Vehicle route-finding for spawn uses BFS, while the navigation panel uses A*.
+- User navigation routing runs on the server (`server/src/pathfindingService.ts`): time-based A* with live edge congestion, signal delay, and a penalty per other navigator already routed over an edge, so users with similar trips are spread across nearby routes. `POST /api/route` returns up to 3 options; `POST /api/user/start` accepts the chosen `edgeIds`.
+- The server listens on 8080 (matches Vite proxy, client default and Dockerfile); `CORS_ORIGIN` controls the allowed browser origin.

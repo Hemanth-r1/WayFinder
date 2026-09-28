@@ -1,19 +1,23 @@
-import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { collection, query, where, orderBy, onSnapshot, addDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { useAuth } from '../context/useAuth';
 import type { RoadGraph } from '../types';
 import type { UserRoute } from '../types/roles';
-import { aStarRoute } from '../engine/pathfinding';
-import type { TrafficSignal } from '../types';
+import type { RouteOption } from '../services/serverClient';
 
 interface Props {
-  graph: RoadGraph; signals: Map<string, TrafficSignal>;
+  graph: RoadGraph;
   selectedSource: string | null; selectedDest: string | null;
   onSelectSource: (id: string | null) => void; onSelectDest: (id: string | null) => void;
+  routeOptions: RouteOption[]; selectedRouteIndex: number; onSelectRoute: (index: number) => void;
+  routeLoading: boolean; routeError: string | null; navigating: boolean;
 }
 
-export default function UserPanel({ graph, signals, selectedSource, selectedDest, onSelectSource, onSelectDest }: Props) {
+export default function UserPanel({
+  graph, selectedSource, selectedDest, onSelectSource, onSelectDest,
+  routeOptions, selectedRouteIndex, onSelectRoute, routeLoading, routeError, navigating,
+}: Props) {
   const { user } = useAuth();
   const [submitted, setSubmitted] = useState(false);
   const [routes, setRoutes] = useState<UserRoute[]>([]);
@@ -22,7 +26,7 @@ export default function UserPanel({ graph, signals, selectedSource, selectedDest
   useEffect(() => { return () => { if (timerRef.current) clearTimeout(timerRef.current); }; }, []);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || !db) return; // demo mode: Firebase not configured
     const q = query(
       collection(db, 'routes'),
       where('userId', '==', user.uid),
@@ -52,13 +56,8 @@ export default function UserPanel({ graph, signals, selectedSource, selectedDest
     return unsub;
   }, [user]);
 
-  const route = useMemo(
-    () => selectedSource && selectedDest ? aStarRoute(graph, selectedSource, selectedDest, signals) : null,
-    [selectedSource, selectedDest, graph, signals]
-  );
-
   const handleSubmit = useCallback(async () => {
-    if (!selectedSource || !selectedDest || !user) return;
+    if (!selectedSource || !selectedDest || !user || !db) return;
     const src = graph.nodes.get(selectedSource); const dst = graph.nodes.get(selectedDest);
     if (!src || !dst) return;
     try {
@@ -78,6 +77,11 @@ export default function UserPanel({ graph, signals, selectedSource, selectedDest
     }
   }, [selectedSource, selectedDest, graph, user]);
 
+  const nodeLabel = (id: string) => {
+    const edge = graph.adjacency.get(id)?.find(e => e.name);
+    return edge?.name ? `${edge.name} (${id})` : id;
+  };
+
   return (
     <div style={{ padding: '0 14px' }}>
         <div style={styles.section}>
@@ -90,7 +94,7 @@ export default function UserPanel({ graph, signals, selectedSource, selectedDest
             }}>
               <span style={{ color: '#4CAF50', fontSize: 14 }}>●</span>
               <span style={{ fontSize: 12, flex: 1, color: selectedSource ? '#ccc' : '#555' }}>
-                {selectedSource ?? 'Right-click a road to set'}
+                {selectedSource ? nodeLabel(selectedSource) : 'Click a road on the map to set'}
               </span>
               {selectedSource && (
                 <button onClick={() => onSelectSource(null)} style={{ background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: 14, padding: 0 }}>✕</button>
@@ -105,7 +109,7 @@ export default function UserPanel({ graph, signals, selectedSource, selectedDest
             }}>
               <span style={{ color: '#F44336', fontSize: 14 }}>●</span>
               <span style={{ fontSize: 12, flex: 1, color: selectedDest ? '#ccc' : '#555' }}>
-                {selectedDest ?? 'Right-click a road to set'}
+                {selectedDest ? nodeLabel(selectedDest) : 'Click a road on the map to set'}
               </span>
               {selectedDest && (
                 <button onClick={() => onSelectDest(null)} style={{ background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: 14, padding: 0 }}>✕</button>
@@ -113,13 +117,44 @@ export default function UserPanel({ graph, signals, selectedSource, selectedDest
             </div>
           </div>
         </div>
-      {route && (
+      {selectedSource && selectedDest && !navigating && (
         <div style={styles.section}>
-          <div style={{ background: '#ffffff08', borderRadius: 6, padding: 8 }}>
-            <div style={styles.statRow}><span style={styles.statLabel}>Distance</span><span style={styles.statValue}>{(route.distance / 1000).toFixed(1)} km</span></div>
-            <div style={styles.statRow}><span style={styles.statLabel}>Est. Time</span><span style={styles.statValue}>{Math.round(route.estimatedTime)}s</span></div>
-            <div style={styles.statRow}><span style={styles.statLabel}>Signals</span><span style={styles.statValue}>{route.signalCount}</span></div>
-          </div>
+          <div style={styles.sectionTitle}>Routes for you</div>
+          {routeLoading && <div style={{ fontSize: 11, color: '#888' }}>Finding routes…</div>}
+          {!routeLoading && routeError && <div style={{ fontSize: 11, color: '#F44336' }}>{routeError}</div>}
+          {!routeLoading && routeOptions.map((r, i) => {
+            const selected = i === selectedRouteIndex;
+            return (
+              <button
+                key={r.edgeIds.join()}
+                onClick={() => onSelectRoute(i)}
+                style={{
+                  display: 'block', width: '100%', textAlign: 'left', marginBottom: 6, padding: 8,
+                  background: selected ? '#4488FF22' : '#ffffff08', color: '#ccc', cursor: 'pointer',
+                  border: `1px solid ${selected ? '#4488FF' : '#333'}`, borderRadius: 6,
+                }}
+              >
+                <div style={styles.statRow}>
+                  <span style={{ ...styles.statValue, color: selected ? '#4488FF' : '#fff' }}>
+                    {i === 0 ? 'Recommended' : `Alternative ${i}`}
+                  </span>
+                  <span style={styles.statValue}>{Math.max(1, Math.round(r.estimatedTime / 60))} min</span>
+                </div>
+                <div style={{ fontSize: 11, color: '#888' }}>
+                  {(r.distance / 1000).toFixed(1)} km · {r.signalCount} signals
+                  {r.sharedUsers > 0 && <span style={{ color: '#FF9800' }}> · {r.sharedUsers} other navigator{r.sharedUsers > 1 ? 's' : ''}</span>}
+                </div>
+                {r.roadNames.length > 0 && (
+                  <div style={{ fontSize: 10, color: '#666', marginTop: 2 }}>via {r.roadNames.slice(0, 3).join(', ')}</div>
+                )}
+              </button>
+            );
+          })}
+          {!routeLoading && routeOptions.length > 0 && (
+            <div style={{ fontSize: 10, color: '#555', lineHeight: 1.4 }}>
+              Routes account for live traffic and for routes other WayFinder users are already driving, so nearby users are spread across different roads.
+            </div>
+          )}
         </div>
       )}
       <div style={styles.section}>

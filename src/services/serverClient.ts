@@ -41,7 +41,21 @@ export interface ServerStats {
   activeCorridors: number;
 }
 
+/** One route option from the server, fastest first. */
+export interface RouteOption {
+  path: string[];
+  edgeIds: string[];
+  distance: number;
+  estimatedTime: number;
+  signalCount: number;
+  roadNames: string[];
+  geometry: Array<{ lat: number; lng: number }>;
+  /** Most other active navigators sharing any single road segment of this route */
+  sharedUsers: number;
+}
+
 export interface NavigationResponse {
+  /** Remaining path geometry */
   path: Array<{ lat: number; lng: number }>;
   distance: number;
   duration: number;
@@ -58,13 +72,17 @@ export interface NavigationResponse {
     avgSpeed: number;
     vehicleCount: number;
   };
-  routeInfo: {
-    path: string[];
-    distance: number;
-    estimatedTime: number;
-    signalCount: number;
-    roadNames: string[];
-  };
+  routeInfo: RouteOption;
+  alternatives: RouteOption[];
+  arrived: boolean;
+}
+
+async function errorMessage(response: Response, fallback: string): Promise<string> {
+  try {
+    const body = await response.json();
+    if (body?.error) return body.error;
+  } catch { /* not JSON */ }
+  return `${fallback}: ${response.status} ${response.statusText}`;
 }
 
 class ServerClient {
@@ -72,6 +90,7 @@ class ServerClient {
   private reconnectTimer: number | null = null;
   private updateCallbacks: Set<(data: any) => void> = new Set();
   private connectionState: 'connecting' | 'connected' | 'disconnected' = 'disconnected';
+  private shouldReconnect = false;
 
   async fetchGraph(forceRefresh = false) {
     const url = `${SERVER_URL}/api/graph${forceRefresh ? '?refresh=true' : ''}`;
@@ -98,30 +117,44 @@ class ServerClient {
     return response.json();
   }
 
-  async startNavigation(userId: string, sourceNodeId: string, destNodeId: string): Promise<NavigationResponse> {
+  /** Route options for this user, accounting for routes other users are already driving. */
+  async fetchRouteOptions(userId: string | undefined, sourceId: string, destId: string, signal?: AbortSignal): Promise<RouteOption[]> {
+    const response = await fetch(`${SERVER_URL}/api/route`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, sourceId, destId }),
+      signal,
+    });
+    if (!response.ok) throw new Error(await errorMessage(response, 'Failed to plan route'));
+    const { routes } = await response.json();
+    return routes ?? [];
+  }
+
+  /** Starts driving `edgeIds` (a chosen RouteOption); the server falls back to its best route if stale. */
+  async startNavigation(userId: string, sourceNodeId: string, destNodeId: string, edgeIds?: string[]): Promise<NavigationResponse> {
     const response = await fetch(`${SERVER_URL}/api/user/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId, sourceNodeId, destNodeId }),
+      body: JSON.stringify({ userId, sourceNodeId, destNodeId, edgeIds }),
     });
-    if (!response.ok) throw new Error(`Failed to start navigation: ${response.statusText}`);
+    if (!response.ok) throw new Error(await errorMessage(response, 'Failed to start navigation'));
     return response.json();
   }
 
   async getUserPosition(userId: string): Promise<ServerVehicle> {
-    const response = await fetch(`${SERVER_URL}/api/user/${userId}/position`);
+    const response = await fetch(`${SERVER_URL}/api/user/${encodeURIComponent(userId)}/position`);
     if (!response.ok) throw new Error(`Failed to fetch user position: ${response.statusText}`);
     return response.json();
   }
 
   async getUserNavigation(userId: string): Promise<NavigationResponse> {
-    const response = await fetch(`${SERVER_URL}/api/user/${userId}/navigation`);
+    const response = await fetch(`${SERVER_URL}/api/user/${encodeURIComponent(userId)}/navigation`);
     if (!response.ok) throw new Error(`Failed to fetch user navigation: ${response.statusText}`);
     return response.json();
   }
 
   async removeUserVehicle(userId: string): Promise<{ success: boolean }> {
-    const response = await fetch(`${SERVER_URL}/api/user/${userId}`, {
+    const response = await fetch(`${SERVER_URL}/api/user/${encodeURIComponent(userId)}`, {
       method: 'DELETE',
     });
     if (!response.ok) throw new Error(`Failed to remove user vehicle: ${response.statusText}`);
@@ -131,6 +164,7 @@ class ServerClient {
   connectWebSocket(userId?: string): void {
     if (this.ws?.readyState === WebSocket.OPEN) return;
 
+    this.shouldReconnect = true;
     this.connectionState = 'connecting';
     this.ws = new WebSocket(WS_URL);
 
@@ -156,7 +190,7 @@ class ServerClient {
       console.log('[ServerClient] WebSocket disconnected');
       this.connectionState = 'disconnected';
       this.ws = null;
-      this.scheduleReconnect(userId);
+      if (this.shouldReconnect) this.scheduleReconnect(userId);
     };
 
     this.ws.onerror = (err) => {
@@ -165,11 +199,13 @@ class ServerClient {
   }
 
   disconnectWebSocket(): void {
+    this.shouldReconnect = false;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
     if (this.ws) {
+      this.ws.onclose = null;
       this.ws.close();
       this.ws = null;
     }

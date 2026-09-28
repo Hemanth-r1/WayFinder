@@ -5,15 +5,25 @@ import { getGraph } from './graphService.js';
 import { computeCongestionZones, computeStats } from './congestionService.js';
 import { computeSLA } from './slaService.js';
 import { detectActiveCorridors } from './corridorService.js';
-import { findRoute } from './pathfindingService.js';
+import { activeNavigatorCount } from './pathfindingService.js';
 import { initSimulationEngine, getSimulationEngine } from './simulationEngine.js';
-import { addUserVehicle, removeUserVehicle, getUserVehiclePosition } from './userVehicleService.js';
-import { startNavigation, getNavigationUpdate } from './navigationService.js';
+import { removeUserVehicle, getUserVehiclePosition, markArrived } from './userVehicleService.js';
+import { startNavigation, getNavigationUpdate, planRoutes, NavigationError } from './navigationService.js';
 import { initializeWebSocket, handleWebSocketUpgrade } from './websocketService.js';
 import type { Firestore } from 'firebase-admin/firestore';
 
 const app = express();
 app.use(express.json());
+
+// The web client is served from a different origin (Vite dev server / Firebase Hosting)
+const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', CORS_ORIGIN);
+  res.header('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
 
 let db: Firestore | null = null;
 try {
@@ -70,7 +80,7 @@ app.get('/api/stats', async (_req, res) => {
       return res.status(503).json({ error: 'Simulation engine not running' });
     }
     const stats = engine.getStats();
-    res.json(stats);
+    res.json({ ...stats, activeNavigators: activeNavigatorCount() });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -78,21 +88,19 @@ app.get('/api/stats', async (_req, res) => {
 
 app.post('/api/user/start', async (req, res) => {
   try {
-    const { userId, sourceNodeId, destNodeId } = req.body;
+    const { userId, sourceNodeId, destNodeId, edgeIds } = req.body;
     if (!userId || !sourceNodeId || !destNodeId) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
-
-    const engine = getSimulationEngine();
-    if (!engine) {
-      return res.status(503).json({ error: 'Simulation engine not running' });
+    if (edgeIds !== undefined && !(Array.isArray(edgeIds) && edgeIds.every((id: unknown) => typeof id === 'string'))) {
+      return res.status(400).json({ error: 'edgeIds must be an array of strings' });
     }
 
     const { graph, signals } = await getGraph();
-    const navigation = await startNavigation({ userId, sourceNodeId, destNodeId }, graph, signals);
+    const navigation = startNavigation({ userId, sourceNodeId, destNodeId, edgeIds }, graph, signals);
     res.json(navigation);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(err instanceof NavigationError ? err.status : 500).json({ error: err.message });
   }
 });
 
@@ -113,7 +121,7 @@ app.get('/api/user/:userId/navigation', async (req, res) => {
   try {
     const { userId } = req.params;
     const { graph, signals } = await getGraph();
-    const navigation = await getNavigationUpdate(userId, graph, signals);
+    const navigation = getNavigationUpdate(userId, graph, signals);
     if (!navigation) {
       return res.status(404).json({ error: 'User navigation not found' });
     }
@@ -150,19 +158,29 @@ app.post('/api/corridors', (req, res) => {
   res.json({ activeCorridors: detectActiveCorridors(vehicles || []) });
 });
 
-app.post('/api/route', (req, res) => {
-  const { graph, signals, sourceId, destId } = req.body;
-  const route = findRoute(graph, sourceId, destId, signals || []);
-  res.json({ route });
+// Route options on the server's own graph. `route` (the first option) is kept for older clients.
+app.post('/api/route', async (req, res) => {
+  try {
+    const { userId, sourceId, destId } = req.body;
+    if (!sourceId || !destId) {
+      return res.status(400).json({ error: 'Missing sourceId or destId' });
+    }
+    const { graph, signals } = await getGraph();
+    const routes = planRoutes(userId, sourceId, destId, graph, signals);
+    res.json({ routes, route: routes[0] ?? null });
+  } catch (err: any) {
+    res.status(err instanceof NavigationError ? err.status : 500).json({ error: err.message });
+  }
 });
 
-const PORT = parseInt(process.env.PORT || '5000', 10);
+const PORT = parseInt(process.env.PORT || '8080', 10);
 
 // Initialize simulation engine on startup
 async function initializeServer() {
   try {
     const { graph, signals } = await getGraph();
     const engine = initSimulationEngine(graph, signals);
+    engine.setArrivalHandler(markArrived);
     engine.start();
     console.log('[WayFinder Server] Simulation engine started');
     initializeWebSocket();

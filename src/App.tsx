@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { AuthProvider } from './context/AuthContext';
 import { useAuth } from './context/useAuth';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -13,8 +13,8 @@ import NavigationGuide from './components/NavigationGuide';
 import { progressiveLoader, type LoadUpdate, type LoadPhase } from './services/progressiveLoader';
 import { serverClient } from './services/serverClient';
 import type { RoadGraph, TrafficSignal, Vehicle } from './types';
-import type { ServerStats } from './services/serverClient';
-import ToastContainer from './components/Toast';
+import type { ServerStats, RouteOption, NavigationResponse } from './services/serverClient';
+import ToastContainer, { pushToast } from './components/Toast';
 
 const PHASE_LABEL: Record<LoadPhase, string> = {
   empty: 'Initializing...', map: 'Loading map tiles...', roads: 'Loading road network...', signals: 'Loading signals...', vehicles: 'Loading vehicles...', full: 'Live data',
@@ -35,18 +35,28 @@ function AppContent() {
   });
   const [selectedSource, setSelectedSource] = useState<string | null>(null);
   const [selectedDest, setSelectedDest] = useState<string | null>(null);
-  const [routeInfo, setRouteInfo] = useState<any>(null);
-  const [navigatedVehicle, setNavigatedVehicle] = useState(false);
+  const [graphVersion, setGraphVersion] = useState(0);
+  const [routeOptions, setRouteOptions] = useState<RouteOption[]>([]);
+  const [selectedRouteIndex, setSelectedRouteIndex] = useState(0);
+  const [routeLoading, setRouteLoading] = useState(false);
+  const [routeError, setRouteError] = useState<string | null>(null);
+  const [navigation, setNavigation] = useState<NavigationResponse | null>(null);
+  const navigatedVehicle = navigation !== null;
+  const navigatingRef = useRef(false);
+  navigatingRef.current = navigatedVehicle;
   const [showHeatmap, setShowHeatmap] = useState(true);
   const [speed, setSpeed] = useState(1);
 
   // Initialize progressive loading
   useEffect(() => {
-    progressiveLoader.onUpdate((update: LoadUpdate) => {
+    const onLoad = (update: LoadUpdate) => {
       setLoadingPhase(update.phase);
       setLoadSource(update.source);
       
-      if (update.graph) setGraph(update.graph);
+      if (update.graph) {
+        setGraph(update.graph);
+        setGraphVersion(v => v + 1);
+      }
       if (update.signals) setSignals(update.signals);
       if (update.vehicles) setVehicles(update.vehicles);
       if (update.stats) setStats(update.stats);
@@ -54,14 +64,14 @@ function AppContent() {
       if (update.phase === 'full') {
         setLoading(false);
       }
-    });
-
+    };
+    progressiveLoader.onUpdate(onLoad);
     progressiveLoader.load();
 
     // Connect WebSocket for real-time updates
     serverClient.connectWebSocket(user?.uid);
-    serverClient.onUpdate((data) => {
-      if (data.type === 'update' && data.data) {
+    const onServerUpdate = (data: any) => {
+      if ((data.type === 'update' || data.type === 'initial') && data.data) {
         if (data.data.vehicles) {
           setVehicles(new Map(data.data.vehicles.map((v: any) => [v.id, v])));
         }
@@ -72,12 +82,68 @@ function AppContent() {
           setStats(data.data.stats);
         }
       }
-    });
+    };
+    serverClient.onUpdate(onServerUpdate);
 
     return () => {
+      progressiveLoader.removeUpdateCallback(onLoad);
+      serverClient.removeUpdateCallback(onServerUpdate);
       serverClient.disconnectWebSocket();
     };
   }, [user]);
+
+  // Route options for the selected origin/destination. The server spreads users across
+  // nearby routes, so options are fetched per user rather than computed locally.
+  useEffect(() => {
+    if (!selectedSource || !selectedDest || navigatedVehicle) {
+      setRouteOptions([]);
+      setRouteError(null);
+      return;
+    }
+    const controller = new AbortController();
+    setRouteLoading(true);
+    setRouteError(null);
+    serverClient.fetchRouteOptions(user?.uid, selectedSource, selectedDest, controller.signal)
+      .then(options => {
+        setRouteOptions(options);
+        setSelectedRouteIndex(0);
+        if (options.length === 0) setRouteError('No route found between these points');
+      })
+      .catch(err => {
+        if (controller.signal.aborted) return;
+        setRouteOptions([]);
+        setRouteError(err instanceof Error ? err.message : 'Failed to plan route');
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setRouteLoading(false);
+      });
+    return () => controller.abort();
+  }, [user, selectedSource, selectedDest, navigatedVehicle]);
+
+  // Live navigation updates while driving
+  useEffect(() => {
+    if (!user || !navigatedVehicle) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const update = await serverClient.getUserNavigation(user.uid);
+        if (cancelled) return;
+        if (update.arrived) {
+          pushToast('You have arrived at your destination', 'success');
+          setNavigation(null);
+          setSelectedSource(null);
+          setSelectedDest(null);
+          serverClient.removeUserVehicle(user.uid).catch(() => {});
+          return;
+        }
+        setNavigation(prev => prev ? { ...update, alternatives: prev.alternatives } : prev);
+      } catch (err) {
+        console.error('Failed to get navigation update:', err);
+      }
+    };
+    const interval = setInterval(poll, 2000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [user, navigatedVehicle]);
 
   // Refresh data
   const handleRefresh = useCallback(async () => {
@@ -90,22 +156,38 @@ function AppContent() {
     if (!user || !selectedSource || !selectedDest) return;
     
     try {
-      const navigation = await serverClient.startNavigation(user.uid, selectedSource, selectedDest);
-      setRouteInfo(navigation);
-      setNavigatedVehicle(true);
+      const chosen = routeOptions[selectedRouteIndex];
+      const nav = await serverClient.startNavigation(user.uid, selectedSource, selectedDest, chosen?.edgeIds);
+      setNavigation(nav);
+      setRouteOptions([]);
     } catch (err) {
       console.error('Failed to start navigation:', err);
+      pushToast(err instanceof Error ? err.message : 'Failed to start navigation', 'error');
     }
-  }, [user, selectedSource, selectedDest]);
+  }, [user, selectedSource, selectedDest, routeOptions, selectedRouteIndex]);
 
   // Clear route
   const handleClearRoute = useCallback(() => {
-    setRouteInfo(null);
-    setNavigatedVehicle(false);
-    if (user) {
-      serverClient.removeUserVehicle(user.uid);
+    const wasNavigating = navigatingRef.current;
+    setNavigation(null);
+    setRouteOptions([]);
+    if (user && wasNavigating) {
+      serverClient.removeUserVehicle(user.uid).catch(err => console.error('Failed to end navigation:', err));
     }
   }, [user]);
+
+  const selectedRoute = routeOptions[selectedRouteIndex] ?? null;
+  const panelRoute = navigation?.routeInfo ?? selectedRoute;
+  const routePolyline = useMemo<[number, number][] | undefined>(() => {
+    const pts = navigation ? navigation.path : selectedRoute?.geometry;
+    return pts?.map(p => [p.lat, p.lng] as [number, number]);
+  }, [navigation, selectedRoute]);
+  const altPolylines = useMemo(
+    () => navigation ? [] : routeOptions
+      .filter((_, i) => i !== selectedRouteIndex)
+      .map(r => r.geometry.map(p => [p.lat, p.lng] as [number, number])),
+    [navigation, routeOptions, selectedRouteIndex],
+  );
 
   if (authLoading) return <LoadingOverlay message="Loading..." />;
   if (!user) return <LoginScreen />;
@@ -162,11 +244,16 @@ function AppContent() {
           {role === 'user' && (
             <UserPanel
               graph={graph}
-              signals={signals}
               selectedSource={selectedSource}
               selectedDest={selectedDest}
               onSelectSource={setSelectedSource}
               onSelectDest={setSelectedDest}
+              routeOptions={routeOptions}
+              selectedRouteIndex={selectedRouteIndex}
+              onSelectRoute={setSelectedRouteIndex}
+              routeLoading={routeLoading}
+              routeError={routeError}
+              navigating={navigatedVehicle}
             />
           )}
           {role === 'supporter' && (
@@ -233,7 +320,7 @@ function AppContent() {
           onSelectSource={setSelectedSource}
           onSelectDest={setSelectedDest}
           role={role}
-          graphVersion={0}
+          graphVersion={graphVersion}
           vehicleVersion={0}
           stats={{
             vehicleCount: stats.totalVehicles,
@@ -247,16 +334,18 @@ function AppContent() {
           showHeatmap={showHeatmap}
           speed={speed}
           onSpeedChange={setSpeed}
+          routePolyline={routePolyline}
+          altRoutePolylines={altPolylines}
           onStartNavigation={handleStartNavigation}
-          routeInfo={routeInfo}
+          routeInfo={panelRoute}
           clearRoute={handleClearRoute}
           navigatedVehicle={navigatedVehicle}
         />
       </div>
       
       {/* Navigation Guide Overlay */}
-      {routeInfo && navigatedVehicle && (
-        <NavigationGuide routeInfo={routeInfo} onClear={handleClearRoute} />
+      {navigation && (
+        <NavigationGuide navigation={navigation} onClear={handleClearRoute} />
       )}
       
       <ToastContainer />

@@ -51,6 +51,19 @@ export interface TrafficStats {
 }
 
 export interface RouteInfo {
-  path: string[]; distance: number; estimatedTime: number;
-  signalCount: number; roadNames: string[];
+  /** Node IDs from source to destination */
+  path: string[];
+  /** Directed edge IDs traversed, in order */
+  edgeIds: string[];
+  /** Metres */
+  distance: number;
+  /** Seconds, including live congestion, other navigators and signal delay */
+  estimatedTime: number;
+  signalCount: number;
+  /** Distinct road names in travel order */
+  roadNames: string[];
+  /** Full road geometry for drawing */
+  geometry: { lat: number; lng: number }[];
+  /** Most other active navigators sharing any single edge of this route */
+  sharedUsers: number;
 }

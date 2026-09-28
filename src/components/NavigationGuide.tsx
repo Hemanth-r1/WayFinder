@@ -1,39 +1,20 @@
-import { useState, useEffect } from 'react';
-import { useAuth } from '../context/useAuth';
-import { serverClient, type NavigationResponse } from '../services/serverClient';
+import type { NavigationResponse } from '../services/serverClient';
 
 interface Props {
-  routeInfo: NavigationResponse | null;
+  navigation: NavigationResponse;
   onClear: () => void;
 }
 
-export default function NavigationGuide({ routeInfo, onClear }: Props) {
-  const { user } = useAuth();
-  const [currentUpdate, setCurrentUpdate] = useState<NavigationResponse | null>(null);
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${Math.max(0, Math.round(seconds))} s`;
+  return `${Math.round(seconds / 60)} min`;
+}
 
-  useEffect(() => {
-    if (!user || !routeInfo) return;
-
-    const interval = setInterval(async () => {
-      try {
-        const update = await serverClient.getUserNavigation(user.uid);
-        if (update) {
-          setCurrentUpdate(update);
-        }
-      } catch (err) {
-        console.error('Failed to get navigation update:', err);
-      }
-    }, 2000); // Update every 2 seconds
-
-    return () => clearInterval(interval);
-  }, [user, routeInfo]);
-
-  const displayInfo = currentUpdate || routeInfo;
-
-  if (!displayInfo) return null;
-
+export default function NavigationGuide({ navigation, onClear }: Props) {
+  const displayInfo = navigation;
   const nextSignal = displayInfo.signals[0];
   const trafficConditions = displayInfo.trafficConditions;
+  const via = displayInfo.routeInfo.roadNames.slice(0, 3).join(', ');
 
   return (
     <div style={{
@@ -91,7 +72,7 @@ export default function NavigationGuide({ routeInfo, onClear }: Props) {
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: 10, color: '#666', marginBottom: 4 }}>Duration</div>
           <div style={{ fontSize: 16, fontWeight: 'bold', color: '#fff' }}>
-            {Math.floor(displayInfo.duration / 60)} min
+            {formatDuration(displayInfo.duration)}
           </div>
         </div>
         <div style={{ flex: 1 }}>
@@ -101,6 +82,17 @@ export default function NavigationGuide({ routeInfo, onClear }: Props) {
           </div>
         </div>
       </div>
+
+      {(via || displayInfo.routeInfo.sharedUsers > 0) && (
+        <div style={{ fontSize: 11, color: '#888', marginBottom: 12 }}>
+          {via && <>via {via}</>}
+          {displayInfo.routeInfo.sharedUsers > 0 && (
+            <span style={{ color: '#FF9800' }}>
+              {via ? ' · ' : ''}{displayInfo.routeInfo.sharedUsers} other navigator{displayInfo.routeInfo.sharedUsers > 1 ? 's' : ''} on part of this route
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Traffic Conditions */}
       <div style={{

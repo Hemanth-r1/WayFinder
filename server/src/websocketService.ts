@@ -10,6 +10,9 @@ interface WSClient {
 
 const wss = new WebSocketServer({ noServer: true });
 const clients = new Map<WebSocket, WSClient>();
+/** Simulation ticks at ~20 Hz; clients only need a few frames per second. */
+const BROADCAST_INTERVAL_MS = 250;
+let lastBroadcast = 0;
 
 export function handleWebSocketUpgrade(request: any, socket: any, head: any) {
   wss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
@@ -18,7 +21,7 @@ export function handleWebSocketUpgrade(request: any, socket: any, head: any) {
 }
 
 export function initializeWebSocket() {
-  wss.on('connection', (ws: WebSocket, req: any) => {
+  wss.on('connection', (ws: WebSocket) => {
     const client: WSClient = {
       ws,
       subscribedChannels: new Set(['vehicles', 'signals', 'stats']),
@@ -104,6 +107,10 @@ function sendInitialState(client: WSClient) {
 }
 
 function broadcastStateUpdate(state: SimState) {
+  const now = Date.now();
+  if (clients.size === 0 || now - lastBroadcast < BROADCAST_INTERVAL_MS) return;
+  lastBroadcast = now;
+
   const vehicles = Array.from(state.vehicles.values());
   const signals = Array.from(state.signals.values());
   const stats = getSimulationEngine()?.getStats();

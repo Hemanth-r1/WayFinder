@@ -1,13 +1,16 @@
 import { useState, useCallback, type CSSProperties } from 'react';
 import type { RouteInfo } from '../types';
 
+/** Fields the panel shows; satisfied by both local RouteInfo and server route options. */
+export type NavRouteSummary = Pick<RouteInfo, 'path' | 'distance' | 'estimatedTime' | 'signalCount' | 'roadNames'>;
+
 interface NavPanelProps {
   selectedSource: string | null;
   selectedDest: string | null;
   onSelectSource: (id: string | null) => void;
   onSelectDest: (id: string | null) => void;
   onStartNavigation: () => void;
-  routeInfo: RouteInfo | null;
+  routeInfo: NavRouteSummary | null;
   clearRoute: () => void;
   navigatedVehicle: boolean;
 }
@@ -67,7 +70,7 @@ export default function NavigationPanel({
             }}>
               <span style={{ color: '#4CAF50' }}>●</span>
               <span style={{ fontSize: 11, flex: 1, color: selectedSource ? '#ccc' : '#555' }}>
-                {selectedSource ?? 'Right-click a road to set'}
+                {selectedSource ?? 'Click a road to set'}
               </span>
               {selectedSource && (
                 <button onClick={() => onSelectSource(null)} style={{ background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: 10, padding: 0 }} title="Clear origin">✕</button>
@@ -84,7 +87,7 @@ export default function NavigationPanel({
             }}>
               <span style={{ color: '#F44336' }}>●</span>
               <span style={{ fontSize: 11, flex: 1, color: selectedDest ? '#ccc' : '#555' }}>
-                {selectedDest ?? 'Right-click a road to set'}
+                {selectedDest ?? 'Click a road to set'}
               </span>
               {selectedDest && (
                 <button onClick={() => onSelectDest(null)} style={{ background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: 10, padding: 0 }} title="Clear destination">✕</button>
@@ -146,7 +149,7 @@ export default function NavigationPanel({
           </div>
 
           <div style={{ marginTop: 6, fontSize: 9, color: '#444', lineHeight: 1.4 }}>
-            Right-click a road → <span style={{ color: '#4CAF50' }}>Set Origin</span> / <span style={{ color: '#F44336' }}>Set Destination</span>
+            Click a road → <span style={{ color: '#4CAF50' }}>Set Origin</span> / <span style={{ color: '#F44336' }}>Set Destination</span>
           </div>
         </>
       ) : (

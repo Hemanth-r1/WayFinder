@@ -1,83 +1,74 @@
-import type { Vehicle, RoadGraph, TrafficSignal } from './types.js';
+import type { Vehicle, RouteInfo } from './types.js';
 import { getSimulationEngine } from './simulationEngine.js';
+import { registerUserRoute, releaseUserRoute } from './pathfindingService.js';
 
-interface UserVehicle {
+export interface UserSession {
   userId: string;
   vehicleId: string;
   sourceNodeId: string;
   destNodeId: string;
-  route: string[];
-  routeIndex: number;
+  route: RouteInfo;
   startTime: number;
   isActive: boolean;
+  arrivedAt: number | null;
 }
 
-const userVehicles = new Map<string, UserVehicle>();
+const sessions = new Map<string, UserSession>();
 
-export function addUserVehicle(
-  userId: string,
-  sourceNodeId: string,
-  destNodeId: string,
-  route: string[],
-): UserVehicle {
+/**
+ * Starts driving `route` for `userId`: spawns their vehicle and registers the route as
+ * navigator load so users planning afterwards are spread onto other nearby roads.
+ */
+export function startUserSession(userId: string, route: RouteInfo): UserSession {
   const engine = getSimulationEngine();
   if (!engine) {
     throw new Error('Simulation engine not initialized');
   }
 
-  const vehicle = engine.addUserVehicle(userId, sourceNodeId, destNodeId);
+  const vehicle = engine.addUserVehicle(userId, route.edgeIds);
   if (!vehicle) {
     throw new Error('Failed to create user vehicle');
   }
+  registerUserRoute(userId, route.edgeIds);
 
-  const userVehicle: UserVehicle = {
+  const session: UserSession = {
     userId,
     vehicleId: vehicle.id,
-    sourceNodeId,
-    destNodeId,
+    sourceNodeId: route.path[0],
+    destNodeId: route.path[route.path.length - 1],
     route,
-    routeIndex: 0,
     startTime: Date.now(),
     isActive: true,
+    arrivedAt: null,
   };
+  sessions.set(userId, session);
+  return session;
+}
 
-  userVehicles.set(userId, userVehicle);
-  return userVehicle;
+/** Vehicle reached the destination: stop counting its route as load but keep the session readable. */
+export function markArrived(userId: string): void {
+  const session = sessions.get(userId);
+  releaseUserRoute(userId);
+  if (session) {
+    session.isActive = false;
+    session.arrivedAt = Date.now();
+  }
 }
 
 export function removeUserVehicle(userId: string): void {
-  const engine = getSimulationEngine();
-  if (engine) {
-    engine.removeUserVehicle(userId);
-  }
-  userVehicles.delete(userId);
+  getSimulationEngine()?.removeUserVehicle(userId);
+  releaseUserRoute(userId);
+  sessions.delete(userId);
 }
 
-export function getUserVehicle(userId: string): UserVehicle | undefined {
-  return userVehicles.get(userId);
+export function getUserSession(userId: string): UserSession | undefined {
+  return sessions.get(userId);
 }
 
 export function getUserVehiclePosition(userId: string): Vehicle | null {
-  const engine = getSimulationEngine();
-  if (!engine) return null;
-  
-  const vehicle = engine.getUserVehicle(userId);
-  return vehicle || null;
+  return getSimulationEngine()?.getUserVehicle(userId) ?? null;
 }
 
-export function getAllUserVehicles(): UserVehicle[] {
-  return Array.from(userVehicles.values());
-}
-
-export function updateUserRoute(userId: string, route: string[]): void {
-  const userVehicle = userVehicles.get(userId);
-  if (userVehicle) {
-    userVehicle.route = route;
-    userVehicle.routeIndex = 0;
-  }
-}
-
-export function isUserActive(userId: string): boolean {
-  const userVehicle = userVehicles.get(userId);
-  return userVehicle?.isActive ?? false;
+export function getAllUserSessions(): UserSession[] {
+  return Array.from(sessions.values());
 }

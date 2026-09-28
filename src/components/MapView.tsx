@@ -12,6 +12,7 @@ import { findNearestNode } from '../data/roadNetwork';
 import MapContextMenu from './MapContextMenu';
 import NavigationPanel from './NavigationPanel';
 import ControlPanel from './ControlPanel';
+import type { NavRouteSummary } from './NavigationPanel';
 
 const VEHICLE_ICONS: Record<string, string> = {
   sedan: '🚗', suv: '🚙', hatchback: '🚗', truck: '🚚',
@@ -40,10 +41,12 @@ interface MapViewProps {
   onSpawnVehicleAt: (nodeId: string, type: VehicleType) => void;
   showHeatmap?: boolean;
   routePolyline?: [number, number][];
+  /** Other route options, drawn muted behind the selected route */
+  altRoutePolylines?: [number, number][][];
   speed?: number;
   onSpeedChange?: (speed: number) => void;
   onStartNavigation: () => void;
-  routeInfo: import('../types').RouteInfo | null;
+  routeInfo: NavRouteSummary | null;
   clearRoute: () => void;
   navigatedVehicle: boolean;
 }
@@ -58,7 +61,7 @@ export default function MapView({
   graph, signals, vehicles, congestionZones, onCancelOverride,
   overrideActive, overrideTimeRemaining, selectedSource, selectedDest,
   onSelectSource, onSelectDest, role, graphVersion, vehicleVersion, stats,
-  onAddSignal, onSpawnVehicleAt, showHeatmap = true, routePolyline, speed: _speed, onSpeedChange: _onSpeedChange,
+  onAddSignal, onSpawnVehicleAt, showHeatmap = true, routePolyline, altRoutePolylines, speed: _speed, onSpeedChange: _onSpeedChange,
   onStartNavigation, routeInfo, clearRoute, navigatedVehicle,
 }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -214,7 +217,8 @@ export default function MapView({
     const mapZoom = mapRef.current?.getZoom() ?? 13;
     const minEdgeCount = mapZoom <= 13 ? 0 : mapZoom <= 15 ? 2 : 3;
 
-    for (const [nodeId, sig] of signals) {
+    for (const sig of signals.values()) {
+      const nodeId = sig.nodeId;
       const node = graph.nodes.get(nodeId); if (!node) continue;
       const adjEdges = graph.adjacency.get(nodeId)?.length ?? 0;
       if (hasRoads && adjEdges < minEdgeCount) continue;
@@ -322,12 +326,15 @@ export default function MapView({
     const layer = routeLayerRef.current;
     if (!layer) return;
     layer.clearLayers();
+    for (const alt of altRoutePolylines ?? []) {
+      if (alt.length > 1) L.polyline(alt, { color: '#8899AA', weight: 5, opacity: 0.5 }).addTo(layer);
+    }
     if (routePolyline && routePolyline.length > 1) {
       L.polyline(routePolyline, {
-        color: '#4488FF', weight: 5, opacity: 0.8, dashArray: '12, 8',
+        color: '#4488FF', weight: 6, opacity: 0.9,
       }).addTo(layer);
     }
-  }, [routePolyline]);
+  }, [routePolyline, altRoutePolylines]);
 
   // ── Context menu handlers ─────────────────────────────────────────────────
   const handleAddSignal = useCallback(() => {
@@ -367,7 +374,7 @@ export default function MapView({
         display: 'flex', gap: 14, backdropFilter: 'blur(4px)',
       }}>
         <span>🚗 {stats.vehicleCount}</span>
-        <span>⚡ {stats.avgSpeed} km/h</span>
+        <span>⚡ {stats.avgSpeed.toFixed(1)} km/h</span>
         <span style={{ color: stats.congestionHotspots > 3 ? '#FF1744' : '#4CAF50' }}>
           🔥 {stats.congestionHotspots}
         </span>
