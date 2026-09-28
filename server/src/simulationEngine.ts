@@ -1,6 +1,9 @@
 import type { RoadGraph, RoadEdge, TrafficSignal, Vehicle, TrafficStats } from './types.js';
-import { getGraphIndex, congestionFactor, edgeCapacity, type GraphIndex } from './pathfindingService.js';
+import {
+  getGraphIndex, congestionFactor, edgeCapacity, activeRouteEdgeIds, recordObservedSpeed, type GraphIndex,
+} from './pathfindingService.js';
 import { groupForBearing, approachState } from './signalTiming.js';
+import { getWeather, getTrafficLevel, isEdgeBlocked, type TrafficLevel } from './conditionsService.js';
 
 export interface SimState {
   vehicles: Map<string, Vehicle>;
@@ -11,6 +14,14 @@ export interface SimState {
   lastUpdate: number;
 }
 
+export interface GpsMatch {
+  /** Snapped onto the route within GPS_MATCH_METRES */
+  onRoute: boolean;
+  arrived: boolean;
+  /** Metres from the nearest point on the upcoming route */
+  offset: number;
+}
+
 export interface NavigationProgress {
   /** Index into the route's edgeIds of the edge being driven */
   edgeIndex: number;
@@ -19,8 +30,20 @@ export interface NavigationProgress {
   vehicle: Vehicle;
 }
 
+/** Simulated vehicle count per traffic level (real users' vehicles come on top). */
+const SIM_VEHICLES: Record<TrafficLevel, number> = { light: 60, normal: 150, heavy: 350 };
+/** Share of new simulated vehicles placed on routes real users are driving. */
+const CORRIDOR_SHARE = 0.5;
+/** Chance a corridor vehicle keeps to a user route at each junction. */
+const CORRIDOR_STICKINESS = 0.7;
+/** GPS points further than this from the upcoming route count as off-route. */
+const GPS_MATCH_METRES = 50;
+/** How many upcoming route edges to search when matching GPS. */
+const GPS_LOOKAHEAD_EDGES = 12;
+/** Within this distance of the destination counts as arrived. */
+const ARRIVAL_METRES = 30;
+
 const SIMULATION_CONFIG = {
-  MAX_VEHICLES: 120,
   SPAWN_INTERVAL: { min: 200, max: 800 },
   INITIAL_VEHICLES: 20,
   UPDATE_INTERVAL: 0.05,
@@ -53,6 +76,10 @@ interface SimVehicle {
   userId?: string;
   route?: string[];
   routeIndex: number;
+  /** Real driver: position comes from GPS updates, not the simulation */
+  gps?: { at: number; lat: number; lng: number };
+  /** Simulated vehicle that keeps to real users' routes */
+  corridor?: boolean;
 }
 
 class SimulationEngine {
@@ -132,6 +159,7 @@ class SimulationEngine {
     for (const list of byEdge.values()) list.sort((a, b) => b.progress - a.progress);
 
     for (const [id, sv] of this.sim) {
+      if (sv.gps) continue; // real drivers move with their GPS updates
       const leaders = byEdge.get(sv.edge.id) ?? [];
       const ahead = leaders[leaders.indexOf(sv) - 1];
       if (!this.updateVehicle(sv, dt, ahead)) this.removeVehicle(id);
@@ -145,25 +173,51 @@ class SimulationEngine {
     }
   }
 
+  private simulatedCount(): number {
+    let n = 0;
+    for (const sv of this.sim.values()) if (!sv.userId) n++;
+    return n;
+  }
+
   private spawnVehicles(dt: number): void {
-    if (this.sim.size >= SIMULATION_CONFIG.MAX_VEHICLES) return;
+    const target = SIM_VEHICLES[getTrafficLevel()];
+    const simulated = this.simulatedCount();
+    if (simulated >= target) return;
 
     this.spawnTimer += dt * 1000;
+    // Fill faster the further below target we are
     const interval = Math.max(
-      SIMULATION_CONFIG.SPAWN_INTERVAL.min,
-      SIMULATION_CONFIG.SPAWN_INTERVAL.max - this.sim.size * 4,
+      SIMULATION_CONFIG.SPAWN_INTERVAL.min / 2,
+      SIMULATION_CONFIG.SPAWN_INTERVAL.max * (simulated / target),
     );
     if (this.spawnTimer < interval) return;
     this.spawnTimer = 0;
 
-    const count = Math.min(SIMULATION_CONFIG.VEHICLE_SPAWN_COUNT, SIMULATION_CONFIG.MAX_VEHICLES - this.sim.size);
+    const count = Math.min(SIMULATION_CONFIG.VEHICLE_SPAWN_COUNT * 2, target - simulated);
     for (let i = 0; i < count; i++) this.spawnRandomVehicle();
   }
 
-  private spawnRandomVehicle(): void {
+  /** Random open edge, or (for corridor vehicles) one on a real user's route. */
+  private pickSpawnEdge(corridor: boolean): RoadEdge | null {
+    if (corridor) {
+      const ids = activeRouteEdgeIds();
+      for (let tries = 0; tries < 5 && ids.length > 0; tries++) {
+        const e = this.index.edges.get(ids[Math.floor(Math.random() * ids.length)]);
+        if (e && !isEdgeBlocked(e.id)) return e;
+      }
+    }
     const edges = this.index.edgeList;
-    if (edges.length === 0) return;
-    const edge = edges[Math.floor(Math.random() * edges.length)];
+    for (let tries = 0; tries < 5 && edges.length > 0; tries++) {
+      const e = edges[Math.floor(Math.random() * edges.length)];
+      if (!isEdgeBlocked(e.id)) return e;
+    }
+    return null;
+  }
+
+  private spawnRandomVehicle(): void {
+    const corridor = activeRouteEdgeIds().length > 0 && Math.random() < CORRIDOR_SHARE;
+    const edge = this.pickSpawnEdge(corridor);
+    if (!edge) return;
     const kind = VEHICLE_TYPES[Math.floor(Math.random() * VEHICLE_TYPES.length)];
     const { min, max } = SIMULATION_CONFIG.LIFETIME;
 
@@ -178,6 +232,7 @@ class SimulationEngine {
       speedFactor: kind.speedFactor * (0.85 + Math.random() * 0.2),
       ttl: min + Math.random() * (max - min),
       routeIndex: 0,
+      corridor,
     };
     this.placeVehicle(sv);
     this.sim.set(sv.pub.id, sv);
@@ -192,10 +247,16 @@ class SimulationEngine {
   /** Advances one vehicle; returns false when it should leave the simulation. */
   private updateVehicle(sv: SimVehicle, dt: number, ahead: SimVehicle | undefined): boolean {
     const edge = sv.edge;
-    const cruise = (edge.speedLimit / 3.6) * sv.speedFactor /
+    const cruise = (edge.speedLimit / 3.6) * sv.speedFactor * getWeather().speedFactor /
       congestionFactor(edge, this.occupancy.get(edge.id) ?? 0);
     let limit = edge.length + 1_000_000; // how far along this edge we may go
     let target = cruise;
+
+    // A navigated vehicle waits before a road block on its route until it is rerouted
+    const nextRouteEdge = sv.route?.[sv.routeIndex + 1];
+    if (nextRouteEdge && isEdgeBlocked(nextRouteEdge)) {
+      limit = Math.max(sv.progress, edge.length - SIMULATION_CONFIG.MIN_GAP);
+    }
 
     const signal = this.index.signalByNode.get(edge.to);
     const isLastEdge = sv.route !== undefined && sv.routeIndex >= sv.route.length - 1;
@@ -243,9 +304,14 @@ class SimulationEngine {
       const id = sv.route[sv.routeIndex];
       return id ? this.index.edges.get(id) ?? null : null;
     }
-    const options = this.index.outEdges.get(sv.edge.to) ?? [];
+    const options = (this.index.outEdges.get(sv.edge.to) ?? []).filter(e => !isEdgeBlocked(e.id));
     const forward = options.filter(e => e.to !== sv.edge.from);
-    const pool = forward.length > 0 ? forward : options;
+    let pool = forward.length > 0 ? forward : options;
+    if (sv.corridor && Math.random() < CORRIDOR_STICKINESS) {
+      const onRoutes = new Set(activeRouteEdgeIds());
+      const corridor = pool.filter(e => onRoutes.has(e.id));
+      if (corridor.length > 0) pool = corridor;
+    }
     return pool.length > 0 ? pool[Math.floor(Math.random() * pool.length)] : null;
   }
 
@@ -306,7 +372,7 @@ class SimulationEngine {
   // ── Public API ─────────────────────────────────────────────────────────────
 
   /** Puts the user's vehicle at the start of `route` (edge IDs), replacing any previous one. */
-  addUserVehicle(userId: string, route: string[]): Vehicle | null {
+  addUserVehicle(userId: string, route: string[], gps = false): Vehicle | null {
     const first = route.length > 0 ? this.index.edges.get(route[0]) : undefined;
     if (!first) return null;
     this.removeUserVehicle(userId);
@@ -325,6 +391,7 @@ class SimulationEngine {
       routeIndex: 0,
     };
     this.placeVehicle(sv);
+    if (gps) sv.gps = { at: Date.now(), lat: sv.pub.lat, lng: sv.pub.lng };
     this.sim.set(sv.pub.id, sv);
     this.state.vehicles.set(sv.pub.id, sv.pub);
     return sv.pub;
@@ -342,6 +409,109 @@ class SimulationEngine {
     const sv = this.sim.get(`user_${userId}`);
     if (!sv || !sv.route) return null;
     return { edgeIndex: sv.routeIndex, edgeProgress: sv.progress, vehicle: sv.pub };
+  }
+
+  /**
+   * Replaces a user's route. `edgeIds[0]` may be the edge they are on (progress is kept)
+   * or a fresh start edge (they are placed at its start).
+   */
+  replaceUserRoute(userId: string, edgeIds: string[]): boolean {
+    const sv = this.sim.get(`user_${userId}`);
+    const first = edgeIds.length > 0 ? this.index.edges.get(edgeIds[0]) : undefined;
+    if (!sv || !first) return false;
+    if (first.id !== sv.edge.id) {
+      sv.edge = first;
+      sv.progress = 0;
+      if (!sv.gps) this.placeVehicle(sv);
+    }
+    sv.route = edgeIds;
+    sv.routeIndex = 0;
+    return true;
+  }
+
+  /**
+   * Moves a real driver's vehicle to their GPS fix, snapped onto the upcoming part of
+   * their route. Their measured speed feeds live traffic for everyone's routing.
+   */
+  updateUserGps(userId: string, lat: number, lng: number, speedKmh?: number): GpsMatch | null {
+    const sv = this.sim.get(`user_${userId}`);
+    if (!sv || !sv.route) return null;
+    const now = Date.now();
+    const prev = sv.gps;
+
+    let best = { index: -1, along: 0, dist: Infinity, lat, lng };
+    const end = Math.min(sv.route.length, sv.routeIndex + GPS_LOOKAHEAD_EDGES);
+    for (let i = sv.routeIndex; i < end; i++) {
+      const edge = this.index.edges.get(sv.route[i]);
+      if (!edge) continue;
+      const m = this.project(edge, lat, lng);
+      if (m.dist < best.dist) best = { index: i, ...m };
+    }
+
+    sv.gps = { at: now, lat, lng };
+    const onRoute = best.dist <= GPS_MATCH_METRES;
+    let speed = speedKmh;
+    if (speed === undefined && prev) {
+      const secs = (now - prev.at) / 1000;
+      if (secs > 0.5) speed = this.metres(prev, { lat, lng }) / secs * 3.6;
+    }
+    if (speed !== undefined && Number.isFinite(speed)) sv.pub.speed = Math.max(0, speed);
+
+    if (onRoute) {
+      const edge = this.index.edges.get(sv.route[best.index])!;
+      sv.routeIndex = best.index;
+      sv.edge = edge;
+      sv.progress = best.along;
+      sv.pub.lat = best.lat;
+      sv.pub.lng = best.lng;
+      sv.pub.bearing = edge.bearing;
+      if (speed !== undefined && prev && now - prev.at < 30000) recordObservedSpeed(edge.id, sv.pub.speed);
+    } else {
+      sv.pub.lat = lat;
+      sv.pub.lng = lng;
+    }
+
+    const last = this.index.edges.get(sv.route[sv.route.length - 1]);
+    const destNode = last ? this.index.nodes.get(last.to) : undefined;
+    const arrived = !!destNode && this.metres(destNode, { lat, lng }) <= ARRIVAL_METRES;
+    if (arrived) {
+      this.removeVehicle(sv.pub.id);
+      this.arrivalHandler?.(userId);
+    }
+    return { onRoute, arrived, offset: best.dist };
+  }
+
+  private metres(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
+    const dLat = (b.lat - a.lat) * 111320;
+    const dLng = (b.lng - a.lng) * 111320 * Math.cos(a.lat * Math.PI / 180);
+    return Math.hypot(dLat, dLng);
+  }
+
+  /** Nearest point on `edge` to (lat, lng): distance, metres along the edge, and the point. */
+  private project(edge: RoadEdge, lat: number, lng: number): { dist: number; along: number; lat: number; lng: number } {
+    const g = edge.geometry;
+    const cum = this.cumulative(edge);
+    const total = cum[cum.length - 1] || 1;
+    const kx = 111320 * Math.cos(lat * Math.PI / 180), ky = 111320;
+    let best = { dist: Infinity, along: 0, lat: g[0].lat, lng: g[0].lng };
+    for (let i = 1; i < g.length; i++) {
+      const ax = (g[i - 1].lng - lng) * kx, ay = (g[i - 1].lat - lat) * ky;
+      const bx = (g[i].lng - lng) * kx, by = (g[i].lat - lat) * ky;
+      const dx = bx - ax, dy = by - ay;
+      const len2 = dx * dx + dy * dy;
+      const t = len2 > 0 ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / len2)) : 0;
+      const px = ax + t * dx, py = ay + t * dy;
+      const dist = Math.hypot(px, py);
+      if (dist < best.dist) {
+        best = {
+          dist,
+          along: (cum[i - 1] + t * (cum[i] - cum[i - 1])) / total * edge.length,
+          lat: g[i - 1].lat + t * (g[i].lat - g[i - 1].lat),
+          lng: g[i - 1].lng + t * (g[i].lng - g[i - 1].lng),
+        };
+      }
+    }
+    return best;
   }
 
   /** Live simulated vehicles per edge ID. */
@@ -397,6 +567,8 @@ class SimulationEngine {
       slaCompliant: avgSpeed >= 24,
       emergencySlaSpeed: 0,
       activeCorridors: 0,
+      simulatedVehicles: this.simulatedCount(),
+      realVehicles: vehicles.length - this.simulatedCount(),
     };
   }
 }

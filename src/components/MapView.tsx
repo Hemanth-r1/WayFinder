@@ -13,6 +13,8 @@ import MapContextMenu from './MapContextMenu';
 import NavigationPanel from './NavigationPanel';
 import ControlPanel from './ControlPanel';
 import type { NavRouteSummary } from './NavigationPanel';
+import type { RoadBlock } from '../services/serverClient';
+import { distanceMetres } from '../utils/places';
 
 const VEHICLE_ICONS: Record<string, string> = {
   sedan: '🚗', suv: '🚙', hatchback: '🚗', truck: '🚚',
@@ -53,6 +55,12 @@ interface MapViewProps {
   simpleView?: boolean;
   /** Phone layout */
   compact?: boolean;
+  blocks?: RoadBlock[];
+  /** Offered reroute, drawn dashed green */
+  reroutePolyline?: [number, number][];
+  /** `radiusMetres` ≈ a finger-width on screen at the current zoom */
+  onReportBlock?: (lat: number, lng: number, radiusMetres: number) => void;
+  onClearBlock?: (id: string) => void;
 }
 
 interface ContextMenuState {
@@ -67,6 +75,7 @@ export default function MapView({
   onSelectSource, onSelectDest, role, graphVersion, vehicleVersion, stats,
   onAddSignal, onSpawnVehicleAt, showHeatmap = true, routePolyline, altRoutePolylines, speed: _speed, onSpeedChange: _onSpeedChange,
   onStartNavigation, routeInfo, clearRoute, navigatedVehicle, simpleView = false, compact = false,
+  blocks = [], reroutePolyline, onReportBlock, onClearBlock,
 }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -77,6 +86,7 @@ export default function MapView({
   const heatmapLayerRef = useRef<L.LayerGroup | null>(null);
   const routeLayerRef = useRef<L.LayerGroup | null>(null);
   const sourceDestLayerRef = useRef<L.LayerGroup | null>(null);
+  const blockLayerRef = useRef<L.LayerGroup | null>(null);
   const vehicleMarkersRef = useRef<Map<string, L.Marker>>(new Map());
   const lastGraphVersion = useRef(0);
   const firstFitDone = useRef(false);
@@ -118,6 +128,7 @@ export default function MapView({
     heatmapLayerRef.current = L.layerGroup().addTo(map);
     routeLayerRef.current = L.layerGroup().addTo(map);
     sourceDestLayerRef.current = L.layerGroup().addTo(map);
+    blockLayerRef.current = L.layerGroup().addTo(map);
 
     map.on('click', (e: L.LeafletMouseEvent) => {
       const nearest = findNearestNode(graphRef.current.nodes, e.latlng.lat, e.latlng.lng);
@@ -184,6 +195,7 @@ export default function MapView({
         color: isPrimary ? '#FF6D00' : isSecondary ? '#FF9100' : '#FFAB4044',
         weight: isPrimary ? 4 : isSecondary ? 3 : 1.5,
         opacity: isPrimary ? 0.85 : isSecondary ? 0.65 : 0.4,
+        interactive: false, // taps fall through to the map menu
       }).addTo(layer);
     }
 
@@ -255,6 +267,8 @@ export default function MapView({
 
       const circle = L.circleMarker([node.lat, node.lng], {
         radius: pulseSize, color, fillColor: color, fillOpacity: 0.9, weight: 3,
+        // Drivers tap roads (to set places or report blocks); signal details are for operators
+        interactive: !simpleViewRef.current,
       }).addTo(layer);
 
       // Click shows popup with signal details
@@ -321,6 +335,8 @@ export default function MapView({
         const newMarker = L.marker([v.lat, v.lng], {
           icon: cachedIcon,
           zIndexOffset: v.type === 'emergency' ? 1000 : 0,
+          // In heavy traffic cars cover the roads; let drivers' taps reach the map
+          interactive: !simpleViewRef.current,
         }).bindTooltip(tooltipText, {
           direction: 'top', offset: [0, -2], className: 'wf-tooltip',
         }).addTo(layer);
@@ -358,7 +374,28 @@ export default function MapView({
         color: '#4488FF', weight: 6, opacity: 0.9,
       }).addTo(layer);
     }
-  }, [routePolyline, altRoutePolylines]);
+    if (reroutePolyline && reroutePolyline.length > 1) {
+      L.polyline(reroutePolyline, { color: '#00E676', weight: 6, opacity: 0.9, dashArray: '10, 8' }).addTo(layer);
+    }
+  }, [routePolyline, altRoutePolylines, reroutePolyline]);
+
+  // ── Road blocks ────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const layer = blockLayerRef.current; if (!layer) return;
+    layer.clearLayers();
+    for (const b of blocks) {
+      for (const id of b.edgeIds) {
+        const geom = graph.edges.get(id)?.geometry;
+        if (geom && geom.length > 1) {
+          L.polyline(geom.map(p => [p.lat, p.lng] as [number, number]), { color: '#FF1744', weight: 7, opacity: 0.85 }).addTo(layer);
+        }
+      }
+      L.marker([b.lat, b.lng], {
+        icon: L.divIcon({ className: '', html: '<div style="font-size:22px;line-height:22px">🚧</div>', iconSize: [22, 22], iconAnchor: [11, 11] }),
+        zIndexOffset: 2000,
+      }).bindTooltip(`${b.roadName}: ${b.reason}`, { direction: 'top', className: 'wf-tooltip' }).addTo(layer);
+    }
+  }, [blocks, graph]);
 
   // ── Context menu handlers ─────────────────────────────────────────────────
   const handleAddSignal = useCallback(() => {
@@ -374,6 +411,10 @@ export default function MapView({
   const handleSetSource = useCallback(() => {
     if (contextMenu?.nodeId) onSelectSource(contextMenu.nodeId);
   }, [contextMenu, onSelectSource]);
+
+  const nearbyBlock = contextMenu
+    ? blocks.find(b => distanceMetres(b, contextMenu) < 80) ?? null
+    : null;
 
   const handleSetDest = useCallback(() => {
     if (contextMenu?.nodeId) onSelectDest(contextMenu.nodeId);
@@ -450,6 +491,14 @@ export default function MapView({
           onSpawnVehicle={handleSpawnVehicle}
           onSetSource={handleSetSource}
           onSetDest={handleSetDest}
+          onReportBlock={() => {
+            const map = mapRef.current;
+            const radius = map ? map.containerPointToLatLng([0, 0]).distanceTo(map.containerPointToLatLng([24, 0])) : 60;
+            onReportBlock?.(contextMenu.lat, contextMenu.lng, radius);
+          }}
+          nearbyBlock={nearbyBlock}
+          onClearBlock={id => onClearBlock?.(id)}
+          simple={simpleView}
         />
       )}
 
