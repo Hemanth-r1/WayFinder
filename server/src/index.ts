@@ -73,6 +73,15 @@ app.get('/api/signals', async (_req, res) => {
   }
 });
 
+// Same payload as a WebSocket 'update' message, for clients that can't hold a socket open
+app.get('/api/state', (_req, res) => {
+  const engine = getSimulationEngine();
+  if (!engine) {
+    return res.status(503).json({ error: 'Simulation engine not running' });
+  }
+  res.json({ vehicles: engine.getVehicles(), signals: engine.getSignals(), stats: engine.getStats() });
+});
+
 app.get('/api/stats', async (_req, res) => {
   try {
     const engine = getSimulationEngine();

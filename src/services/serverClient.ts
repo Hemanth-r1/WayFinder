@@ -1,5 +1,11 @@
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:8080';
-const WS_URL = SERVER_URL.replace('http://', 'ws://').replace('https://', 'wss://');
+// Production is served by Firebase Hosting, which forwards /api/** to Cloud Run on the same origin.
+const SERVER_URL: string = import.meta.env.VITE_SERVER_URL ?? (import.meta.env.DEV ? 'http://localhost:8080' : '');
+const WS_URL = SERVER_URL
+  ? SERVER_URL.replace('http://', 'ws://').replace('https://', 'wss://')
+  : `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`;
+/** Hosting rewrites don't carry WebSockets; if no socket opens within this time, poll instead. */
+const WS_CONNECT_TIMEOUT_MS = 4000;
+const POLL_INTERVAL_MS = 1500;
 
 export interface ServerVehicle {
   id: string;
@@ -91,6 +97,8 @@ class ServerClient {
   private updateCallbacks: Set<(data: any) => void> = new Set();
   private connectionState: 'connecting' | 'connected' | 'disconnected' = 'disconnected';
   private shouldReconnect = false;
+  private connectTimer: number | null = null;
+  private pollTimer: number | null = null;
 
   async fetchGraph(forceRefresh = false) {
     const url = `${SERVER_URL}/api/graph${forceRefresh ? '?refresh=true' : ''}`;
@@ -167,10 +175,16 @@ class ServerClient {
     this.shouldReconnect = true;
     this.connectionState = 'connecting';
     this.ws = new WebSocket(WS_URL);
+    if (this.connectTimer) clearTimeout(this.connectTimer);
+    this.connectTimer = window.setTimeout(() => {
+      this.connectTimer = null;
+      if (this.shouldReconnect && this.connectionState !== 'connected') this.startPolling();
+    }, WS_CONNECT_TIMEOUT_MS);
 
     this.ws.onopen = () => {
       console.log('[ServerClient] WebSocket connected');
       this.connectionState = 'connected';
+      this.stopPolling();
       
       if (userId) {
         this.ws?.send(JSON.stringify({ type: 'setUserId', userId }));
@@ -190,7 +204,9 @@ class ServerClient {
       console.log('[ServerClient] WebSocket disconnected');
       this.connectionState = 'disconnected';
       this.ws = null;
-      if (this.shouldReconnect) this.scheduleReconnect(userId);
+      if (!this.shouldReconnect) return;
+      this.startPolling();
+      this.scheduleReconnect(userId);
     };
 
     this.ws.onerror = (err) => {
@@ -200,6 +216,11 @@ class ServerClient {
 
   disconnectWebSocket(): void {
     this.shouldReconnect = false;
+    this.stopPolling();
+    if (this.connectTimer) {
+      clearTimeout(this.connectTimer);
+      this.connectTimer = null;
+    }
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -212,14 +233,36 @@ class ServerClient {
     this.connectionState = 'disconnected';
   }
 
+  /** HTTP fallback delivering the same 'update' messages the WebSocket sends. */
+  private startPolling(): void {
+    if (this.pollTimer) return;
+    console.warn('[ServerClient] WebSocket unavailable — polling for live updates');
+    const poll = async () => {
+      try {
+        const response = await fetch(`${SERVER_URL}/api/state`);
+        if (response.ok) this.notifyCallbacks({ type: 'update', data: await response.json() });
+      } catch { /* server unreachable; keep trying */ }
+    };
+    poll();
+    this.pollTimer = window.setInterval(poll, POLL_INTERVAL_MS);
+  }
+
+  private stopPolling(): void {
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+  }
+
   private scheduleReconnect(userId?: string): void {
     if (this.reconnectTimer) return;
-    
+    // Back off while polling covers updates
+    const delay = this.pollTimer ? 30000 : 3000;
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;
       console.log('[ServerClient] Reconnecting WebSocket...');
       this.connectWebSocket(userId);
-    }, 3000);
+    }, delay);
   }
 
   onUpdate(callback: (data: any) => void): void {
