@@ -5,10 +5,16 @@ import { getGraph } from './graphService.js';
 import { computeCongestionZones, computeStats } from './congestionService.js';
 import { computeSLA } from './slaService.js';
 import { detectActiveCorridors } from './corridorService.js';
-import { activeNavigatorCount } from './pathfindingService.js';
+import { activeNavigatorCount, getGraphIndex, nearestRoadSegment } from './pathfindingService.js';
+import {
+  getConditions, setWeatherMode, setTrafficLevel, addBlock, removeBlock, startWeatherPolling,
+  type WeatherMode, type TrafficLevel,
+} from './conditionsService.js';
 import { initSimulationEngine, getSimulationEngine } from './simulationEngine.js';
 import { removeUserVehicle, getUserVehiclePosition, markArrived } from './userVehicleService.js';
-import { startNavigation, getNavigationUpdate, planRoutes, NavigationError } from './navigationService.js';
+import {
+  startNavigation, getNavigationUpdate, planRoutes, acceptReroute, updatePosition, NavigationError,
+} from './navigationService.js';
 import { initializeWebSocket, handleWebSocketUpgrade } from './websocketService.js';
 import type { Firestore } from 'firebase-admin/firestore';
 
@@ -79,7 +85,86 @@ app.get('/api/state', (_req, res) => {
   if (!engine) {
     return res.status(503).json({ error: 'Simulation engine not running' });
   }
-  res.json({ vehicles: engine.getVehicles(), signals: engine.getSignals(), stats: engine.getStats() });
+  res.json({
+    vehicles: engine.getVehicles(), signals: engine.getSignals(), stats: engine.getStats(),
+    conditions: getConditions(),
+  });
+});
+
+// ── Road conditions: weather, traffic level, road blocks ────────────────────
+
+const WEATHER_MODES: WeatherMode[] = ['live', 'clear', 'rain', 'heavy_rain'];
+const TRAFFIC_LEVELS: TrafficLevel[] = ['light', 'normal', 'heavy'];
+
+function sendError(res: express.Response, err: any) {
+  res.status(err instanceof NavigationError ? err.status : 500).json({ error: err.message });
+}
+
+app.get('/api/conditions', (_req, res) => {
+  res.json(getConditions());
+});
+
+app.post('/api/conditions/weather', (req, res) => {
+  const { mode } = req.body;
+  if (!WEATHER_MODES.includes(mode)) {
+    return res.status(400).json({ error: `mode must be one of ${WEATHER_MODES.join(', ')}` });
+  }
+  setWeatherMode(mode);
+  res.json(getConditions());
+});
+
+app.post('/api/conditions/traffic', (req, res) => {
+  const { level } = req.body;
+  if (!TRAFFIC_LEVELS.includes(level)) {
+    return res.status(400).json({ error: `level must be one of ${TRAFFIC_LEVELS.join(', ')}` });
+  }
+  setTrafficLevel(level);
+  res.json(getConditions());
+});
+
+// Report a blocked road at a point; blocks the nearest road segment in both directions
+app.post('/api/blocks', async (req, res) => {
+  try {
+    const { lat, lng, reason, userId, radius } = req.body;
+    if (typeof lat !== 'number' || typeof lng !== 'number') {
+      return res.status(400).json({ error: 'lat and lng are required numbers' });
+    }
+    // Search radius follows the map zoom on the client (a finger-width on screen)
+    const maxMetres = typeof radius === 'number' ? Math.min(250, Math.max(20, radius)) : 60;
+    const { graph, signals } = await getGraph();
+    const segment = nearestRoadSegment(getGraphIndex(graph, signals), lat, lng, maxMetres);
+    if (!segment) return res.status(404).json({ error: 'No road near that point — zoom in and tap on a road' });
+    const mid = segmentMidpoint(segment.edge.geometry);
+    const block = addBlock({
+      edgeIds: segment.edgeIds,
+      lat: mid.lat, lng: mid.lng,
+      roadName: segment.edge.name || 'Unnamed road',
+      reason: typeof reason === 'string' && reason.trim() ? reason.trim().slice(0, 80) : 'Road blocked',
+      reportedBy: typeof userId === 'string' ? userId : null,
+    });
+    res.json(block);
+  } catch (err: any) {
+    sendError(res, err);
+  }
+});
+
+/** Point halfway along a polyline (by vertex-to-vertex distance). */
+function segmentMidpoint(geom: { lat: number; lng: number }[]): { lat: number; lng: number } {
+  const lens = geom.slice(1).map((p, i) => Math.hypot(p.lat - geom[i].lat, p.lng - geom[i].lng));
+  let remaining = lens.reduce((a, b) => a + b, 0) / 2;
+  for (let i = 0; i < lens.length; i++) {
+    if (remaining <= lens[i]) {
+      const t = lens[i] > 0 ? remaining / lens[i] : 0;
+      return { lat: geom[i].lat + t * (geom[i + 1].lat - geom[i].lat), lng: geom[i].lng + t * (geom[i + 1].lng - geom[i].lng) };
+    }
+    remaining -= lens[i];
+  }
+  return geom[0];
+}
+
+app.delete('/api/blocks/:id', (req, res) => {
+  if (!removeBlock(req.params.id)) return res.status(404).json({ error: 'Block not found' });
+  res.json({ success: true });
 });
 
 app.get('/api/stats', async (_req, res) => {
@@ -97,7 +182,7 @@ app.get('/api/stats', async (_req, res) => {
 
 app.post('/api/user/start', async (req, res) => {
   try {
-    const { userId, sourceNodeId, destNodeId, edgeIds } = req.body;
+    const { userId, sourceNodeId, destNodeId, edgeIds, mode } = req.body;
     if (!userId || !sourceNodeId || !destNodeId) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
@@ -106,7 +191,9 @@ app.post('/api/user/start', async (req, res) => {
     }
 
     const { graph, signals } = await getGraph();
-    const navigation = startNavigation({ userId, sourceNodeId, destNodeId, edgeIds }, graph, signals);
+    const navigation = startNavigation(
+      { userId, sourceNodeId, destNodeId, edgeIds, mode: mode === 'gps' ? 'gps' : 'simulated' }, graph, signals,
+    );
     res.json(navigation);
   } catch (err: any) {
     res.status(err instanceof NavigationError ? err.status : 500).json({ error: err.message });
@@ -137,6 +224,30 @@ app.get('/api/user/:userId/navigation', async (req, res) => {
     res.json(navigation);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// GPS fix from a navigating phone: { lat, lng, speed? (km/h) }
+app.post('/api/user/:userId/position', async (req, res) => {
+  try {
+    const { lat, lng, speed } = req.body;
+    if (typeof lat !== 'number' || typeof lng !== 'number') {
+      return res.status(400).json({ error: 'lat and lng are required numbers' });
+    }
+    const { graph, signals } = await getGraph();
+    res.json(updatePosition(req.params.userId, lat, lng, typeof speed === 'number' ? speed : undefined, graph, signals));
+  } catch (err: any) {
+    sendError(res, err);
+  }
+});
+
+// Accept the reroute offered in the latest navigation update
+app.post('/api/user/:userId/reroute', async (req, res) => {
+  try {
+    const { graph, signals } = await getGraph();
+    res.json({ routeInfo: acceptReroute(req.params.userId, graph, signals) });
+  } catch (err: any) {
+    sendError(res, err);
   }
 });
 
@@ -191,6 +302,7 @@ async function initializeServer() {
     const engine = initSimulationEngine(graph, signals);
     engine.setArrivalHandler(markArrived);
     engine.start();
+    startWeatherPolling();
     console.log('[WayFinder Server] Simulation engine started');
     initializeWebSocket();
     console.log('[WayFinder Server] WebSocket initialized');

@@ -7,7 +7,17 @@ interface Props {
   onOpenGoogleMaps: () => void;
   destLabel: string | null;
   isMobile: boolean;
+  /** Show the reroute offer (false once the driver chose to keep their route) */
+  showReroute: boolean;
+  rerouting: boolean;
+  onAcceptReroute: () => void;
+  onDismissReroute: () => void;
 }
+
+const WEATHER_NOTE: Record<string, string> = {
+  rain: '🌧 Rain — slower speeds included',
+  heavy_rain: '⛈ Heavy rain — expect delays, avoid flooded underpasses',
+};
 
 const LIGHT: Record<string, string> = { GREEN: '#4CAF50', YELLOW: '#FFD600', RED: '#F44336' };
 
@@ -21,7 +31,11 @@ function formatDistance(metres: number): string {
   return metres >= 1000 ? `${(metres / 1000).toFixed(1)} km` : `${Math.round(metres / 10) * 10} m`;
 }
 
-export default function NavigationGuide({ navigation, onClear, onOpenGoogleMaps, destLabel, isMobile }: Props) {
+export default function NavigationGuide({
+  navigation, onClear, onOpenGoogleMaps, destLabel, isMobile,
+  showReroute, rerouting, onAcceptReroute, onDismissReroute,
+}: Props) {
+  const offer = showReroute ? navigation.reroute : null;
   const nextSignal = navigation.signals[0];
   const traffic = navigation.trafficConditions;
   const trafficText = traffic.congestionLevel > 0.7 ? 'Heavy traffic' : traffic.congestionLevel > 0.4 ? 'Moderate traffic' : 'Light traffic';
@@ -40,6 +54,38 @@ export default function NavigationGuide({ navigation, onClear, onOpenGoogleMaps,
       padding: 14, zIndex: 1500, boxShadow: '0 6px 24px rgba(0,0,0,0.55)',
       fontFamily: 'system-ui, sans-serif', color: '#ccc',
     }}>
+      {/* Reroute offer */}
+      {offer && (
+        <div style={{
+          background: offer.reason === 'blocked' ? '#FF174422' : '#00E67618',
+          border: `1px solid ${offer.reason === 'blocked' ? '#FF174466' : '#00E67655'}`,
+          borderRadius: 10, padding: '10px 12px', marginBottom: 12,
+        }}>
+          <div style={{ fontSize: 14, fontWeight: 'bold', color: '#fff' }}>
+            {offer.reason === 'blocked' ? '🚧 Road blocked ahead' : `⚡ Faster route: save ${formatDuration(offer.savedSeconds)}`}
+          </div>
+          <div style={{ fontSize: 12, color: '#aaa', marginTop: 2 }}>
+            New route {formatDuration(offer.estimatedTime)} · {formatDistance(offer.distance)}
+            {offer.roadNames.length > 0 && ` via ${offer.roadNames.slice(0, 2).join(', ')}`}
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <button onClick={onAcceptReroute} disabled={rerouting} style={{
+              flex: 1, height: 36, background: '#00C853', color: '#fff', border: 'none',
+              borderRadius: 18, cursor: 'pointer', fontSize: 13, fontWeight: 'bold',
+            }}>{rerouting ? 'Rerouting…' : 'Reroute'}</button>
+            <button onClick={onDismissReroute} style={{
+              height: 36, padding: '0 14px', background: 'transparent', color: '#aaa',
+              border: '1px solid #444', borderRadius: 18, cursor: 'pointer', fontSize: 12,
+            }}>Keep route</button>
+          </div>
+        </div>
+      )}
+      {navigation.blockedAhead && (
+        <div style={{ background: '#FF174422', border: '1px solid #FF174466', borderRadius: 10, padding: '8px 12px', marginBottom: 12, fontSize: 13, color: '#fff' }}>
+          🚧 Road blocked ahead — no way around found yet
+        </div>
+      )}
+
       {/* ETA row */}
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
         <span style={{ fontSize: 24, fontWeight: 'bold', color: '#4CAF50' }}>{formatDuration(navigation.duration)}</span>
@@ -49,6 +95,11 @@ export default function NavigationGuide({ navigation, onClear, onOpenGoogleMaps,
       <div style={{ fontSize: 12, color: '#999', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {destLabel ? `to ${destLabel}` : 'to destination'}
         {navigation.routeInfo.roadNames.length > 0 && ` · via ${navigation.routeInfo.roadNames.slice(0, 2).join(', ')}`}
+      </div>
+
+      <div style={{ fontSize: 11, color: '#777', marginTop: 4, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        <span>{navigation.mode === 'gps' ? '📍 Live GPS' : '🚗 Simulated drive'}</span>
+        {WEATHER_NOTE[navigation.weather] && <span style={{ color: '#64B5F6' }}>{WEATHER_NOTE[navigation.weather]}</span>}
       </div>
 
       {/* Next signal + traffic */}

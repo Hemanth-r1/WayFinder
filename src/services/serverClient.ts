@@ -45,6 +45,53 @@ export interface ServerStats {
   slaCompliant: boolean;
   emergencySlaSpeed: number;
   activeCorridors: number;
+  simulatedVehicles?: number;
+  realVehicles?: number;
+}
+
+export type WeatherCondition = 'clear' | 'rain' | 'heavy_rain';
+export type WeatherMode = 'live' | WeatherCondition;
+export type TrafficLevel = 'light' | 'normal' | 'heavy';
+export type DriveMode = 'gps' | 'simulated';
+
+export interface RoadBlock {
+  id: string;
+  edgeIds: string[];
+  lat: number;
+  lng: number;
+  roadName: string;
+  reason: string;
+  reportedBy: string | null;
+  createdAt: number;
+  expiresAt: number;
+}
+
+export interface Conditions {
+  weather: {
+    condition: WeatherCondition;
+    precipitation: number | null;
+    source: 'live' | 'manual' | 'unavailable';
+    speedFactor: number;
+    capacityFactor: number;
+  };
+  weatherMode: WeatherMode;
+  trafficLevel: TrafficLevel;
+  blocks: RoadBlock[];
+}
+
+export interface RerouteOffer {
+  reason: 'faster' | 'blocked';
+  savedSeconds: number;
+  distance: number;
+  estimatedTime: number;
+  roadNames: string[];
+  geometry: Array<{ lat: number; lng: number }>;
+}
+
+export interface PositionResult {
+  onRoute: boolean;
+  arrived: boolean;
+  rerouted: boolean;
 }
 
 /** One route option from the server, fastest first. */
@@ -81,6 +128,12 @@ export interface NavigationResponse {
   routeInfo: RouteOption;
   alternatives: RouteOption[];
   arrived: boolean;
+  mode: DriveMode;
+  /** Better route available now (road block ahead, or faster with live traffic) */
+  reroute: RerouteOffer | null;
+  /** A road block is ahead and no way around it was found */
+  blockedAhead: boolean;
+  weather: WeatherCondition;
 }
 
 async function errorMessage(response: Response, fallback: string): Promise<string> {
@@ -139,13 +192,53 @@ class ServerClient {
   }
 
   /** Starts driving `edgeIds` (a chosen RouteOption); the server falls back to its best route if stale. */
-  async startNavigation(userId: string, sourceNodeId: string, destNodeId: string, edgeIds?: string[]): Promise<NavigationResponse> {
-    const response = await fetch(`${SERVER_URL}/api/user/start`, {
+  async startNavigation(
+    userId: string, sourceNodeId: string, destNodeId: string, edgeIds?: string[], mode: DriveMode = 'simulated',
+  ): Promise<NavigationResponse> {
+    return this.post('/api/user/start', { userId, sourceNodeId, destNodeId, edgeIds, mode }, 'Failed to start navigation');
+  }
+
+  /** Sends a GPS fix while navigating in 'gps' mode. */
+  async sendPosition(userId: string, lat: number, lng: number, speedKmh?: number): Promise<PositionResult> {
+    return this.post(`/api/user/${encodeURIComponent(userId)}/position`, { lat, lng, speed: speedKmh }, 'Failed to send position');
+  }
+
+  /** Switches to the reroute offered in the latest navigation update. */
+  async acceptReroute(userId: string): Promise<{ routeInfo: RouteOption }> {
+    return this.post(`/api/user/${encodeURIComponent(userId)}/reroute`, {}, 'Failed to reroute');
+  }
+
+  async fetchConditions(): Promise<Conditions> {
+    const response = await fetch(`${SERVER_URL}/api/conditions`);
+    if (!response.ok) throw new Error(await errorMessage(response, 'Failed to load road conditions'));
+    return response.json();
+  }
+
+  async setWeatherMode(mode: WeatherMode): Promise<Conditions> {
+    return this.post('/api/conditions/weather', { mode }, 'Failed to set weather');
+  }
+
+  async setTrafficLevel(level: TrafficLevel): Promise<Conditions> {
+    return this.post('/api/conditions/traffic', { level }, 'Failed to set traffic level');
+  }
+
+  /** Blocks the road nearest (lat, lng) in both directions. */
+  async reportBlock(lat: number, lng: number, radiusMetres?: number, userId?: string, reason?: string): Promise<RoadBlock> {
+    return this.post('/api/blocks', { lat, lng, radius: radiusMetres, userId, reason }, 'Failed to report road block');
+  }
+
+  async removeBlock(id: string): Promise<void> {
+    const response = await fetch(`${SERVER_URL}/api/blocks/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (!response.ok) throw new Error(await errorMessage(response, 'Failed to clear road block'));
+  }
+
+  private async post<T>(path: string, body: unknown, failure: string): Promise<T> {
+    const response = await fetch(`${SERVER_URL}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId, sourceNodeId, destNodeId, edgeIds }),
+      body: JSON.stringify(body),
     });
-    if (!response.ok) throw new Error(await errorMessage(response, 'Failed to start navigation'));
+    if (!response.ok) throw new Error(await errorMessage(response, failure));
     return response.json();
   }
 

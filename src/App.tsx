@@ -13,10 +13,13 @@ import NavigationGuide from './components/NavigationGuide';
 import { progressiveLoader, type LoadUpdate, type LoadPhase } from './services/progressiveLoader';
 import { serverClient } from './services/serverClient';
 import type { RoadGraph, TrafficSignal, Vehicle } from './types';
-import type { ServerStats, RouteOption, NavigationResponse } from './services/serverClient';
+import type {
+  ServerStats, RouteOption, NavigationResponse, Conditions, WeatherMode, TrafficLevel,
+} from './services/serverClient';
+import ConditionsPanel from './components/ConditionsPanel';
 import ToastContainer, { pushToast } from './components/Toast';
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from './config/firebase';
+import { db, isFirebaseReady } from './config/firebase';
 import { useIsMobile } from './hooks/useIsMobile';
 import { nodeLabel, snapToRoad, currentPosition, googleMapsUrl, type Place } from './utils/places';
 
@@ -43,6 +46,9 @@ function AppContent() {
   const [destLabel, setDestLabel] = useState<string | null>(null);
   const [locating, setLocating] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [conditions, setConditions] = useState<Conditions | null>(null);
+  const [dismissedOffer, setDismissedOffer] = useState<string | null>(null);
+  const [rerouting, setRerouting] = useState(false);
   const isMobile = useIsMobile();
   const simpleView = role === 'user';
   const [graphVersion, setGraphVersion] = useState(0);
@@ -91,9 +97,13 @@ function AppContent() {
         if (data.data.stats) {
           setStats(data.data.stats);
         }
+        if (data.data.conditions) {
+          setConditions(data.data.conditions);
+        }
       }
     };
     serverClient.onUpdate(onServerUpdate);
+    serverClient.fetchConditions().then(setConditions).catch(() => {});
 
     return () => {
       progressiveLoader.removeUpdateCallback(onLoad);
@@ -144,29 +154,123 @@ function AppContent() {
   }, []);
 
   // Live navigation updates while driving
-  useEffect(() => {
-    if (!user || !navigatedVehicle) return;
-    let cancelled = false;
-    const poll = async () => {
-      try {
-        const update = await serverClient.getUserNavigation(user.uid);
-        if (cancelled) return;
-        if (update.arrived) {
-          pushToast('You have arrived at your destination', 'success');
-          setNavigation(null);
-          setSource(null);
-          setDest(null);
-          serverClient.removeUserVehicle(user.uid).catch(() => {});
-          return;
-        }
-        setNavigation(prev => prev ? { ...update, alternatives: prev.alternatives } : prev);
-      } catch (err) {
-        console.error('Failed to get navigation update:', err);
+  const refreshNavigation = useCallback(async () => {
+    if (!user || !navigatingRef.current) return;
+    try {
+      const update = await serverClient.getUserNavigation(user.uid);
+      if (!navigatingRef.current) return;
+      if (update.arrived) {
+        navigatingRef.current = false;
+        pushToast('You have arrived at your destination', 'success');
+        setNavigation(null);
+        setSource(null);
+        setDest(null);
+        serverClient.removeUserVehicle(user.uid).catch(() => {});
+        return;
       }
+      setNavigation(prev => prev ? { ...update, alternatives: prev.alternatives } : prev);
+    } catch (err) {
+      console.error('Failed to get navigation update:', err);
+    }
+  }, [user, setSource, setDest]);
+
+  useEffect(() => {
+    if (!navigatedVehicle) return;
+    const interval = setInterval(refreshNavigation, 2000);
+    return () => clearInterval(interval);
+  }, [navigatedVehicle, refreshNavigation]);
+
+  // Real drivers: stream the phone's GPS so their vehicle, live speeds and rerouting use it
+  const driveMode = navigation?.mode;
+  useEffect(() => {
+    if (!user || driveMode !== 'gps' || !navigator.geolocation) return;
+    // Send the newest fix at most every 2 s; a fix arriving in between is sent late, never dropped
+    let latest: GeolocationPosition | null = null;
+    let lastSent = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const send = () => {
+      timer = null;
+      if (!latest) return;
+      const pos = latest;
+      latest = null;
+      lastSent = Date.now();
+      const kmh = pos.coords.speed !== null && pos.coords.speed >= 0 ? pos.coords.speed * 3.6 : undefined;
+      serverClient.sendPosition(user.uid, pos.coords.latitude, pos.coords.longitude, kmh)
+        .then(r => {
+          if (r.rerouted) {
+            pushToast('You left the route — found a new one', 'info');
+            refreshNavigation();
+          }
+        })
+        .catch(err => console.error('Failed to send position:', err));
     };
-    const interval = setInterval(poll, 2000);
-    return () => { cancelled = true; clearInterval(interval); };
-  }, [user, navigatedVehicle, setSource, setDest]);
+    const watchId = navigator.geolocation.watchPosition(
+      pos => {
+        latest = pos;
+        if (!timer) timer = setTimeout(send, Math.max(0, 2000 - (Date.now() - lastSent)));
+      },
+      err => {
+        // Timeouts just mean no new fix yet (e.g. standing still); only a denial needs the driver
+        if (err.code === err.PERMISSION_DENIED) pushToast('Location permission was turned off — your position is no longer updating', 'warning');
+        else console.warn('GPS:', err.code, err.message);
+      },
+      { enableHighAccuracy: true, maximumAge: 1000, timeout: 15000 },
+    );
+    return () => {
+      navigator.geolocation.clearWatch(watchId);
+      if (timer) clearTimeout(timer);
+    };
+  }, [user, driveMode, refreshNavigation]);
+
+  // ── Reroutes and road conditions ───────────────────────────────────────────
+  const offer = navigation?.reroute ?? null;
+  const offerKey = offer ? `${offer.reason}:${offer.roadNames.join('|')}:${Math.round(offer.distance / 50)}` : null;
+  const showReroute = !!offer && offerKey !== dismissedOffer;
+  const reroutePolyline = useMemo(
+    () => showReroute && offer ? offer.geometry.map(p => [p.lat, p.lng] as [number, number]) : undefined,
+    [showReroute, offer],
+  );
+
+  const handleAcceptReroute = useCallback(async () => {
+    if (!user) return;
+    setRerouting(true);
+    try {
+      await serverClient.acceptReroute(user.uid);
+      pushToast('Rerouted', 'success');
+      await refreshNavigation();
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : 'Failed to reroute', 'error');
+    } finally {
+      setRerouting(false);
+    }
+  }, [user, refreshNavigation]);
+
+  const handleReportBlock = useCallback(async (lat: number, lng: number, radiusMetres: number) => {
+    try {
+      const block = await serverClient.reportBlock(lat, lng, radiusMetres, user?.uid);
+      pushToast(`Reported: ${block.roadName} blocked. Drivers will be rerouted.`, 'success');
+      setConditions(await serverClient.fetchConditions());
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : 'Failed to report road block', 'error');
+    }
+  }, [user]);
+
+  const handleClearBlock = useCallback(async (id: string) => {
+    try {
+      await serverClient.removeBlock(id);
+      pushToast('Road marked open', 'success');
+      setConditions(await serverClient.fetchConditions());
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : 'Failed to clear road block', 'error');
+    }
+  }, []);
+
+  const handleWeather = useCallback((mode: WeatherMode) => {
+    serverClient.setWeatherMode(mode).then(setConditions).catch(err => pushToast(err.message, 'error'));
+  }, []);
+  const handleTraffic = useCallback((level: TrafficLevel) => {
+    serverClient.setTrafficLevel(level).then(setConditions).catch(err => pushToast(err.message, 'error'));
+  }, []);
 
   const snapPlace = useCallback((place: Place): string | null => {
     const node = snapToRoad(graphRef.current, place.lat, place.lng);
@@ -228,7 +332,18 @@ function AppContent() {
     setStarting(true);
     try {
       const chosen = routeOptions[selectedRouteIndex];
-      const nav = await serverClient.startNavigation(user.uid, selectedSource, selectedDest, chosen?.edgeIds);
+      // Phones drive with real GPS when a fix is available; otherwise the drive is simulated
+      let mode: 'gps' | 'simulated' = 'simulated';
+      if (isMobile && 'geolocation' in navigator) {
+        try {
+          await currentPosition();
+          mode = 'gps';
+        } catch {
+          pushToast('Location is off — showing a simulated drive instead', 'warning');
+        }
+      }
+      const nav = await serverClient.startNavigation(user.uid, selectedSource, selectedDest, chosen?.edgeIds, mode);
+      navigatingRef.current = true;
       setNavigation(nav);
       setRouteOptions([]);
       if (db) {
@@ -245,7 +360,7 @@ function AppContent() {
     } finally {
       setStarting(false);
     }
-  }, [user, selectedSource, selectedDest, sourceLabel, destLabel, routeOptions, selectedRouteIndex]);
+  }, [user, selectedSource, selectedDest, sourceLabel, destLabel, routeOptions, selectedRouteIndex, isMobile]);
 
   /**
    * Hands this user's route to Google Maps for voice guidance. The trip is still started in
@@ -287,6 +402,13 @@ function AppContent() {
   if (!user) return <LoginScreen />;
 
   const hideSidebar = isMobile && navigatedVehicle;
+  const conditionBadges: string[] = [];
+  if (conditions?.weather.condition === 'rain') conditionBadges.push('🌧 Rain');
+  if (conditions?.weather.condition === 'heavy_rain') conditionBadges.push('⛈ Heavy rain');
+  if (conditions?.trafficLevel === 'heavy') conditionBadges.push('🚗 Heavy traffic');
+  if (conditions?.blocks.length) {
+    conditionBadges.push(`🚧 ${conditions.blocks.length} road${conditions.blocks.length > 1 ? 's' : ''} blocked`);
+  }
 
   return (
     <div style={{
@@ -318,6 +440,14 @@ function AppContent() {
           <RoleSelector />
         </div>
 
+        {loadingPhase === 'full' && conditionBadges.length > 0 && (
+          <div title="Current road conditions" style={{
+            padding: '6px 14px', fontSize: 12, color: '#64B5F6', background: '#64B5F60d', borderBottom: '1px solid #222',
+          }}>
+            {conditionBadges.join(' · ')}
+          </div>
+        )}
+
         {!loading && loadSource === 'error' && (
           <div style={{ margin: '8px 14px', fontSize: 11, color: '#F44336' }}>
             Could not reach the WayFinder server. <button onClick={handleRefresh} style={{ background: 'none', border: 'none', color: '#4488FF', cursor: 'pointer', padding: 0 }}>Retry</button>
@@ -348,6 +478,15 @@ function AppContent() {
               starting={starting}
               onStart={handleStartNavigation}
               onOpenGoogleMaps={handleOpenGoogleMaps}
+            />
+          )}
+          {/* Operators control conditions; in demo mode drivers can too, to try it out */}
+          {(role !== 'user' || !isFirebaseReady) && (
+            <ConditionsPanel
+              conditions={conditions}
+              onWeather={handleWeather}
+              onTraffic={handleTraffic}
+              onClearBlock={handleClearBlock}
             />
           )}
           {role === 'supporter' && (
@@ -438,6 +577,10 @@ function AppContent() {
           navigatedVehicle={navigatedVehicle}
           simpleView={simpleView}
           compact={isMobile}
+          blocks={conditions?.blocks}
+          reroutePolyline={reroutePolyline}
+          onReportBlock={handleReportBlock}
+          onClearBlock={handleClearBlock}
         />
       </div>
 
@@ -449,6 +592,10 @@ function AppContent() {
           onOpenGoogleMaps={handleOpenGoogleMaps}
           destLabel={destLabel}
           isMobile={isMobile}
+          showReroute={showReroute}
+          rerouting={rerouting}
+          onAcceptReroute={handleAcceptReroute}
+          onDismissReroute={() => setDismissedOffer(offerKey)}
         />
       )}
 

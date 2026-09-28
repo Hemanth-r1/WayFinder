@@ -1,6 +1,7 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { getSimulationEngine } from './simulationEngine.js';
 import type { SimState } from './simulationEngine.js';
+import { getConditions } from './conditionsService.js';
 
 interface WSClient {
   ws: WebSocket;
@@ -121,6 +122,7 @@ function broadcastStateUpdate(state: SimState) {
       vehicles,
       signals,
       stats,
+      conditions: getConditions(),
     },
   });
 

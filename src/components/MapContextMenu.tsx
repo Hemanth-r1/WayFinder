@@ -18,6 +18,12 @@ export interface MapContextMenuProps {
   onSpawnVehicle: (type: VehicleType) => void;
   onSetSource: () => void;
   onSetDest: () => void;
+  onReportBlock: () => void;
+  /** Existing road block near the tapped point, if any */
+  nearbyBlock: { id: string; roadName: string } | null;
+  onClearBlock: (id: string) => void;
+  /** Driver view: hide coordinates, node info and vehicle spawning */
+  simple: boolean;
 }
 
 const VEHICLE_TYPES: { type: VehicleType; icon: string; label: string }[] = [
@@ -35,6 +41,7 @@ const VEHICLE_TYPES: { type: VehicleType; icon: string; label: string }[] = [
 export default function MapContextMenu({
   lat, lng, nodeId, nodeDegree, roadNames, role,
   screenX, screenY, onClose, onAddSignal, onSpawnVehicle, onSetSource, onSetDest,
+  onReportBlock, nearbyBlock, onClearBlock, simple,
 }: MapContextMenuProps) {
   // Clamp to viewport
   const menuWidth = 220;
@@ -59,17 +66,20 @@ export default function MapContextMenu({
       }}>
         {/* Header: node info */}
         <div style={{ padding: '6px 14px 8px', borderBottom: '1px solid #222' }}>
-          <div style={{ fontSize: 10, color: '#555', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 2 }}>Map Point</div>
-          <div style={{ fontSize: 11, fontFamily: 'monospace', color: '#888' }}>
-            {lat.toFixed(5)}, {lng.toFixed(5)}
-          </div>
-          {nodeId && (
+          {!simple && <>
+            <div style={{ fontSize: 10, color: '#555', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 2 }}>Map Point</div>
+            <div style={{ fontSize: 11, fontFamily: 'monospace', color: '#888' }}>
+              {lat.toFixed(5)}, {lng.toFixed(5)}
+            </div>
+          </>}
+          {simple && roadNames.length === 0 && <div style={{ fontSize: 12, color: '#aaa' }}>Unnamed road</div>}
+          {nodeId && !simple && (
             <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>
               Node {nodeId} · {nodeDegree} connections
             </div>
           )}
           {roadNames.length > 0 && (
-            <div style={{ fontSize: 11, color: '#FF9800', marginTop: 2 }}>
+            <div style={{ fontSize: simple ? 13 : 11, color: simple ? '#fff' : '#FF9800', marginTop: 2 }}>
               {roadNames.slice(0, 2).join(', ')}
             </div>
           )}
@@ -83,6 +93,13 @@ export default function MapContextMenu({
           </div>
         )}
 
+        {/* Road blocks (all roles) */}
+        <div style={{ borderBottom: '1px solid #1a1a2e' }}>
+          {nearbyBlock
+            ? <MenuItem icon="✅" label={`Road open again (${nearbyBlock.roadName})`} onClick={() => { onClearBlock(nearbyBlock.id); onClose(); }} />
+            : <MenuItem icon="🚧" label="Report road blocked" onClick={() => { onReportBlock(); onClose(); }} accent="#FF9800" />}
+        </div>
+
         {/* Add Signal (Supporter + Controller) */}
         {(role === 'supporter' || role === 'controller') && nodeId && nodeDegree >= 2 && (
           <div style={{ borderBottom: '1px solid #1a1a2e' }}>
@@ -90,8 +107,8 @@ export default function MapContextMenu({
           </div>
         )}
 
-        {/* Spawn Vehicle (all roles) */}
-        <div>
+        {/* Spawn Vehicle (operators) */}
+        {!simple && <div>
           <div style={{ padding: '5px 14px 3px', fontSize: 10, color: '#555', textTransform: 'uppercase', letterSpacing: 1 }}>
             Spawn Vehicle
           </div>
@@ -111,7 +128,7 @@ export default function MapContextMenu({
               </button>
             ))}
           </div>
-        </div>
+        </div>}
       </div>
     </>
   );

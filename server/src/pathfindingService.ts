@@ -9,6 +9,7 @@
  */
 import type { RoadGraph, RoadEdge, RoadNode, TrafficSignal, RouteInfo } from './types.js';
 import { expectedSignalDelay } from './signalTiming.js';
+import { getWeather, isEdgeBlocked } from './conditionsService.js';
 
 // ── Tuning ───────────────────────────────────────────────────────────────────
 
@@ -33,6 +34,10 @@ const MAX_ALT_STRETCH = 1.3;
 const MAX_ALT_OVERLAP = 0.75;
 /** Multiplier applied to edges already used when searching for the next alternative. */
 const ALT_EDGE_PENALTY = 1.4;
+/** Speeds observed from real drivers' GPS stay relevant for this long. */
+const OBSERVATION_TTL_MS = 3 * 60 * 1000;
+/** Weight of a new GPS speed sample in the per-edge moving average. */
+const OBSERVATION_ALPHA = 0.4;
 
 // ── Graph index ──────────────────────────────────────────────────────────────
 
@@ -109,6 +114,36 @@ export function activeNavigatorCount(): number {
   return userRouteEdges.size;
 }
 
+/** Edge IDs on any active navigator's route. */
+export function activeRouteEdgeIds(): string[] {
+  return Array.from(edgeNavigators.keys());
+}
+
+// ── Live speeds from real drivers ────────────────────────────────────────────
+
+const observedSpeeds = new Map<string, { kmh: number; at: number }>();
+
+/** Records a GPS-derived speed for an edge (moving average). */
+export function recordObservedSpeed(edgeId: string, kmh: number): void {
+  const now = Date.now();
+  const prev = observedSpeeds.get(edgeId);
+  const fresh = prev && now - prev.at < OBSERVATION_TTL_MS;
+  observedSpeeds.set(edgeId, {
+    kmh: fresh ? prev.kmh + OBSERVATION_ALPHA * (kmh - prev.kmh) : kmh,
+    at: now,
+  });
+}
+
+function observedKmh(edgeId: string): number | null {
+  const o = observedSpeeds.get(edgeId);
+  if (!o) return null;
+  if (Date.now() - o.at > OBSERVATION_TTL_MS) {
+    observedSpeeds.delete(edgeId);
+    return null;
+  }
+  return o.kmh;
+}
+
 // ── Cost model ───────────────────────────────────────────────────────────────
 
 export interface RoutingContext {
@@ -118,8 +153,9 @@ export interface RoutingContext {
   occupancy?: Map<string, number>;
 }
 
+/** Vehicles an edge holds before slowing sharply; reduced in rain. */
 export function edgeCapacity(edge: RoadEdge): number {
-  return Math.max(1, (edge.lanes || 1) * edge.length / METRES_PER_VEHICLE);
+  return Math.max(1, (edge.lanes || 1) * edge.length / METRES_PER_VEHICLE * getWeather().capacityFactor);
 }
 
 export function congestionFactor(edge: RoadEdge, vehicles: number): number {
@@ -131,10 +167,17 @@ function freeFlowTime(edge: RoadEdge): number {
   return edge.length / (Math.max(5, edge.speedLimit) / 3.6);
 }
 
-/** Predicted seconds to drive `edge` now, including other navigators' expected load. */
+/**
+ * Predicted seconds to drive `edge` now: free-flow time slowed by weather and simulated
+ * congestion, or the speed real WayFinder drivers just measured there if that is slower,
+ * plus other navigators' expected load.
+ */
 export function edgeTravelTime(edge: RoadEdge, ctx: RoutingContext): number {
   const sharing = Math.min(MAX_SHARE_FACTOR, 1 + SHARE_PENALTY * navigatorsOnEdge(edge.id, ctx.userId));
-  return freeFlowTime(edge) * congestionFactor(edge, ctx.occupancy?.get(edge.id) ?? 0) * sharing;
+  const modelled = freeFlowTime(edge) / getWeather().speedFactor * congestionFactor(edge, ctx.occupancy?.get(edge.id) ?? 0);
+  const observed = observedKmh(edge.id);
+  const measured = observed !== null ? edge.length / (Math.max(5, observed) / 3.6) : 0;
+  return Math.max(modelled, measured) * sharing;
 }
 
 function turnCost(prev: RoadEdge | undefined, next: RoadEdge): number {
@@ -230,7 +273,7 @@ function aStar(
     const gCur = g.get(current)!;
     const inEdge = via.get(current);
     for (const edge of index.outEdges.get(current) ?? []) {
-      if (closed.has(edge.to)) continue;
+      if (closed.has(edge.to) || isEdgeBlocked(edge.id)) continue;
       const signal = index.signalByNode.get(edge.to);
       const cost =
         edgeTravelTime(edge, ctx) * userSpread(ctx.userId, edge.id) * (extraPenalty?.get(edge.id) ?? 1) +
@@ -338,4 +381,32 @@ export function findRoute(
   graph: RoadGraph, sourceId: string, destId: string, signals: TrafficSignal[], ctx: RoutingContext = {},
 ): RouteInfo | null {
   return findRouteOptions(graph, signals, sourceId, destId, ctx, 1)[0] ?? null;
+}
+
+/** Road segment nearest (lat, lng) within `maxMetres`, with its reverse direction if two-way. */
+export function nearestRoadSegment(
+  index: GraphIndex, lat: number, lng: number, maxMetres = 60,
+): { edge: RoadEdge; edgeIds: string[]; distance: number } | null {
+  const kx = 111320 * Math.cos(lat * Math.PI / 180), ky = 111320;
+  let best: RoadEdge | null = null;
+  let bestDist = maxMetres;
+  for (const edge of index.edgeList) {
+    const g = edge.geometry?.length >= 2 ? edge.geometry : null;
+    if (!g) continue;
+    for (let i = 1; i < g.length; i++) {
+      const ax = (g[i - 1].lng - lng) * kx, ay = (g[i - 1].lat - lat) * ky;
+      const bx = (g[i].lng - lng) * kx, by = (g[i].lat - lat) * ky;
+      // Cheap reject: segment bounding box far from the point
+      if (Math.min(ax, bx) > bestDist || Math.max(ax, bx) < -bestDist ||
+          Math.min(ay, by) > bestDist || Math.max(ay, by) < -bestDist) continue;
+      const dx = bx - ax, dy = by - ay;
+      const len2 = dx * dx + dy * dy;
+      const t = len2 > 0 ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / len2)) : 0;
+      const d = Math.hypot(ax + t * dx, ay + t * dy);
+      if (d < bestDist) { bestDist = d; best = edge; }
+    }
+  }
+  if (!best) return null;
+  const reverse = (index.outEdges.get(best.to) ?? []).find(e => e.to === best.from);
+  return { edge: best, edgeIds: reverse ? [best.id, reverse.id] : [best.id], distance: bestDist };
 }
