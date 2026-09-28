@@ -1,5 +1,6 @@
 import type { CSSProperties } from 'react';
-import type { NavigationResponse } from '../services/serverClient';
+import type { NavigationResponse, ReportVote } from '../services/serverClient';
+import { REPORT_LABEL } from '../utils/reports';
 
 interface Props {
   navigation: NavigationResponse;
@@ -12,6 +13,8 @@ interface Props {
   rerouting: boolean;
   onAcceptReroute: () => void;
   onDismissReroute: () => void;
+  /** Answer to "is this report still there?" */
+  onAnswerReport: (id: string, vote: ReportVote) => void;
 }
 
 const WEATHER_NOTE: Record<string, string> = {
@@ -33,8 +36,9 @@ function formatDistance(metres: number): string {
 
 export default function NavigationGuide({
   navigation, onClear, onOpenGoogleMaps, destLabel, isMobile,
-  showReroute, rerouting, onAcceptReroute, onDismissReroute,
+  showReroute, rerouting, onAcceptReroute, onDismissReroute, onAnswerReport,
 }: Props) {
+  const prompt = navigation.reportPrompt;
   const offer = showReroute ? navigation.reroute : null;
   const nextSignal = navigation.signals[0];
   const traffic = navigation.trafficConditions;
@@ -62,7 +66,9 @@ export default function NavigationGuide({
           borderRadius: 10, padding: '10px 12px', marginBottom: 12,
         }}>
           <div style={{ fontSize: 14, fontWeight: 'bold', color: '#fff' }}>
-            {offer.reason === 'blocked' ? '🚧 Road blocked ahead' : `⚡ Faster route: save ${formatDuration(offer.savedSeconds)}`}
+            {offer.reason === 'blocked' ? '🚧 Road blocked ahead'
+              : offer.reason === 'reported' ? '⚠️ Problem reported ahead (not yet confirmed)'
+              : `⚡ Faster route: save ${formatDuration(offer.savedSeconds)}`}
           </div>
           <div style={{ fontSize: 12, color: '#aaa', marginTop: 2 }}>
             New route {formatDuration(offer.estimatedTime)} · {formatDistance(offer.distance)}
@@ -83,6 +89,29 @@ export default function NavigationGuide({
       {navigation.blockedAhead && (
         <div style={{ background: '#FF174422', border: '1px solid #FF174466', borderRadius: 10, padding: '8px 12px', marginBottom: 12, fontSize: 13, color: '#fff' }}>
           🚧 Road blocked ahead — no way around found yet
+        </div>
+      )}
+
+      {/* Crowd report ahead: ask the driver whether it is still there */}
+      {prompt && (
+        <div style={{ background: '#FF910014', border: '1px solid #FF910055', borderRadius: 10, padding: '10px 12px', marginBottom: 12 }}>
+          <div style={{ fontSize: 13, color: '#fff' }}>
+            {REPORT_LABEL[prompt.type].icon} {REPORT_LABEL[prompt.type].label} reported {formatDistance(prompt.distance)} ahead
+            {prompt.roadName && ` on ${prompt.roadName}`}
+          </div>
+          <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>
+            {prompt.status === 'confirmed' ? 'Confirmed' : 'Not confirmed yet'} · {prompt.confirmations} report{prompt.confirmations === 1 ? '' : 's'} · {REPORT_LABEL[prompt.type].question}
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <button onClick={() => onAnswerReport(prompt.id, 'confirm')} style={{
+              flex: 1, height: 34, background: 'transparent', color: '#FF9800', border: '1px solid #FF980088',
+              borderRadius: 17, cursor: 'pointer', fontSize: 12,
+            }}>Yes, still there</button>
+            <button onClick={() => onAnswerReport(prompt.id, 'clear')} style={{
+              flex: 1, height: 34, background: 'transparent', color: '#4CAF50', border: '1px solid #4CAF5088',
+              borderRadius: 17, cursor: 'pointer', fontSize: 12,
+            }}>No, it's clear</button>
+          </div>
         </div>
       )}
 

@@ -1,12 +1,17 @@
 import type { CSSProperties } from 'react';
 import type { Conditions, WeatherMode, TrafficLevel } from '../services/serverClient';
+import { REPORT_LABEL } from '../utils/reports';
 
 interface Props {
   conditions: Conditions | null;
   onWeather: (mode: WeatherMode) => void;
   onTraffic: (level: TrafficLevel) => void;
-  onClearBlock: (id: string) => void;
+  onRemoveReport: (id: string) => void;
 }
+
+const CONFIRMED_BY: Record<string, string> = {
+  people: 'confirmed by drivers', operator: 'confirmed by operator', gps: 'confirmed by GPS (traffic stuck)',
+};
 
 const WEATHER_OPTIONS: { value: WeatherMode; label: string }[] = [
   { value: 'live', label: 'Live' },
@@ -20,8 +25,8 @@ const TRAFFIC_OPTIONS: { value: TrafficLevel; label: string }[] = [
   { value: 'heavy', label: 'Heavy' },
 ];
 
-/** Operator controls for weather, simulated traffic and road blocks. */
-export default function ConditionsPanel({ conditions, onWeather, onTraffic, onClearBlock }: Props) {
+/** Operator controls for weather and simulated traffic, and review of crowd reports. */
+export default function ConditionsPanel({ conditions, onWeather, onTraffic, onRemoveReport }: Props) {
   if (!conditions) return null;
   const { weather } = conditions;
   const liveNote = weather.source === 'unavailable'
@@ -38,20 +43,22 @@ export default function ConditionsPanel({ conditions, onWeather, onTraffic, onCl
       <div style={styles.label}>Simulated traffic</div>
       <Segmented options={TRAFFIC_OPTIONS} value={conditions.trafficLevel} onChange={onTraffic} />
 
-      <div style={styles.label}>Road blocks ({conditions.blocks.length})</div>
-      {conditions.blocks.length === 0 && (
-        <div style={{ fontSize: 11, color: '#666' }}>Tap a road on the map → “Report road blocked”.</div>
+      <div style={styles.label}>Driver reports ({conditions.reports.length})</div>
+      {conditions.reports.length === 0 && (
+        <div style={{ fontSize: 11, color: '#666' }}>None right now. Drivers report by tapping a road on the map.</div>
       )}
-      {conditions.blocks.map(b => (
-        <div key={b.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0', borderBottom: '1px solid #1a1a2e' }}>
-          <span>🚧</span>
+      {conditions.reports.map(r => (
+        <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0', borderBottom: '1px solid #1a1a2e' }}>
+          <span style={{ opacity: r.status === 'confirmed' ? 1 : 0.6 }}>{REPORT_LABEL[r.type].icon}</span>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 12, color: '#ddd' }}>{b.roadName}</div>
-            <div style={{ fontSize: 10, color: '#777' }}>
-              {b.reason} · clears {new Date(b.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            <div style={{ fontSize: 12, color: '#ddd' }}>{REPORT_LABEL[r.type].label} · {r.roadName || 'Unnamed road'}</div>
+            <div style={{ fontSize: 10, color: r.status === 'confirmed' ? '#FF9800' : '#777' }}>
+              {r.status === 'confirmed' ? (r.confirmSource ? CONFIRMED_BY[r.confirmSource] : 'confirmed') : 'unconfirmed'}
+              {' · '}{r.confirmations} yes / {r.clears} clear
+              {' · '}until {new Date(r.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
             </div>
           </div>
-          <button onClick={() => onClearBlock(b.id)} style={styles.small}>Clear</button>
+          <button onClick={() => onRemoveReport(r.id)} style={styles.small}>Remove</button>
         </div>
       ))}
     </div>

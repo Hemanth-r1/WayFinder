@@ -21,7 +21,7 @@ const ROLE_DESCRIPTION: Record<string, string> = {
 };
 
 export default function RoleSelector() {
-  const { user, role, signOut, promoteRole } = useAuth();
+  const { user, role, signOut, promoteRole, isFirebaseAvailable } = useAuth();
   const [showPromote, setShowPromote] = useState(false);
   const [promoting, setPromoting] = useState(false);
 
@@ -37,9 +37,9 @@ export default function RoleSelector() {
     setPromoting(true);
     try {
       await promoteRole(next);
-      pushToast(`Promoted to ${next}`, 'success');
+      pushToast(isFirebaseAvailable ? `Requested ${next} access — an admin will review it` : `Switched to ${next} (demo)`, 'success');
     } catch {
-      pushToast('Role promotion failed', 'error');
+      pushToast('Role request failed', 'error');
     }
     setPromoting(false);
     setShowPromote(false);
@@ -91,7 +91,7 @@ export default function RoleSelector() {
               fontSize: 12, fontWeight: 'bold', width: '100%',
             }}
           >
-            {promoting ? 'Promoting…' : `Promote to ${NEXT_ROLE[role]}`}
+            {promoting ? 'Sending…' : isFirebaseAvailable ? `Request ${NEXT_ROLE[role]} access` : `Switch to ${NEXT_ROLE[role]} (demo)`}
           </button>
         </div>
       )}

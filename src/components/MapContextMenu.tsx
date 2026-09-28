@@ -2,7 +2,10 @@
  * MapContextMenu.tsx — REQ-M1 through REQ-M5
  * Context popup on map click with role-aware actions.
  */
+import type { CSSProperties } from 'react';
 import type { VehicleType } from '../types';
+import type { RoadReport, ReportType, ReportVote } from '../services/serverClient';
+import { REPORT_LABEL } from '../utils/reports';
 
 export interface MapContextMenuProps {
   lat: number;
@@ -18,10 +21,13 @@ export interface MapContextMenuProps {
   onSpawnVehicle: (type: VehicleType) => void;
   onSetSource: () => void;
   onSetDest: () => void;
-  onReportBlock: () => void;
-  /** Existing road block near the tapped point, if any */
-  nearbyBlock: { id: string; roadName: string } | null;
-  onClearBlock: (id: string) => void;
+  onReport: (type: ReportType) => void;
+  /** Existing reports near the tapped point */
+  nearbyReports: RoadReport[];
+  onVote: (id: string, vote: ReportVote) => void;
+  /** Operators can remove any report outright */
+  canRemove: boolean;
+  onRemove: (id: string) => void;
   /** Driver view: hide coordinates, node info and vehicle spawning */
   simple: boolean;
 }
@@ -41,7 +47,7 @@ const VEHICLE_TYPES: { type: VehicleType; icon: string; label: string }[] = [
 export default function MapContextMenu({
   lat, lng, nodeId, nodeDegree, roadNames, role,
   screenX, screenY, onClose, onAddSignal, onSpawnVehicle, onSetSource, onSetDest,
-  onReportBlock, nearbyBlock, onClearBlock, simple,
+  onReport, nearbyReports, onVote, canRemove, onRemove, simple,
 }: MapContextMenuProps) {
   // Clamp to viewport
   const menuWidth = 220;
@@ -93,11 +99,32 @@ export default function MapContextMenu({
           </div>
         )}
 
-        {/* Road blocks (all roles) */}
+        {/* Existing reports here: drivers confirm or clear them */}
+        {nearbyReports.map(r => (
+          <div key={r.id} style={{ padding: '8px 14px', borderBottom: '1px solid #1a1a2e' }}>
+            <div style={{ fontSize: 12, color: '#fff' }}>
+              {REPORT_LABEL[r.type].icon} {REPORT_LABEL[r.type].label}
+              <span style={{ color: r.status === 'confirmed' ? '#FF9800' : '#888', fontSize: 11 }}>
+                {' · '}{r.status === 'confirmed' ? 'confirmed' : 'unconfirmed'} · {r.confirmations} report{r.confirmations === 1 ? '' : 's'}
+              </span>
+            </div>
+            <div style={{ fontSize: 11, color: '#999', margin: '2px 0 6px' }}>{REPORT_LABEL[r.type].question}</div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button onClick={() => { onVote(r.id, 'confirm'); onClose(); }} style={pill('#FF9800')}>Yes, still there</button>
+              <button onClick={() => { onVote(r.id, 'clear'); onClose(); }} style={pill('#4CAF50')}>No, it's clear</button>
+              {canRemove && <button onClick={() => { onRemove(r.id); onClose(); }} style={pill('#888')}>Remove</button>}
+            </div>
+          </div>
+        ))}
+
+        {/* New reports (all roles) */}
         <div style={{ borderBottom: '1px solid #1a1a2e' }}>
-          {nearbyBlock
-            ? <MenuItem icon="✅" label={`Road open again (${nearbyBlock.roadName})`} onClick={() => { onClearBlock(nearbyBlock.id); onClose(); }} />
-            : <MenuItem icon="🚧" label="Report road blocked" onClick={() => { onReportBlock(); onClose(); }} accent="#FF9800" />}
+          <div style={{ padding: '6px 14px 0', fontSize: 10, color: '#555', textTransform: 'uppercase', letterSpacing: 1 }}>Report here</div>
+          {(['block', 'waterlogging', 'rain'] as const)
+            .filter(t => !nearbyReports.some(r => r.type === t))
+            .map(t => (
+              <MenuItem key={t} icon={REPORT_LABEL[t].icon} label={REPORT_LABEL[t].label} onClick={() => { onReport(t); onClose(); }} accent="#FF9800" />
+            ))}
         </div>
 
         {/* Add Signal (Supporter + Controller) */}
@@ -132,6 +159,13 @@ export default function MapContextMenu({
       </div>
     </>
   );
+}
+
+function pill(color: string): CSSProperties {
+  return {
+    padding: '5px 10px', fontSize: 11, borderRadius: 14, cursor: 'pointer',
+    background: `${color}22`, color, border: `1px solid ${color}66`,
+  };
 }
 
 function MenuItem({ icon, label, onClick, accent }: { icon: string; label: string; onClick: () => void; accent?: string }) {

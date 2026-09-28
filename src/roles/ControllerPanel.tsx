@@ -58,6 +58,7 @@ export default function ControllerPanel({
   }, [signalList, signalSearch]);
 
   useEffect(() => {
+    if (!db) return; // demo mode: Firebase not configured
     const q = query(collection(db, 'overrides'), where('active', '==', true));
     const unsub = onSnapshot(q, (snapshot) => {
       const list: FirestoreOverride[] = [];
@@ -92,7 +93,7 @@ export default function ControllerPanel({
   }, [userRoutes, signals]);
 
   const writeOverrideToFirestore = useCallback((signalId: string, direction: Direction, color: SignalColor) => {
-    if (!user) return;
+    if (!user || !db) return;
     addDoc(collection(db, 'overrides'), {
       controllerId: user.uid,
       signalId,

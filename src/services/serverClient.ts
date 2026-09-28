@@ -54,16 +54,34 @@ export type WeatherMode = 'live' | WeatherCondition;
 export type TrafficLevel = 'light' | 'normal' | 'heavy';
 export type DriveMode = 'gps' | 'simulated';
 
-export interface RoadBlock {
+export type ReportType = 'block' | 'waterlogging' | 'rain';
+export type ReportVote = 'confirm' | 'clear';
+
+/** Crowd report of a road block, waterlogging or local heavy rain. */
+export interface RoadReport {
   id: string;
-  edgeIds: string[];
+  type: ReportType;
+  status: 'unconfirmed' | 'confirmed';
   lat: number;
   lng: number;
+  /** Metres covered around the point (0 for blocks, which cover their road segment) */
+  radius: number;
   roadName: string;
-  reason: string;
-  reportedBy: string | null;
+  edgeIds: string[];
+  confirmations: number;
+  clears: number;
+  confirmSource: 'people' | 'operator' | 'gps' | null;
   createdAt: number;
   expiresAt: number;
+}
+
+export interface ReportPrompt {
+  id: string;
+  type: ReportType;
+  status: RoadReport['status'];
+  roadName: string;
+  distance: number;
+  confirmations: number;
 }
 
 export interface Conditions {
@@ -76,11 +94,12 @@ export interface Conditions {
   };
   weatherMode: WeatherMode;
   trafficLevel: TrafficLevel;
-  blocks: RoadBlock[];
+  reports: RoadReport[];
 }
 
 export interface RerouteOffer {
-  reason: 'faster' | 'blocked';
+  /** blocked = confirmed block ahead; reported = unconfirmed block or waterlogging ahead */
+  reason: 'faster' | 'blocked' | 'reported';
   savedSeconds: number;
   distance: number;
   estimatedTime: number;
@@ -134,7 +153,12 @@ export interface NavigationResponse {
   /** A road block is ahead and no way around it was found */
   blockedAhead: boolean;
   weather: WeatherCondition;
+  /** A crowd report on the road ahead the driver hasn't answered yet */
+  reportPrompt: ReportPrompt | null;
 }
+
+/** Headers that identify the caller: a Firebase ID token, or the demo identity. */
+export type IdentityProvider = () => Promise<Record<string, string>>;
 
 async function errorMessage(response: Response, fallback: string): Promise<string> {
   try {
@@ -149,6 +173,17 @@ class ServerClient {
   private reconnectTimer: number | null = null;
   private updateCallbacks: Set<(data: any) => void> = new Set();
   private connectionState: 'connecting' | 'connected' | 'disconnected' = 'disconnected';
+  private identity: IdentityProvider = async () => ({});
+
+  /** Called when the signed-in user changes. */
+  setIdentity(provider: IdentityProvider): void {
+    this.identity = provider;
+  }
+
+  private async send(path: string, init: RequestInit = {}): Promise<Response> {
+    const headers = { ...(await this.identity()), ...(init.headers as Record<string, string> | undefined) };
+    return fetch(`${SERVER_URL}${path}`, { ...init, headers });
+  }
   private shouldReconnect = false;
   private connectTimer: number | null = null;
   private pollTimer: number | null = null;
@@ -180,7 +215,7 @@ class ServerClient {
 
   /** Route options for this user, accounting for routes other users are already driving. */
   async fetchRouteOptions(userId: string | undefined, sourceId: string, destId: string, signal?: AbortSignal): Promise<RouteOption[]> {
-    const response = await fetch(`${SERVER_URL}/api/route`, {
+    const response = await this.send('/api/route', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userId, sourceId, destId }),
@@ -223,17 +258,24 @@ class ServerClient {
   }
 
   /** Blocks the road nearest (lat, lng) in both directions. */
-  async reportBlock(lat: number, lng: number, radiusMetres?: number, userId?: string, reason?: string): Promise<RoadBlock> {
-    return this.post('/api/blocks', { lat, lng, radius: radiusMetres, userId, reason }, 'Failed to report road block');
+  /** Reports a block, waterlogging or heavy rain at a tapped point (merges with a nearby one). */
+  async report(type: ReportType, lat: number, lng: number, radiusMetres?: number): Promise<{ report: RoadReport; merged: boolean }> {
+    return this.post('/api/reports', { type, lat, lng, radius: radiusMetres }, 'Failed to send report');
   }
 
-  async removeBlock(id: string): Promise<void> {
-    const response = await fetch(`${SERVER_URL}/api/blocks/${encodeURIComponent(id)}`, { method: 'DELETE' });
-    if (!response.ok) throw new Error(await errorMessage(response, 'Failed to clear road block'));
+  /** "Still there" / "It's clear". `report` is null once the report has been cleared. */
+  async voteReport(id: string, vote: ReportVote): Promise<{ report: RoadReport | null; cleared: boolean }> {
+    return this.post(`/api/reports/${encodeURIComponent(id)}/vote`, { vote }, 'Failed to send answer');
+  }
+
+  /** Operators remove any report; reporters can withdraw their own unconfirmed one. */
+  async removeReport(id: string): Promise<void> {
+    const response = await this.send(`/api/reports/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (!response.ok) throw new Error(await errorMessage(response, 'Failed to remove report'));
   }
 
   private async post<T>(path: string, body: unknown, failure: string): Promise<T> {
-    const response = await fetch(`${SERVER_URL}${path}`, {
+    const response = await this.send(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -243,19 +285,19 @@ class ServerClient {
   }
 
   async getUserPosition(userId: string): Promise<ServerVehicle> {
-    const response = await fetch(`${SERVER_URL}/api/user/${encodeURIComponent(userId)}/position`);
+    const response = await this.send(`/api/user/${encodeURIComponent(userId)}/position`);
     if (!response.ok) throw new Error(`Failed to fetch user position: ${response.statusText}`);
     return response.json();
   }
 
   async getUserNavigation(userId: string): Promise<NavigationResponse> {
-    const response = await fetch(`${SERVER_URL}/api/user/${encodeURIComponent(userId)}/navigation`);
+    const response = await this.send(`/api/user/${encodeURIComponent(userId)}/navigation`);
     if (!response.ok) throw new Error(`Failed to fetch user navigation: ${response.statusText}`);
     return response.json();
   }
 
   async removeUserVehicle(userId: string): Promise<{ success: boolean }> {
-    const response = await fetch(`${SERVER_URL}/api/user/${encodeURIComponent(userId)}`, {
+    const response = await this.send(`/api/user/${encodeURIComponent(userId)}`, {
       method: 'DELETE',
     });
     if (!response.ok) throw new Error(`Failed to remove user vehicle: ${response.statusText}`);
