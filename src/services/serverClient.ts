@@ -1,5 +1,11 @@
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:8080';
-const WS_URL = SERVER_URL.replace('http://', 'ws://').replace('https://', 'wss://');
+// Production is served by Firebase Hosting, which forwards /api/** to Cloud Run on the same origin.
+const SERVER_URL: string = import.meta.env.VITE_SERVER_URL ?? (import.meta.env.DEV ? 'http://localhost:8080' : '');
+const WS_URL = SERVER_URL
+  ? SERVER_URL.replace('http://', 'ws://').replace('https://', 'wss://')
+  : `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`;
+/** Hosting rewrites don't carry WebSockets; if no socket opens within this time, poll instead. */
+const WS_CONNECT_TIMEOUT_MS = 4000;
+const POLL_INTERVAL_MS = 1500;
 
 export interface ServerVehicle {
   id: string;
@@ -41,7 +47,21 @@ export interface ServerStats {
   activeCorridors: number;
 }
 
+/** One route option from the server, fastest first. */
+export interface RouteOption {
+  path: string[];
+  edgeIds: string[];
+  distance: number;
+  estimatedTime: number;
+  signalCount: number;
+  roadNames: string[];
+  geometry: Array<{ lat: number; lng: number }>;
+  /** Most other active navigators sharing any single road segment of this route */
+  sharedUsers: number;
+}
+
 export interface NavigationResponse {
+  /** Remaining path geometry */
   path: Array<{ lat: number; lng: number }>;
   distance: number;
   duration: number;
@@ -58,13 +78,17 @@ export interface NavigationResponse {
     avgSpeed: number;
     vehicleCount: number;
   };
-  routeInfo: {
-    path: string[];
-    distance: number;
-    estimatedTime: number;
-    signalCount: number;
-    roadNames: string[];
-  };
+  routeInfo: RouteOption;
+  alternatives: RouteOption[];
+  arrived: boolean;
+}
+
+async function errorMessage(response: Response, fallback: string): Promise<string> {
+  try {
+    const body = await response.json();
+    if (body?.error) return body.error;
+  } catch { /* not JSON */ }
+  return `${fallback}: ${response.status} ${response.statusText}`;
 }
 
 class ServerClient {
@@ -72,6 +96,9 @@ class ServerClient {
   private reconnectTimer: number | null = null;
   private updateCallbacks: Set<(data: any) => void> = new Set();
   private connectionState: 'connecting' | 'connected' | 'disconnected' = 'disconnected';
+  private shouldReconnect = false;
+  private connectTimer: number | null = null;
+  private pollTimer: number | null = null;
 
   async fetchGraph(forceRefresh = false) {
     const url = `${SERVER_URL}/api/graph${forceRefresh ? '?refresh=true' : ''}`;
@@ -98,30 +125,44 @@ class ServerClient {
     return response.json();
   }
 
-  async startNavigation(userId: string, sourceNodeId: string, destNodeId: string): Promise<NavigationResponse> {
+  /** Route options for this user, accounting for routes other users are already driving. */
+  async fetchRouteOptions(userId: string | undefined, sourceId: string, destId: string, signal?: AbortSignal): Promise<RouteOption[]> {
+    const response = await fetch(`${SERVER_URL}/api/route`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, sourceId, destId }),
+      signal,
+    });
+    if (!response.ok) throw new Error(await errorMessage(response, 'Failed to plan route'));
+    const { routes } = await response.json();
+    return routes ?? [];
+  }
+
+  /** Starts driving `edgeIds` (a chosen RouteOption); the server falls back to its best route if stale. */
+  async startNavigation(userId: string, sourceNodeId: string, destNodeId: string, edgeIds?: string[]): Promise<NavigationResponse> {
     const response = await fetch(`${SERVER_URL}/api/user/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId, sourceNodeId, destNodeId }),
+      body: JSON.stringify({ userId, sourceNodeId, destNodeId, edgeIds }),
     });
-    if (!response.ok) throw new Error(`Failed to start navigation: ${response.statusText}`);
+    if (!response.ok) throw new Error(await errorMessage(response, 'Failed to start navigation'));
     return response.json();
   }
 
   async getUserPosition(userId: string): Promise<ServerVehicle> {
-    const response = await fetch(`${SERVER_URL}/api/user/${userId}/position`);
+    const response = await fetch(`${SERVER_URL}/api/user/${encodeURIComponent(userId)}/position`);
     if (!response.ok) throw new Error(`Failed to fetch user position: ${response.statusText}`);
     return response.json();
   }
 
   async getUserNavigation(userId: string): Promise<NavigationResponse> {
-    const response = await fetch(`${SERVER_URL}/api/user/${userId}/navigation`);
+    const response = await fetch(`${SERVER_URL}/api/user/${encodeURIComponent(userId)}/navigation`);
     if (!response.ok) throw new Error(`Failed to fetch user navigation: ${response.statusText}`);
     return response.json();
   }
 
   async removeUserVehicle(userId: string): Promise<{ success: boolean }> {
-    const response = await fetch(`${SERVER_URL}/api/user/${userId}`, {
+    const response = await fetch(`${SERVER_URL}/api/user/${encodeURIComponent(userId)}`, {
       method: 'DELETE',
     });
     if (!response.ok) throw new Error(`Failed to remove user vehicle: ${response.statusText}`);
@@ -131,12 +172,19 @@ class ServerClient {
   connectWebSocket(userId?: string): void {
     if (this.ws?.readyState === WebSocket.OPEN) return;
 
+    this.shouldReconnect = true;
     this.connectionState = 'connecting';
     this.ws = new WebSocket(WS_URL);
+    if (this.connectTimer) clearTimeout(this.connectTimer);
+    this.connectTimer = window.setTimeout(() => {
+      this.connectTimer = null;
+      if (this.shouldReconnect && this.connectionState !== 'connected') this.startPolling();
+    }, WS_CONNECT_TIMEOUT_MS);
 
     this.ws.onopen = () => {
       console.log('[ServerClient] WebSocket connected');
       this.connectionState = 'connected';
+      this.stopPolling();
       
       if (userId) {
         this.ws?.send(JSON.stringify({ type: 'setUserId', userId }));
@@ -156,6 +204,8 @@ class ServerClient {
       console.log('[ServerClient] WebSocket disconnected');
       this.connectionState = 'disconnected';
       this.ws = null;
+      if (!this.shouldReconnect) return;
+      this.startPolling();
       this.scheduleReconnect(userId);
     };
 
@@ -165,25 +215,54 @@ class ServerClient {
   }
 
   disconnectWebSocket(): void {
+    this.shouldReconnect = false;
+    this.stopPolling();
+    if (this.connectTimer) {
+      clearTimeout(this.connectTimer);
+      this.connectTimer = null;
+    }
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
     if (this.ws) {
+      this.ws.onclose = null;
       this.ws.close();
       this.ws = null;
     }
     this.connectionState = 'disconnected';
   }
 
+  /** HTTP fallback delivering the same 'update' messages the WebSocket sends. */
+  private startPolling(): void {
+    if (this.pollTimer) return;
+    console.warn('[ServerClient] WebSocket unavailable — polling for live updates');
+    const poll = async () => {
+      try {
+        const response = await fetch(`${SERVER_URL}/api/state`);
+        if (response.ok) this.notifyCallbacks({ type: 'update', data: await response.json() });
+      } catch { /* server unreachable; keep trying */ }
+    };
+    poll();
+    this.pollTimer = window.setInterval(poll, POLL_INTERVAL_MS);
+  }
+
+  private stopPolling(): void {
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+  }
+
   private scheduleReconnect(userId?: string): void {
     if (this.reconnectTimer) return;
-    
+    // Back off while polling covers updates
+    const delay = this.pollTimer ? 30000 : 3000;
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;
       console.log('[ServerClient] Reconnecting WebSocket...');
       this.connectWebSocket(userId);
-    }, 3000);
+    }, delay);
   }
 
   onUpdate(callback: (data: any) => void): void {

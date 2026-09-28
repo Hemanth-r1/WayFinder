@@ -6,7 +6,7 @@
 
 ## Server Setup
 
-The server is now running on port 5000. It started successfully with:
+The server is now running on port 8080. It started successfully with:
 - Firebase initialized (if credentials provided)
 - Simulation engine started
 - WebSocket initialized
@@ -23,7 +23,7 @@ To enable Firebase caching, create `server/.env` with:
 ```
 FIREBASE_SERVICE_ACCOUNT={"type":"service_account","project_id":"your-project-id",...}
 GOOGLE_CLOUD_PROJECT=your-project-id
-PORT=5000
+PORT=8080
 ```
 
 ## Client Setup
@@ -37,7 +37,7 @@ cp .env.example .env
 ### 2. Update .env with server URL
 Make sure your `.env` file contains:
 ```
-VITE_SERVER_URL=http://localhost:5000
+VITE_SERVER_URL=http://localhost:8080
 ```
 
 **Note**: Firebase credentials are optional. The app will run in demo mode without them.
@@ -71,9 +71,9 @@ VITE_FIREBASE_APP_ID=your-app-id
 
 ## Testing the Application
 
-1. **Server**: Running on http://localhost:5000
+1. **Server**: Running on http://localhost:8080
    - API endpoints available at `/api/*`
-   - WebSocket at `ws://localhost:5000`
+   - WebSocket at `ws://localhost:8080`
 
 2. **Client**: Running on http://localhost:5173
    - Will connect to server for data
@@ -83,7 +83,7 @@ VITE_FIREBASE_APP_ID=your-app-id
 
 ## Current Status
 
-✅ Server running on port 5000
+✅ Server running on port 8080
 ✅ Simulation engine started
 ✅ WebSocket initialized
 ✅ Using synthetic grid (Overpass API rate limited)
@@ -94,7 +94,7 @@ VITE_FIREBASE_APP_ID=your-app-id
 ## Next Steps
 
 1. Create `.env` file in the root directory
-2. Add `VITE_SERVER_URL=http://localhost:5000`
+2. Add `VITE_SERVER_URL=http://localhost:8080`
 3. Run `npm run dev` to start the client
 4. Use "Quick Demo Login" button on login screen
 5. Test the navigation flow

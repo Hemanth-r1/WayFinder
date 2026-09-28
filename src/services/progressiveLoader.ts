@@ -1,6 +1,29 @@
 import { serverClient } from './serverClient.ts';
 import { dataCache } from './dataCache.ts';
-import type { RoadGraph, TrafficSignal } from '../types';
+import type { RoadGraph, RoadEdge, RoadNode, TrafficSignal } from '../types';
+
+/** Graph as the server sends it: plain arrays, adjacency lists hold edge IDs. */
+interface RawGraphData {
+  graph: { nodes: RoadNode[]; edges: RoadEdge[]; adjacency: [string, string[]][] };
+  signals: TrafficSignal[];
+}
+
+/** Builds the client RoadGraph; adjacency is resolved from edge IDs to edge objects. */
+function hydrate(raw: RawGraphData): { graph: RoadGraph; signals: Map<string, TrafficSignal> } {
+  const edges = new Map<string, RoadEdge>(
+    raw.graph.edges.map(e => [e.id, { ...e, congestionWeight: e.congestionWeight ?? 0, oneway: e.oneway ?? false }]),
+  );
+  const adjacency = new Map<string, RoadEdge[]>(
+    raw.graph.adjacency.map(([nodeId, ids]) => [
+      nodeId,
+      ids.map(id => edges.get(id)).filter((e): e is RoadEdge => e !== undefined),
+    ]),
+  );
+  return {
+    graph: { nodes: new Map(raw.graph.nodes.map(n => [n.id, n])), edges, adjacency },
+    signals: new Map(raw.signals.map(s => [s.id, s])),
+  };
+}
 
 export type LoadPhase = 'empty' | 'map' | 'roads' | 'signals' | 'vehicles' | 'full';
 
@@ -38,78 +61,20 @@ export class ProgressiveLoader {
 
     // Phase 2: Try cache first (storage-first)
     if (!forceRefresh) {
-      const cachedGraph = dataCache.get<RoadGraph>('graph');
-      const cachedSignals = dataCache.get<TrafficSignal[]>('signals');
-      
-      if (cachedGraph && cachedSignals) {
-        this.notify({
-          phase: 'roads',
-          source: 'cache',
-          graph: cachedGraph,
-          signals: new Map(cachedSignals.map(s => [s.id, s])),
-        });
-        
-        this.notify({
-          phase: 'signals',
-          source: 'cache',
-          signals: new Map(cachedSignals.map(s => [s.id, s])),
-        });
-
-        // Load vehicles from server
-        await this.loadVehiclesFromServer();
-        
-        this.notify({
-          phase: 'full',
-          source: 'cache+server',
-          graph: cachedGraph,
-          signals: new Map(cachedSignals.map(s => [s.id, s])),
-        });
+      const cached = dataCache.get<RawGraphData>('graph');
+      if (cached?.graph?.nodes && cached.signals) {
+        await this.publish(hydrate(cached), 'cache');
         return;
       }
     }
 
     // Phase 3: Fetch from server
     try {
-      const serverData = await serverClient.fetchGraph(forceRefresh);
-      
-      // Convert server format to client format
-      const graph: RoadGraph = {
-        nodes: new Map(serverData.graph.nodes.map((n: any) => [n.id, n])),
-        edges: new Map(serverData.graph.edges.map((e: any) => [e.id, e])),
-        adjacency: new Map(serverData.graph.adjacency.map((a: any) => [a[0], a[1]])),
-      };
-      
-      const signals = new Map<string, TrafficSignal>(serverData.signals.map((s: any) => [s.id, s]));
-
-      this.notify({
-        phase: 'roads',
-        source: 'server',
-        graph,
-        signals,
-      });
-
-      this.notify({
-        phase: 'signals',
-        source: 'server',
-        signals,
-      });
-
-      // Cache the data
-      dataCache.set('graph', graph);
-      dataCache.set('signals', Array.from(signals.values()));
-
-      // Load vehicles from server
-      await this.loadVehiclesFromServer();
-
-      this.notify({
-        phase: 'full',
-        source: 'server',
-        graph,
-        signals,
-      });
+      const serverData: RawGraphData = await serverClient.fetchGraph(forceRefresh);
+      dataCache.set('graph', { graph: serverData.graph, signals: serverData.signals });
+      await this.publish(hydrate(serverData), 'server');
     } catch (err) {
       console.error('[ProgressiveLoader] Failed to load from server:', err);
-      // Fallback to synthetic grid could be implemented here
       this.notify({
         phase: 'full',
         source: 'error',
@@ -117,6 +82,14 @@ export class ProgressiveLoader {
         signals: new Map(),
       });
     }
+  }
+
+  private async publish(data: { graph: RoadGraph; signals: Map<string, TrafficSignal> }, source: string): Promise<void> {
+    const { graph, signals } = data;
+    this.notify({ phase: 'roads', source, graph, signals });
+    this.notify({ phase: 'signals', source, signals });
+    await this.loadVehiclesFromServer();
+    this.notify({ phase: 'full', source: source === 'cache' ? 'cache+server' : source });
   }
 
   private async loadVehiclesFromServer(): Promise<void> {

@@ -1,5 +1,5 @@
 import { getDb } from './firebaseClient.js';
-import { getStorage, getDownloadURL } from 'firebase-admin/storage';
+import { getStorage } from 'firebase-admin/storage';
 import type { RoadGraph, TrafficSignal } from './types.js';
 
 interface GraphCache {

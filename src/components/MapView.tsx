@@ -12,6 +12,7 @@ import { findNearestNode } from '../data/roadNetwork';
 import MapContextMenu from './MapContextMenu';
 import NavigationPanel from './NavigationPanel';
 import ControlPanel from './ControlPanel';
+import type { NavRouteSummary } from './NavigationPanel';
 
 const VEHICLE_ICONS: Record<string, string> = {
   sedan: '🚗', suv: '🚙', hatchback: '🚗', truck: '🚚',
@@ -40,12 +41,18 @@ interface MapViewProps {
   onSpawnVehicleAt: (nodeId: string, type: VehicleType) => void;
   showHeatmap?: boolean;
   routePolyline?: [number, number][];
+  /** Other route options, drawn muted behind the selected route */
+  altRoutePolylines?: [number, number][][];
   speed?: number;
   onSpeedChange?: (speed: number) => void;
   onStartNavigation: () => void;
-  routeInfo: import('../types').RouteInfo | null;
+  routeInfo: NavRouteSummary | null;
   clearRoute: () => void;
   navigatedVehicle: boolean;
+  /** Driver view: hide operator overlays (stats, legend, floating nav panel, mini-map) */
+  simpleView?: boolean;
+  /** Phone layout */
+  compact?: boolean;
 }
 
 interface ContextMenuState {
@@ -58,8 +65,8 @@ export default function MapView({
   graph, signals, vehicles, congestionZones, onCancelOverride,
   overrideActive, overrideTimeRemaining, selectedSource, selectedDest,
   onSelectSource, onSelectDest, role, graphVersion, vehicleVersion, stats,
-  onAddSignal, onSpawnVehicleAt, showHeatmap = true, routePolyline, speed: _speed, onSpeedChange: _onSpeedChange,
-  onStartNavigation, routeInfo, clearRoute, navigatedVehicle,
+  onAddSignal, onSpawnVehicleAt, showHeatmap = true, routePolyline, altRoutePolylines, speed: _speed, onSpeedChange: _onSpeedChange,
+  onStartNavigation, routeInfo, clearRoute, navigatedVehicle, simpleView = false, compact = false,
 }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -79,6 +86,7 @@ export default function MapView({
 
   // Prop refs to avoid stale closures in the map click handler
   const graphRef = useRef(graph);
+  const simpleViewRef = useRef(simpleView);
   const roleRef = useRef(role);
   const selectedSourceRef = useRef(selectedSource);
   const selectedDestRef = useRef(selectedDest);
@@ -130,7 +138,7 @@ export default function MapView({
     });
 
     // Mini-map
-    const miniEl = document.getElementById('mini-map');
+    const miniEl = simpleViewRef.current ? null : document.getElementById('mini-map');
     if (miniEl && !miniMapRef.current) {
       const mm = L.map(miniEl, {
         center: MAP_CENTER, zoom: 11, zoomControl: false,
@@ -141,7 +149,12 @@ export default function MapView({
       miniMapRef.current = mm;
     }
 
+    // Keep Leaflet in sync when the layout changes (phone bottom sheet, rotation)
+    const resizeObserver = new ResizeObserver(() => map.invalidateSize());
+    resizeObserver.observe(container);
+
     return () => {
+      resizeObserver.disconnect();
       map.remove(); mapRef.current = null;
       if (miniMapRef.current) { miniMapRef.current.remove(); miniMapRef.current = null; }
     };
@@ -205,6 +218,20 @@ export default function MapView({
     }
   }, [selectedSource, selectedDest, graph]);
 
+  // ── Bring newly chosen places into view ───────────────────────────────────
+  useEffect(() => {
+    const map = mapRef.current; if (!map) return;
+    const pts = [selectedSource, selectedDest]
+      .map(id => id ? graphRef.current.nodes.get(id) : undefined)
+      .filter((n): n is NonNullable<typeof n> => !!n)
+      .map(n => [n.lat, n.lng] as [number, number]);
+    if (pts.length === 2) {
+      map.fitBounds(L.latLngBounds(pts), { padding: [60, 60], maxZoom: 16 });
+    } else if (pts.length === 1 && !map.getBounds().pad(-0.1).contains(pts[0])) {
+      map.setView(pts[0], Math.max(map.getZoom(), 15));
+    }
+  }, [selectedSource, selectedDest]);
+
   // ── Update signals (circles only, zoom-dependent LOD) ────────────────────
   useEffect(() => {
     const layer = signalLayerRef.current; if (!layer) return;
@@ -214,7 +241,8 @@ export default function MapView({
     const mapZoom = mapRef.current?.getZoom() ?? 13;
     const minEdgeCount = mapZoom <= 13 ? 0 : mapZoom <= 15 ? 2 : 3;
 
-    for (const [nodeId, sig] of signals) {
+    for (const sig of signals.values()) {
+      const nodeId = sig.nodeId;
       const node = graph.nodes.get(nodeId); if (!node) continue;
       const adjEdges = graph.adjacency.get(nodeId)?.length ?? 0;
       if (hasRoads && adjEdges < minEdgeCount) continue;
@@ -322,12 +350,15 @@ export default function MapView({
     const layer = routeLayerRef.current;
     if (!layer) return;
     layer.clearLayers();
+    for (const alt of altRoutePolylines ?? []) {
+      if (alt.length > 1) L.polyline(alt, { color: '#8899AA', weight: 5, opacity: 0.5 }).addTo(layer);
+    }
     if (routePolyline && routePolyline.length > 1) {
       L.polyline(routePolyline, {
-        color: '#4488FF', weight: 5, opacity: 0.8, dashArray: '12, 8',
+        color: '#4488FF', weight: 6, opacity: 0.9,
       }).addTo(layer);
     }
-  }, [routePolyline]);
+  }, [routePolyline, altRoutePolylines]);
 
   // ── Context menu handlers ─────────────────────────────────────────────────
   const handleAddSignal = useCallback(() => {
@@ -353,21 +384,21 @@ export default function MapView({
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 
       {/* Mini-map */}
-      <div id="mini-map" style={{
+      {!simpleView && <div id="mini-map" style={{
         position: 'absolute', bottom: 12, right: 12, zIndex: 1000,
         width: 160, height: 120, borderRadius: 8, overflow: 'hidden',
         border: '2px solid #333', boxShadow: '0 4px 16px rgba(0,0,0,0.6)',
-      }} />
+      }} />}
 
       {/* Live stats HUD */}
-      <div style={{
+      {!simpleView && <div style={{
         position: 'absolute', top: 12, left: 270, zIndex: 1001,
         background: 'rgba(10,10,20,0.85)', border: '1px solid #333', borderRadius: 8,
         padding: '6px 12px', fontFamily: 'monospace', fontSize: 11, color: '#ccc',
         display: 'flex', gap: 14, backdropFilter: 'blur(4px)',
       }}>
         <span>🚗 {stats.vehicleCount}</span>
-        <span>⚡ {stats.avgSpeed} km/h</span>
+        <span>⚡ {stats.avgSpeed.toFixed(1)} km/h</span>
         <span style={{ color: stats.congestionHotspots > 3 ? '#FF1744' : '#4CAF50' }}>
           🔥 {stats.congestionHotspots}
         </span>
@@ -377,7 +408,7 @@ export default function MapView({
         <span style={{ color: stats.signalCoordinationScore > 60 ? '#00E676' : '#FF9800' }}>
           📡 {stats.signalCoordinationScore}%
         </span>
-      </div>
+      </div>}
 
       {/* Override banner */}
       {overrideActive && (
@@ -397,7 +428,7 @@ export default function MapView({
         </div>
       )}
 
-      <NavigationPanel
+      {!simpleView && <NavigationPanel
         selectedSource={selectedSource}
         selectedDest={selectedDest}
         onSelectSource={onSelectSource}
@@ -406,8 +437,8 @@ export default function MapView({
         routeInfo={routeInfo}
         clearRoute={clearRoute}
         navigatedVehicle={navigatedVehicle}
-      />
-      <ControlPanel />
+      />}
+      {!simpleView && !compact && <ControlPanel />}
 
       {/* Context menu */}
       {contextMenu && (

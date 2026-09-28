@@ -1,5 +1,5 @@
 const CACHE_PREFIX = 'wayfinder_';
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'v2';
 
 interface CacheEntry<T> {
   data: T;

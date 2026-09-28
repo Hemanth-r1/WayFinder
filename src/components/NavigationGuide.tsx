@@ -1,195 +1,90 @@
-import { useState, useEffect } from 'react';
-import { useAuth } from '../context/useAuth';
-import { serverClient, type NavigationResponse } from '../services/serverClient';
+import type { CSSProperties } from 'react';
+import type { NavigationResponse } from '../services/serverClient';
 
 interface Props {
-  routeInfo: NavigationResponse | null;
+  navigation: NavigationResponse;
   onClear: () => void;
+  onOpenGoogleMaps: () => void;
+  destLabel: string | null;
+  isMobile: boolean;
 }
 
-export default function NavigationGuide({ routeInfo, onClear }: Props) {
-  const { user } = useAuth();
-  const [currentUpdate, setCurrentUpdate] = useState<NavigationResponse | null>(null);
+const LIGHT: Record<string, string> = { GREEN: '#4CAF50', YELLOW: '#FFD600', RED: '#F44336' };
 
-  useEffect(() => {
-    if (!user || !routeInfo) return;
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${Math.max(0, Math.round(seconds))} s`;
+  const m = Math.round(seconds / 60);
+  return m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min`;
+}
 
-    const interval = setInterval(async () => {
-      try {
-        const update = await serverClient.getUserNavigation(user.uid);
-        if (update) {
-          setCurrentUpdate(update);
-        }
-      } catch (err) {
-        console.error('Failed to get navigation update:', err);
-      }
-    }, 2000); // Update every 2 seconds
+function formatDistance(metres: number): string {
+  return metres >= 1000 ? `${(metres / 1000).toFixed(1)} km` : `${Math.round(metres / 10) * 10} m`;
+}
 
-    return () => clearInterval(interval);
-  }, [user, routeInfo]);
+export default function NavigationGuide({ navigation, onClear, onOpenGoogleMaps, destLabel, isMobile }: Props) {
+  const nextSignal = navigation.signals[0];
+  const traffic = navigation.trafficConditions;
+  const trafficText = traffic.congestionLevel > 0.7 ? 'Heavy traffic' : traffic.congestionLevel > 0.4 ? 'Moderate traffic' : 'Light traffic';
+  const trafficColor = traffic.congestionLevel > 0.7 ? '#F44336' : traffic.congestionLevel > 0.4 ? '#FF9800' : '#4CAF50';
+  const arrival = new Date(Date.now() + navigation.duration * 1000)
+    .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-  const displayInfo = currentUpdate || routeInfo;
-
-  if (!displayInfo) return null;
-
-  const nextSignal = displayInfo.signals[0];
-  const trafficConditions = displayInfo.trafficConditions;
+  const container: CSSProperties = isMobile
+    ? { position: 'fixed', left: 8, right: 8, bottom: 8 }
+    : { position: 'fixed', right: 20, bottom: 20, width: 380 };
 
   return (
     <div style={{
-      position: 'fixed',
-      bottom: 20,
-      left: 360,
-      right: 20,
-      background: 'rgba(8,8,18,0.95)',
-      border: '1px solid #222',
-      borderRadius: 12,
-      padding: 16,
-      zIndex: 1000,
-      boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
+      ...container,
+      background: 'rgba(8,8,18,0.96)', border: '1px solid #2a2a40', borderRadius: 14,
+      padding: 14, zIndex: 1500, boxShadow: '0 6px 24px rgba(0,0,0,0.55)',
+      fontFamily: 'system-ui, sans-serif', color: '#ccc',
     }}>
-      {/* Header */}
-      <div style={{
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        marginBottom: 12,
-        paddingBottom: 12,
-        borderBottom: '1px solid #1a1a2e',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 20 }}>🧭</span>
-          <span style={{ fontSize: 14, fontWeight: 'bold', color: '#fff' }}>
-            Navigation Active
-          </span>
-        </div>
-        <button
-          onClick={onClear}
-          style={{
-            padding: '6px 12px',
-            background: '#F44336',
-            color: '#fff',
-            border: 'none',
-            borderRadius: 6,
-            cursor: 'pointer',
-            fontSize: 11,
-            fontWeight: 'bold',
-          }}
-        >
-          End Navigation
-        </button>
+      {/* ETA row */}
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+        <span style={{ fontSize: 24, fontWeight: 'bold', color: '#4CAF50' }}>{formatDuration(navigation.duration)}</span>
+        <span style={{ fontSize: 14, color: '#aaa' }}>{formatDistance(navigation.distance)}</span>
+        <span style={{ fontSize: 13, color: '#777', marginLeft: 'auto' }}>arrive {arrival}</span>
+      </div>
+      <div style={{ fontSize: 12, color: '#999', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        {destLabel ? `to ${destLabel}` : 'to destination'}
+        {navigation.routeInfo.roadNames.length > 0 && ` · via ${navigation.routeInfo.roadNames.slice(0, 2).join(', ')}`}
       </div>
 
-      {/* Route Info */}
-      <div style={{ display: 'flex', gap: 16, marginBottom: 12 }}>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 10, color: '#666', marginBottom: 4 }}>Distance</div>
-          <div style={{ fontSize: 16, fontWeight: 'bold', color: '#fff' }}>
-            {(displayInfo.distance / 1000).toFixed(1)} km
-          </div>
+      {/* Next signal + traffic */}
+      <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+        <div style={{ flex: 1, background: '#1a1a2e', borderRadius: 10, padding: '8px 10px', display: 'flex', alignItems: 'center', gap: 10 }}>
+          {nextSignal ? (
+            <>
+              <span style={{ width: 22, height: 22, borderRadius: 11, background: LIGHT[nextSignal.currentState], flexShrink: 0 }} />
+              <div>
+                <div style={{ fontSize: 13, color: '#fff' }}>Signal in {formatDistance(nextSignal.distance)}</div>
+                <div style={{ fontSize: 11, color: '#888' }}>
+                  {nextSignal.currentState.charAt(0) + nextSignal.currentState.slice(1).toLowerCase()} now · {nextSignal.estimatedWait < 1 ? 'green when you get there' : `~${Math.round(nextSignal.estimatedWait)} s wait when you get there`}
+                </div>
+              </div>
+            </>
+          ) : (
+            <div style={{ fontSize: 12, color: '#888' }}>No signals ahead</div>
+          )}
         </div>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 10, color: '#666', marginBottom: 4 }}>Duration</div>
-          <div style={{ fontSize: 16, fontWeight: 'bold', color: '#fff' }}>
-            {Math.floor(displayInfo.duration / 60)} min
-          </div>
-        </div>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 10, color: '#666', marginBottom: 4 }}>Signals</div>
-          <div style={{ fontSize: 16, fontWeight: 'bold', color: '#fff' }}>
-            {displayInfo.signals.length}
-          </div>
+        <div style={{ background: '#1a1a2e', borderRadius: 10, padding: '8px 10px', minWidth: 96 }}>
+          <div style={{ fontSize: 12, color: trafficColor, fontWeight: 'bold' }}>{trafficText}</div>
+          <div style={{ fontSize: 11, color: '#888' }}>{Math.round(traffic.avgSpeed)} km/h avg</div>
         </div>
       </div>
 
-      {/* Traffic Conditions */}
-      <div style={{
-        background: trafficConditions.congestionLevel > 0.5 ? '#F4433622' : '#4CAF5022',
-        border: `1px solid ${trafficConditions.congestionLevel > 0.5 ? '#F4433644' : '#4CAF5044'}`,
-        borderRadius: 8,
-        padding: 10,
-        marginBottom: 12,
-      }}>
-        <div style={{ fontSize: 10, color: '#666', marginBottom: 4 }}>Traffic Conditions</div>
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            <span style={{ fontSize: 12 }}>
-              {trafficConditions.congestionLevel > 0.7 ? '🔴' : trafficConditions.congestionLevel > 0.4 ? '🟡' : '🟢'}
-            </span>
-            <span style={{ fontSize: 12, color: '#fff' }}>
-              {trafficConditions.congestionLevel > 0.7 ? 'Heavy' : trafficConditions.congestionLevel > 0.4 ? 'Moderate' : 'Light'}
-            </span>
-          </div>
-          <div style={{ fontSize: 12, color: '#aaa' }}>
-            Avg: {trafficConditions.avgSpeed.toFixed(1)} km/h
-          </div>
-        </div>
+      {/* Actions */}
+      <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+        <button onClick={onOpenGoogleMaps} style={{
+          flex: 1, height: 40, background: 'transparent', color: '#8ab4ff', border: '1px solid #33466a',
+          borderRadius: 20, cursor: 'pointer', fontSize: 13,
+        }}>Open in Google Maps</button>
+        <button onClick={onClear} style={{
+          height: 40, padding: '0 18px', background: '#F44336', color: '#fff', border: 'none',
+          borderRadius: 20, cursor: 'pointer', fontSize: 13, fontWeight: 'bold',
+        }}>End</button>
       </div>
-
-      {/* Next Signal */}
-      {nextSignal && (
-        <div style={{
-          background: '#1a1a2e',
-          borderRadius: 8,
-          padding: 10,
-        }}>
-          <div style={{ fontSize: 10, color: '#666', marginBottom: 6 }}>Next Signal</div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <div style={{
-              width: 32,
-              height: 32,
-              borderRadius: '50%',
-              background: nextSignal.currentState === 'GREEN' ? '#4CAF50' : nextSignal.currentState === 'YELLOW' ? '#FFD600' : '#F44336',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: 14,
-            }}>
-              {nextSignal.currentState === 'GREEN' ? '●' : nextSignal.currentState === 'YELLOW' ? '●' : '●'}
-            </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 12, color: '#fff', fontWeight: 'bold' }}>
-                {nextSignal.currentState} Signal
-              </div>
-              <div style={{ fontSize: 10, color: '#888' }}>
-                {(nextSignal.distance).toFixed(0)}m ahead · Est. wait: {Math.floor(nextSignal.estimatedWait)}s
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Signals Ahead List */}
-      {displayInfo.signals.length > 1 && (
-        <div style={{ marginTop: 12 }}>
-          <div style={{ fontSize: 10, color: '#666', marginBottom: 6 }}>Signals Ahead</div>
-          <div style={{ maxHeight: 80, overflow: 'auto' }}>
-            {displayInfo.signals.slice(1, 4).map((signal, idx) => (
-              <div
-                key={idx}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  padding: '4px 0',
-                  fontSize: 10,
-                  color: '#aaa',
-                }}
-              >
-                <span style={{
-                  width: 8,
-                  height: 8,
-                  borderRadius: '50%',
-                  background: signal.currentState === 'GREEN' ? '#4CAF50' : signal.currentState === 'YELLOW' ? '#FFD600' : '#F44336',
-                }} />
-                <span>{(signal.distance).toFixed(0)}m</span>
-                <span>·</span>
-                <span>{signal.currentState}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
