@@ -7,9 +7,13 @@ import { computeSLA } from './slaService.js';
 import { detectActiveCorridors } from './corridorService.js';
 import { activeNavigatorCount, getGraphIndex, nearestRoadSegment } from './pathfindingService.js';
 import {
-  getConditions, setWeatherMode, setTrafficLevel, addBlock, removeBlock, startWeatherPolling,
+  getConditions, setWeatherMode, setTrafficLevel, startWeatherPolling,
   type WeatherMode, type TrafficLevel,
 } from './conditionsService.js';
+import { initReports, createReport, vote, withdraw, type ReportType } from './reportsService.js';
+import {
+  requireUser, optionalUser, requireSelf, requireOperator, rateLimit, caller, authMode,
+} from './auth.js';
 import { initSimulationEngine, getSimulationEngine } from './simulationEngine.js';
 import { removeUserVehicle, getUserVehiclePosition, markArrived } from './userVehicleService.js';
 import {
@@ -26,7 +30,7 @@ const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', CORS_ORIGIN);
   res.header('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Demo-User, X-Demo-Role');
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
@@ -40,7 +44,12 @@ try {
 }
 
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok' });
+  res.json({ status: 'ok', auth: authMode() });
+});
+
+// Who the server thinks the caller is (role as verified server-side)
+app.get('/api/me', requireUser, (_req, res) => {
+  res.json({ ...caller(res), auth: authMode() });
 });
 
 app.get('/api/graph', async (req, res) => {
@@ -91,10 +100,11 @@ app.get('/api/state', (_req, res) => {
   });
 });
 
-// ── Road conditions: weather, traffic level, road blocks ────────────────────
+// ── Road conditions ──────────────────────────────────────────────────────────
 
 const WEATHER_MODES: WeatherMode[] = ['live', 'clear', 'rain', 'heavy_rain'];
 const TRAFFIC_LEVELS: TrafficLevel[] = ['light', 'normal', 'heavy'];
+const REPORT_TYPES: ReportType[] = ['block', 'waterlogging', 'rain'];
 
 function sendError(res: express.Response, err: any) {
   res.status(err instanceof NavigationError ? err.status : 500).json({ error: err.message });
@@ -104,7 +114,8 @@ app.get('/api/conditions', (_req, res) => {
   res.json(getConditions());
 });
 
-app.post('/api/conditions/weather', (req, res) => {
+// City-wide weather override and simulated traffic level: operators only
+app.post('/api/conditions/weather', requireUser, requireOperator, (req, res) => {
   const { mode } = req.body;
   if (!WEATHER_MODES.includes(mode)) {
     return res.status(400).json({ error: `mode must be one of ${WEATHER_MODES.join(', ')}` });
@@ -113,7 +124,7 @@ app.post('/api/conditions/weather', (req, res) => {
   res.json(getConditions());
 });
 
-app.post('/api/conditions/traffic', (req, res) => {
+app.post('/api/conditions/traffic', requireUser, requireOperator, (req, res) => {
   const { level } = req.body;
   if (!TRAFFIC_LEVELS.includes(level)) {
     return res.status(400).json({ error: `level must be one of ${TRAFFIC_LEVELS.join(', ')}` });
@@ -122,31 +133,7 @@ app.post('/api/conditions/traffic', (req, res) => {
   res.json(getConditions());
 });
 
-// Report a blocked road at a point; blocks the nearest road segment in both directions
-app.post('/api/blocks', async (req, res) => {
-  try {
-    const { lat, lng, reason, userId, radius } = req.body;
-    if (typeof lat !== 'number' || typeof lng !== 'number') {
-      return res.status(400).json({ error: 'lat and lng are required numbers' });
-    }
-    // Search radius follows the map zoom on the client (a finger-width on screen)
-    const maxMetres = typeof radius === 'number' ? Math.min(250, Math.max(20, radius)) : 60;
-    const { graph, signals } = await getGraph();
-    const segment = nearestRoadSegment(getGraphIndex(graph, signals), lat, lng, maxMetres);
-    if (!segment) return res.status(404).json({ error: 'No road near that point — zoom in and tap on a road' });
-    const mid = segmentMidpoint(segment.edge.geometry);
-    const block = addBlock({
-      edgeIds: segment.edgeIds,
-      lat: mid.lat, lng: mid.lng,
-      roadName: segment.edge.name || 'Unnamed road',
-      reason: typeof reason === 'string' && reason.trim() ? reason.trim().slice(0, 80) : 'Road blocked',
-      reportedBy: typeof userId === 'string' ? userId : null,
-    });
-    res.json(block);
-  } catch (err: any) {
-    sendError(res, err);
-  }
-});
+// ── Crowd reports: road blocks, waterlogging, local rain ───────────────────────
 
 /** Point halfway along a polyline (by vertex-to-vertex distance). */
 function segmentMidpoint(geom: { lat: number; lng: number }[]): { lat: number; lng: number } {
@@ -162,9 +149,55 @@ function segmentMidpoint(geom: { lat: number; lng: number }[]): { lat: number; l
   return geom[0];
 }
 
-app.delete('/api/blocks/:id', (req, res) => {
-  if (!removeBlock(req.params.id)) return res.status(404).json({ error: 'Block not found' });
-  res.json({ success: true });
+// { type, lat, lng, radius? } — radius is the tap tolerance in metres (follows map zoom)
+app.post('/api/reports', requireUser, rateLimit('reports', 6, 10 * 60 * 1000), async (req, res) => {
+  try {
+    const { type, lat, lng, radius } = req.body;
+    if (!REPORT_TYPES.includes(type)) {
+      return res.status(400).json({ error: `type must be one of ${REPORT_TYPES.join(', ')}` });
+    }
+    if (typeof lat !== 'number' || typeof lng !== 'number') {
+      return res.status(400).json({ error: 'lat and lng are required numbers' });
+    }
+    const { graph, signals } = await getGraph();
+    const index = getGraphIndex(graph, signals);
+    const tolerance = typeof radius === 'number' ? Math.min(250, Math.max(20, radius)) : 60;
+    const nearest = nearestRoadSegment(index, lat, lng, tolerance);
+    if (!nearest) return res.status(404).json({ error: 'No road near that point — zoom in and tap on a road' });
+    const roadName = nearest.edge.name || 'Unnamed road';
+    const mid = segmentMidpoint(nearest.edge.geometry);
+    const { uid, trusted } = caller(res);
+    const result = createReport({
+      type, lat, lng, uid, trusted, roadName,
+      segment: type === 'block' ? { edgeIds: nearest.edgeIds, roadName, lat: mid.lat, lng: mid.lng } : undefined,
+    });
+    res.json(result);
+  } catch (err: any) {
+    sendError(res, err);
+  }
+});
+
+// { vote: 'confirm' | 'clear' }
+app.post('/api/reports/:id/vote', requireUser, rateLimit('votes', 30, 10 * 60 * 1000), (req, res) => {
+  const v = req.body.vote;
+  if (v !== 'confirm' && v !== 'clear') return res.status(400).json({ error: "vote must be 'confirm' or 'clear'" });
+  try {
+    const { uid, trusted } = caller(res);
+    const report = vote(String(req.params.id), uid, v, trusted);
+    res.json({ report, cleared: report === null });
+  } catch (err: any) {
+    res.status(404).json({ error: err.message });
+  }
+});
+
+app.delete('/api/reports/:id', requireUser, (req, res) => {
+  try {
+    const { uid, trusted } = caller(res);
+    if (!withdraw(String(req.params.id), uid, trusted)) return res.status(404).json({ error: 'Report not found' });
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(403).json({ error: err.message });
+  }
 });
 
 app.get('/api/stats', async (_req, res) => {
@@ -180,10 +213,14 @@ app.get('/api/stats', async (_req, res) => {
   }
 });
 
-app.post('/api/user/start', async (req, res) => {
+app.post('/api/user/start', requireUser, async (req, res) => {
   try {
-    const { userId, sourceNodeId, destNodeId, edgeIds, mode } = req.body;
-    if (!userId || !sourceNodeId || !destNodeId) {
+    const { sourceNodeId, destNodeId, edgeIds, mode } = req.body;
+    const userId = caller(res).uid;
+    if (req.body.userId && req.body.userId !== userId) {
+      return res.status(403).json({ error: 'You can only start your own navigation' });
+    }
+    if (!sourceNodeId || !destNodeId) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
     if (edgeIds !== undefined && !(Array.isArray(edgeIds) && edgeIds.every((id: unknown) => typeof id === 'string'))) {
@@ -200,9 +237,9 @@ app.post('/api/user/start', async (req, res) => {
   }
 });
 
-app.get('/api/user/:userId/position', async (req, res) => {
+app.get('/api/user/:userId/position', requireUser, requireSelf, async (req, res) => {
   try {
-    const { userId } = req.params;
+    const userId = String(req.params.userId);
     const position = getUserVehiclePosition(userId);
     if (!position) {
       return res.status(404).json({ error: 'User vehicle not found' });
@@ -213,9 +250,9 @@ app.get('/api/user/:userId/position', async (req, res) => {
   }
 });
 
-app.get('/api/user/:userId/navigation', async (req, res) => {
+app.get('/api/user/:userId/navigation', requireUser, requireSelf, async (req, res) => {
   try {
-    const { userId } = req.params;
+    const userId = String(req.params.userId);
     const { graph, signals } = await getGraph();
     const navigation = getNavigationUpdate(userId, graph, signals);
     if (!navigation) {
@@ -228,32 +265,32 @@ app.get('/api/user/:userId/navigation', async (req, res) => {
 });
 
 // GPS fix from a navigating phone: { lat, lng, speed? (km/h) }
-app.post('/api/user/:userId/position', async (req, res) => {
+app.post('/api/user/:userId/position', requireUser, requireSelf, async (req, res) => {
   try {
     const { lat, lng, speed } = req.body;
     if (typeof lat !== 'number' || typeof lng !== 'number') {
       return res.status(400).json({ error: 'lat and lng are required numbers' });
     }
     const { graph, signals } = await getGraph();
-    res.json(updatePosition(req.params.userId, lat, lng, typeof speed === 'number' ? speed : undefined, graph, signals));
+    res.json(updatePosition(String(req.params.userId), lat, lng, typeof speed === 'number' ? speed : undefined, graph, signals));
   } catch (err: any) {
     sendError(res, err);
   }
 });
 
 // Accept the reroute offered in the latest navigation update
-app.post('/api/user/:userId/reroute', async (req, res) => {
+app.post('/api/user/:userId/reroute', requireUser, requireSelf, async (req, res) => {
   try {
     const { graph, signals } = await getGraph();
-    res.json({ routeInfo: acceptReroute(req.params.userId, graph, signals) });
+    res.json({ routeInfo: acceptReroute(String(req.params.userId), graph, signals) });
   } catch (err: any) {
     sendError(res, err);
   }
 });
 
-app.delete('/api/user/:userId', async (req, res) => {
+app.delete('/api/user/:userId', requireUser, requireSelf, async (req, res) => {
   try {
-    const { userId } = req.params;
+    const userId = String(req.params.userId);
     removeUserVehicle(userId);
     res.json({ success: true });
   } catch (err: any) {
@@ -279,9 +316,11 @@ app.post('/api/corridors', (req, res) => {
 });
 
 // Route options on the server's own graph. `route` (the first option) is kept for older clients.
-app.post('/api/route', async (req, res) => {
+app.post('/api/route', optionalUser, async (req, res) => {
   try {
-    const { userId, sourceId, destId } = req.body;
+    const { sourceId, destId } = req.body;
+    // Anonymous previews work; signed-in users don't count their own route as load
+    const userId = res.locals.caller?.uid as string | undefined;
     if (!sourceId || !destId) {
       return res.status(400).json({ error: 'Missing sourceId or destId' });
     }
@@ -299,6 +338,7 @@ const PORT = parseInt(process.env.PORT || '8080', 10);
 async function initializeServer() {
   try {
     const { graph, signals } = await getGraph();
+    initReports(getGraphIndex(graph, signals));
     const engine = initSimulationEngine(graph, signals);
     engine.setArrivalHandler(markArrived);
     engine.start();

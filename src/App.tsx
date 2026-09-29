@@ -14,8 +14,9 @@ import { progressiveLoader, type LoadUpdate, type LoadPhase } from './services/p
 import { serverClient } from './services/serverClient';
 import type { RoadGraph, TrafficSignal, Vehicle } from './types';
 import type {
-  ServerStats, RouteOption, NavigationResponse, Conditions, WeatherMode, TrafficLevel,
+  ServerStats, RouteOption, NavigationResponse, Conditions, WeatherMode, TrafficLevel, ReportType, ReportVote,
 } from './services/serverClient';
+import { REPORT_LABEL } from './utils/reports';
 import ConditionsPanel from './components/ConditionsPanel';
 import ToastContainer, { pushToast } from './components/Toast';
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
@@ -29,6 +30,19 @@ const PHASE_LABEL: Record<LoadPhase, string> = {
 
 function AppContent() {
   const { user, role, loading: authLoading } = useAuth();
+
+  // Every API call identifies the caller: a Firebase ID token, or the demo identity.
+  // Set during render so it is in place before any effect below makes a request.
+  const identityKey = `${user?.uid ?? ''}|${role}`;
+  const lastIdentity = useRef('');
+  if (lastIdentity.current !== identityKey) {
+    lastIdentity.current = identityKey;
+    serverClient.setIdentity(async (): Promise<Record<string, string>> => {
+      if (!user) return {};
+      if (isFirebaseReady) return { Authorization: `Bearer ${await user.getIdToken()}` };
+      return { 'X-Demo-User': user.uid, 'X-Demo-Role': role };
+    });
+  }
   const [loading, setLoading] = useState(true);
   const [loadingPhase, setLoadingPhase] = useState<LoadPhase>('empty');
   const [loadSource, setLoadSource] = useState('none');
@@ -245,25 +259,54 @@ function AppContent() {
     }
   }, [user, refreshNavigation]);
 
-  const handleReportBlock = useCallback(async (lat: number, lng: number, radiusMetres: number) => {
-    try {
-      const block = await serverClient.reportBlock(lat, lng, radiusMetres, user?.uid);
-      pushToast(`Reported: ${block.roadName} blocked. Drivers will be rerouted.`, 'success');
-      setConditions(await serverClient.fetchConditions());
-    } catch (err) {
-      pushToast(err instanceof Error ? err.message : 'Failed to report road block', 'error');
-    }
-  }, [user]);
-
-  const handleClearBlock = useCallback(async (id: string) => {
-    try {
-      await serverClient.removeBlock(id);
-      pushToast('Road marked open', 'success');
-      setConditions(await serverClient.fetchConditions());
-    } catch (err) {
-      pushToast(err instanceof Error ? err.message : 'Failed to clear road block', 'error');
-    }
+  const refreshConditions = useCallback(async () => {
+    try { setConditions(await serverClient.fetchConditions()); } catch { /* next live update brings it */ }
   }, []);
+
+  const handleReport = useCallback(async (type: ReportType, lat: number, lng: number, radiusMetres: number) => {
+    const { label } = REPORT_LABEL[type];
+    try {
+      const { report, merged } = await serverClient.report(type, lat, lng, radiusMetres);
+      const where = report.roadName ? ` on ${report.roadName}` : '';
+      pushToast(
+        report.status === 'confirmed'
+          ? `${label}${where} confirmed — routes now avoid it`
+          : merged
+            ? `Thanks — added your report to ${label.toLowerCase()}${where}`
+            : `Thanks — ${label.toLowerCase()}${where} reported. It fully affects routes once another driver confirms it.`,
+        'success', 6000,
+      );
+      refreshConditions();
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : 'Failed to send report', 'error');
+    }
+  }, [refreshConditions]);
+
+  const handleVoteReport = useCallback(async (id: string, vote: ReportVote) => {
+    try {
+      const { cleared, report } = await serverClient.voteReport(id, vote);
+      pushToast(
+        cleared ? 'Thanks — marked clear for everyone'
+          : report?.status === 'confirmed' && vote === 'confirm' ? 'Thanks — now confirmed, routes avoid it'
+          : 'Thanks for checking',
+        'success',
+      );
+      refreshConditions();
+      refreshNavigation();
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : 'Failed to send answer', 'error');
+    }
+  }, [refreshConditions, refreshNavigation]);
+
+  const handleRemoveReport = useCallback(async (id: string) => {
+    try {
+      await serverClient.removeReport(id);
+      pushToast('Report removed', 'success');
+      refreshConditions();
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : 'Failed to remove report', 'error');
+    }
+  }, [refreshConditions]);
 
   const handleWeather = useCallback((mode: WeatherMode) => {
     serverClient.setWeatherMode(mode).then(setConditions).catch(err => pushToast(err.message, 'error'));
@@ -406,20 +449,26 @@ function AppContent() {
   if (conditions?.weather.condition === 'rain') conditionBadges.push('🌧 Rain');
   if (conditions?.weather.condition === 'heavy_rain') conditionBadges.push('⛈ Heavy rain');
   if (conditions?.trafficLevel === 'heavy') conditionBadges.push('🚗 Heavy traffic');
-  if (conditions?.blocks.length) {
-    conditionBadges.push(`🚧 ${conditions.blocks.length} road${conditions.blocks.length > 1 ? 's' : ''} blocked`);
+  for (const type of ['block', 'waterlogging', 'rain'] as const) {
+    const ofType = conditions?.reports.filter(r => r.type === type) ?? [];
+    const confirmed = ofType.filter(r => r.status === 'confirmed').length;
+    const unconfirmed = ofType.length - confirmed;
+    if (ofType.length === 0) continue;
+    const parts = [confirmed && `${confirmed}`, unconfirmed && `${unconfirmed} unconfirmed`].filter(Boolean).join(' + ');
+    conditionBadges.push(`${REPORT_LABEL[type].icon} ${REPORT_LABEL[type].label.toLowerCase()}: ${parts}`);
   }
 
   return (
     <div style={{
-      width: '100vw', height: '100dvh', display: 'flex', margin: 0, padding: 0, overflow: 'hidden',
+      // % of the full-height #root rather than dvh, which older Safari/Firefox don't support
+      width: '100vw', height: '100%', display: 'flex', margin: 0, padding: 0, overflow: 'hidden',
       flexDirection: isMobile ? 'column-reverse' : 'row',
     }}>
       {/* Sidebar (bottom sheet on phones) */}
       <div style={{
         display: hideSidebar ? 'none' : 'flex', flexDirection: 'column',
         ...(isMobile
-          ? { width: '100%', maxHeight: '52dvh', borderTop: '1px solid #222', borderRadius: '14px 14px 0 0' }
+          ? { width: '100%', maxHeight: '52%', borderTop: '1px solid #222', borderRadius: '14px 14px 0 0' }
           : { width: 340, minWidth: 340, height: '100%', borderRight: '1px solid #222' }),
         background: 'rgba(8,8,18,0.99)', zIndex: 1001,
         fontFamily: 'system-ui, sans-serif',
@@ -480,13 +529,13 @@ function AppContent() {
               onOpenGoogleMaps={handleOpenGoogleMaps}
             />
           )}
-          {/* Operators control conditions; in demo mode drivers can too, to try it out */}
-          {(role !== 'user' || !isFirebaseReady) && (
+          {/* Operators set city-wide conditions and review driver reports */}
+          {role !== 'user' && (
             <ConditionsPanel
               conditions={conditions}
               onWeather={handleWeather}
               onTraffic={handleTraffic}
-              onClearBlock={handleClearBlock}
+              onRemoveReport={handleRemoveReport}
             />
           )}
           {role === 'supporter' && (
@@ -577,10 +626,12 @@ function AppContent() {
           navigatedVehicle={navigatedVehicle}
           simpleView={simpleView}
           compact={isMobile}
-          blocks={conditions?.blocks}
+          reports={conditions?.reports}
           reroutePolyline={reroutePolyline}
-          onReportBlock={handleReportBlock}
-          onClearBlock={handleClearBlock}
+          onReport={handleReport}
+          onVoteReport={handleVoteReport}
+          onRemoveReport={handleRemoveReport}
+          canRemoveReports={role !== 'user'}
         />
       </div>
 
@@ -596,6 +647,7 @@ function AppContent() {
           rerouting={rerouting}
           onAcceptReroute={handleAcceptReroute}
           onDismissReroute={() => setDismissedOffer(offerKey)}
+          onAnswerReport={handleVoteReport}
         />
       )}
 

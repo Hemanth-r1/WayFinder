@@ -35,7 +35,7 @@ export default function NavigationPanel({
     border: navigatedVehicle ? '1px solid #4488FF' : '1px solid #333',
     borderRadius: 8,
     fontFamily: 'system-ui, sans-serif', fontSize: 12, color: '#ccc',
-    backdropFilter: 'blur(4px)',
+    backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
     transition: 'width 0.2s',
     ...(expanded
       ? { width: 260, padding: 10, overflow: 'hidden' }

@@ -13,7 +13,8 @@ import MapContextMenu from './MapContextMenu';
 import NavigationPanel from './NavigationPanel';
 import ControlPanel from './ControlPanel';
 import type { NavRouteSummary } from './NavigationPanel';
-import type { RoadBlock } from '../services/serverClient';
+import type { RoadReport, ReportType, ReportVote } from '../services/serverClient';
+import { REPORT_LABEL } from '../utils/reports';
 import { distanceMetres } from '../utils/places';
 
 const VEHICLE_ICONS: Record<string, string> = {
@@ -55,12 +56,15 @@ interface MapViewProps {
   simpleView?: boolean;
   /** Phone layout */
   compact?: boolean;
-  blocks?: RoadBlock[];
+  reports?: RoadReport[];
   /** Offered reroute, drawn dashed green */
   reroutePolyline?: [number, number][];
   /** `radiusMetres` ≈ a finger-width on screen at the current zoom */
-  onReportBlock?: (lat: number, lng: number, radiusMetres: number) => void;
-  onClearBlock?: (id: string) => void;
+  onReport?: (type: ReportType, lat: number, lng: number, radiusMetres: number) => void;
+  onVoteReport?: (id: string, vote: ReportVote) => void;
+  onRemoveReport?: (id: string) => void;
+  /** Operators: remove reports outright */
+  canRemoveReports?: boolean;
 }
 
 interface ContextMenuState {
@@ -75,7 +79,7 @@ export default function MapView({
   onSelectSource, onSelectDest, role, graphVersion, vehicleVersion, stats,
   onAddSignal, onSpawnVehicleAt, showHeatmap = true, routePolyline, altRoutePolylines, speed: _speed, onSpeedChange: _onSpeedChange,
   onStartNavigation, routeInfo, clearRoute, navigatedVehicle, simpleView = false, compact = false,
-  blocks = [], reroutePolyline, onReportBlock, onClearBlock,
+  reports = [], reroutePolyline, onReport, onVoteReport, onRemoveReport, canRemoveReports = false,
 }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -379,23 +383,40 @@ export default function MapView({
     }
   }, [routePolyline, altRoutePolylines, reroutePolyline]);
 
-  // ── Road blocks ────────────────────────────────────────────────────────────
+  // ── Crowd reports ──────────────────────────────────────────────────────────
   useEffect(() => {
     const layer = blockLayerRef.current; if (!layer) return;
     layer.clearLayers();
-    for (const b of blocks) {
-      for (const id of b.edgeIds) {
-        const geom = graph.edges.get(id)?.geometry;
-        if (geom && geom.length > 1) {
-          L.polyline(geom.map(p => [p.lat, p.lng] as [number, number]), { color: '#FF1744', weight: 7, opacity: 0.85 }).addTo(layer);
+    for (const r of reports) {
+      const confirmed = r.status === 'confirmed';
+      if (r.type === 'block') {
+        for (const id of r.edgeIds) {
+          const geom = graph.edges.get(id)?.geometry;
+          if (geom && geom.length > 1) {
+            L.polyline(geom.map(p => [p.lat, p.lng] as [number, number]), confirmed
+              ? { color: '#FF1744', weight: 7, opacity: 0.85, interactive: false }
+              : { color: '#FF9100', weight: 6, opacity: 0.7, dashArray: '6, 6', interactive: false }).addTo(layer);
+          }
         }
+      } else {
+        L.circle([r.lat, r.lng], {
+          radius: r.radius, interactive: false,
+          color: r.type === 'rain' ? '#64B5F6' : '#2196F3', weight: 1, dashArray: confirmed ? undefined : '4, 4',
+          fillColor: r.type === 'rain' ? '#64B5F6' : '#2196F3', fillOpacity: (r.type === 'rain' ? 0.08 : 0.22) * (confirmed ? 1 : 0.6),
+        }).addTo(layer);
       }
-      L.marker([b.lat, b.lng], {
-        icon: L.divIcon({ className: '', html: '<div style="font-size:22px;line-height:22px">🚧</div>', iconSize: [22, 22], iconAnchor: [11, 11] }),
+      const badge = confirmed ? '' : '<span style="position:absolute;right:-6px;top:-6px;font-size:10px;background:#333;color:#fff;border-radius:6px;padding:0 3px">?</span>';
+      L.marker([r.lat, r.lng], {
+        icon: L.divIcon({
+          className: '',
+          html: `<div style="position:relative;font-size:22px;line-height:22px;opacity:${confirmed ? 1 : 0.65}">${REPORT_LABEL[r.type].icon}${badge}</div>`,
+          iconSize: [22, 22], iconAnchor: [11, 11],
+        }),
         zIndexOffset: 2000,
-      }).bindTooltip(`${b.roadName}: ${b.reason}`, { direction: 'top', className: 'wf-tooltip' }).addTo(layer);
+        interactive: false,
+      }).addTo(layer);
     }
-  }, [blocks, graph]);
+  }, [reports, graph]);
 
   // ── Context menu handlers ─────────────────────────────────────────────────
   const handleAddSignal = useCallback(() => {
@@ -412,9 +433,10 @@ export default function MapView({
     if (contextMenu?.nodeId) onSelectSource(contextMenu.nodeId);
   }, [contextMenu, onSelectSource]);
 
-  const nearbyBlock = contextMenu
-    ? blocks.find(b => distanceMetres(b, contextMenu) < 80) ?? null
-    : null;
+  // Reports the tapped point falls within (rain areas are large; blocks and waterlogging local)
+  const nearbyReports = contextMenu
+    ? reports.filter(r => distanceMetres(r, contextMenu) < Math.max(80, r.radius))
+    : [];
 
   const handleSetDest = useCallback(() => {
     if (contextMenu?.nodeId) onSelectDest(contextMenu.nodeId);
@@ -436,7 +458,7 @@ export default function MapView({
         position: 'absolute', top: 12, left: 270, zIndex: 1001,
         background: 'rgba(10,10,20,0.85)', border: '1px solid #333', borderRadius: 8,
         padding: '6px 12px', fontFamily: 'monospace', fontSize: 11, color: '#ccc',
-        display: 'flex', gap: 14, backdropFilter: 'blur(4px)',
+        display: 'flex', gap: 14, backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
       }}>
         <span>🚗 {stats.vehicleCount}</span>
         <span>⚡ {stats.avgSpeed.toFixed(1)} km/h</span>
@@ -458,7 +480,7 @@ export default function MapView({
           zIndex: 1002, background: 'rgba(255,152,0,0.12)', border: '1px solid #FF9800',
           borderRadius: 8, padding: '7px 16px', display: 'flex', alignItems: 'center',
           gap: 12, fontFamily: 'monospace', fontSize: 12, fontWeight: 'bold',
-          backdropFilter: 'blur(4px)',
+          backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
         }}>
           <span style={{ color: '#FF9800' }}>⚡ OVERRIDE</span>
           <span style={{ color: '#fff' }}>{Math.round(overrideTimeRemaining)}s</span>
@@ -491,13 +513,15 @@ export default function MapView({
           onSpawnVehicle={handleSpawnVehicle}
           onSetSource={handleSetSource}
           onSetDest={handleSetDest}
-          onReportBlock={() => {
+          onReport={type => {
             const map = mapRef.current;
             const radius = map ? map.containerPointToLatLng([0, 0]).distanceTo(map.containerPointToLatLng([24, 0])) : 60;
-            onReportBlock?.(contextMenu.lat, contextMenu.lng, radius);
+            onReport?.(type, contextMenu.lat, contextMenu.lng, radius);
           }}
-          nearbyBlock={nearbyBlock}
-          onClearBlock={id => onClearBlock?.(id)}
+          nearbyReports={nearbyReports}
+          onVote={(id, vote) => onVoteReport?.(id, vote)}
+          canRemove={canRemoveReports}
+          onRemove={id => onRemoveReport?.(id)}
           simple={simpleView}
         />
       )}

@@ -94,13 +94,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await firebaseSignOut(auth);
   };
 
+  /**
+   * Demo mode switches role locally so every panel can be tried. With Firebase the user can
+   * only request a role; an admin sets `role` (Firestore rules forbid changing your own).
+   */
   const promoteRole = async (newRole: string) => {
     if (!isFirebaseReady || !user) {
       setRole(newRole);
       return;
     }
-    await setDoc(doc(db, 'users', user.uid), { role: newRole }, { merge: true });
-    setRole(newRole);
+    await setDoc(doc(db, 'users', user.uid), { requestedRole: newRole }, { merge: true });
   };
 
   const resetPassword = async (email: string) => {

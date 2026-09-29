@@ -5,7 +5,8 @@ import { registerUserRoute, releaseUserRoute } from './pathfindingService.js';
 export type DriveMode = 'gps' | 'simulated';
 
 export interface RerouteSuggestion {
-  reason: 'faster' | 'blocked';
+  /** blocked = confirmed block ahead; reported = unconfirmed block or waterlogging ahead */
+  reason: 'faster' | 'blocked' | 'reported';
   /** Edge the vehicle was on when this was computed */
   fromEdgeId: string;
   /** New route from the end of `fromEdgeId` */

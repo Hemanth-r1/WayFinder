@@ -98,7 +98,11 @@ export default function PlaceInput({
             onMouseDown={e => e.preventDefault()}
             onClick={() => { onClear(); setQuery(''); }}
             title="Clear"
-            style={{ background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: 16, padding: 0 }}
+            aria-label="Clear"
+            style={{
+              background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: 16, padding: 0,
+              width: 32, height: 32, marginRight: -6, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}
           >✕</button>
         )}
       </div>

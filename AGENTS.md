@@ -52,9 +52,11 @@ Real authentication and data persistence via Firebase Auth + Firestore.
 ### Roles
 
 - Users start with `role: "user"` on first sign-up
-- To promote a user, update their Firestore document:
+- Users can only *request* a role (the app writes `requestedRole`); `firestore.rules` forbid changing your own `role`
+- To promote a user, an admin updates their Firestore document (console or Admin SDK):
   `users/{uid}` → set `role: "supporter"` or `role: "controller"`
-- Role changes take effect on next page load
+- Role changes take effect on next page load (the server caches roles for 5 min)
+- Demo mode (no Firebase): the role badge switches role locally so every panel can be tried
 
 ### Firestore Collections
 
@@ -76,7 +78,9 @@ Real authentication and data persistence via Firebase Auth + Firestore.
 - Driver UI (`role === 'user'`): search box (`src/utils/places.ts` — road names from the loaded graph, plus OSM Nominatim for addresses, limited to Bangalore), GPS "My location", and an "Open in Google Maps" hand-off that passes 3 waypoints along the user's route. Operator overlays (stats HUD, legend, mini-map, floating nav panel) are hidden for drivers. Phones (≤768px, `useIsMobile`) get a bottom-sheet layout.
 - Demo mode (no Firebase config) gives each browser its own `demo-…` user ID so route spreading can be tried with several tabs/devices.
 - Traffic = simulated vehicles + navigating users. Simulated count follows the traffic level (light 60 / normal 150 / heavy 350); half of new simulated vehicles spawn on and keep to routes real users are driving, so users meet the traffic. On phones with location, the user's vehicle moves from GPS (`POST /api/user/:id/position`, map-matched to the route); desktops get a simulated drive.
-- Road conditions (`server/src/conditionsService.ts`): live Bangalore rain from Open-Meteo (polled every 10 min, overridable via `POST /api/conditions/weather`), traffic level (`POST /api/conditions/traffic`), and road blocks (`POST /api/blocks` blocks the nearest segment both ways, expires after 2 h; `DELETE /api/blocks/:id`). Rain lowers speeds and capacity in both simulation and ETAs; blocked edges are never routed.
+- City-wide conditions (`server/src/conditionsService.ts`): live Bangalore rain from Open-Meteo (polled every 10 min) and the simulated traffic level; operators override them via `POST /api/conditions/weather` / `traffic`. Rain lowers speeds and capacity in simulation and ETAs.
+- Crowd reports (`server/src/reportsService.ts`): drivers report 🚧 blocks (road segment, both directions), 🌊 waterlogging (150 m) and 🌧 heavy rain (1.5 km) via `POST /api/reports`. Unconfirmed reports only make roads costlier (block ×3); a report is confirmed by a 2nd person, a supporter/controller, or GPS showing a real driver stuck near it for 45 s — confirmed blocks are never routed. Reports clear on 2 "it's clear" votes (outnumbering confirmations), 2 real drivers passing through at speed, an operator, or expiry (45 min unconfirmed). Votes: `POST /api/reports/:id/vote`; drivers are prompted about reports within 1.5 km ahead.
+- Server auth (`server/src/auth.ts`): with Firebase Admin configured, requests carry a Firebase ID token and roles come from Firestore; in demo mode `X-Demo-User`/`X-Demo-Role` headers are trusted. User endpoints require the caller to be that user; weather/traffic need supporter/controller; reports (6/10 min) and votes (30/10 min) are rate-limited in memory.
 - Live traffic in routing = simulated congestion (BPR) + speeds measured from real drivers' GPS (last 3 min). Navigation updates carry a `reroute` offer when a block is ahead or a route saves ≥60 s and ≥10%; `POST /api/user/:id/reroute` accepts it. Leaving the route (2 GPS fixes >50 m off) reroutes automatically.
 - Production: the client uses same-origin `/api` (Firebase Hosting rewrites to Cloud Run). Hosting doesn't carry WebSockets, so the client falls back to polling `GET /api/state`.
 - The server listens on 8080 (matches Vite proxy, client default and Dockerfile); `CORS_ORIGIN` controls the allowed browser origin.

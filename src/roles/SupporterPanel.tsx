@@ -16,7 +16,7 @@ export default function SupporterPanel({ graph, signals }: Props) {
   const [placementPos, setPlacementPos] = useState<{ lat: number; lng: number } | null>(null);
   const [firebaseSignals, setFirebaseSignals] = useState<SupporterSignal[]>([]);
   useEffect(() => {
-    if (!user) return;
+    if (!user || !db) return; // demo mode: Firebase not configured
     const q = query(collection(db, 'signals'), where('supporterId', '==', user.uid));
     const unsub = onSnapshot(q, (snapshot) => {
       const list: SupporterSignal[] = snapshot.docs.map(doc => {
@@ -41,7 +41,7 @@ export default function SupporterPanel({ graph, signals }: Props) {
   const gapNodes = useMemo(() => Array.from(graph.nodes.values()).filter(n => { const adj = graph.adjacency.get(n.id) || []; return adj.length >= 3 && !signals.has(n.id); }), [graph, signals]);
 
   const handlePlace = useCallback(() => {
-    if (!placementPos || !user) return;
+    if (!placementPos || !user || !db) return;
     addDoc(collection(db, 'signals'), {
       supporterId: user.uid,
       nodeId: roadName || 'unknown',

@@ -1,6 +1,9 @@
 /**
- * Road conditions that affect every driver: weather, traffic level and road blocks.
+ * City-wide road conditions: weather (live feed or operator override) and the simulated
+ * traffic level. Local conditions — blocks, waterlogging, local rain — are crowd reports
+ * (reportsService).
  */
+import { getReports, type PublicReport } from './reportsService.js';
 
 export type WeatherCondition = 'clear' | 'rain' | 'heavy_rain';
 export type WeatherMode = 'live' | WeatherCondition;
@@ -19,24 +22,11 @@ export interface WeatherState {
   updatedAt: number;
 }
 
-export interface RoadBlock {
-  id: string;
-  /** Both directions of the blocked road segment */
-  edgeIds: string[];
-  lat: number;
-  lng: number;
-  roadName: string;
-  reason: string;
-  reportedBy: string | null;
-  createdAt: number;
-  expiresAt: number;
-}
-
 export interface ConditionsSnapshot {
   weather: WeatherState;
   weatherMode: WeatherMode;
   trafficLevel: TrafficLevel;
-  blocks: RoadBlock[];
+  reports: PublicReport[];
 }
 
 const WEATHER_EFFECTS: Record<WeatherCondition, { speedFactor: number; capacityFactor: number }> = {
@@ -49,15 +39,10 @@ const RAIN_MM = 0.2;
 const HEAVY_RAIN_MM = 4;
 const WEATHER_POLL_MS = 10 * 60 * 1000;
 const BANGALORE = { lat: 12.9716, lng: 77.5946 };
-/** Reported blocks clear themselves after this long unless removed earlier */
-export const BLOCK_TTL_MS = 2 * 60 * 60 * 1000;
 
 let weatherMode: WeatherMode = 'live';
 let liveWeather: WeatherState = makeWeather('clear', null, 'unavailable');
 let trafficLevel: TrafficLevel = 'normal';
-const blocks = new Map<string, RoadBlock>();
-const blockedEdges = new Map<string, string>(); // edgeId -> blockId
-let blockCounter = 0;
 
 function makeWeather(condition: WeatherCondition, precipitation: number | null, source: WeatherState['source']): WeatherState {
   return { condition, precipitation, source, ...WEATHER_EFFECTS[condition], updatedAt: Date.now() };
@@ -103,48 +88,6 @@ export function setTrafficLevel(level: TrafficLevel): void {
   trafficLevel = level;
 }
 
-// ── Road blocks ──────────────────────────────────────────────────────────────
-
-function pruneExpired(): void {
-  const now = Date.now();
-  for (const b of blocks.values()) if (b.expiresAt <= now) removeBlock(b.id);
-}
-
-export function addBlock(input: Omit<RoadBlock, 'id' | 'createdAt' | 'expiresAt'>): RoadBlock {
-  // One block per road segment: re-reporting refreshes it
-  const existing = input.edgeIds.map(id => blockedEdges.get(id)).find(Boolean);
-  if (existing) removeBlock(existing);
-
-  const now = Date.now();
-  const block: RoadBlock = { ...input, id: `blk${++blockCounter}`, createdAt: now, expiresAt: now + BLOCK_TTL_MS };
-  blocks.set(block.id, block);
-  for (const id of block.edgeIds) blockedEdges.set(id, block.id);
-  return block;
-}
-
-export function removeBlock(id: string): boolean {
-  const block = blocks.get(id);
-  if (!block) return false;
-  for (const e of block.edgeIds) blockedEdges.delete(e);
-  blocks.delete(id);
-  return true;
-}
-
-export function isEdgeBlocked(edgeId: string): boolean {
-  if (blockedEdges.size === 0) return false;
-  const id = blockedEdges.get(edgeId);
-  if (!id) return false;
-  const block = blocks.get(id);
-  if (block && block.expiresAt > Date.now()) return true;
-  if (block) removeBlock(block.id);
-  return false;
-}
-
-export function getBlocks(): RoadBlock[] {
-  pruneExpired();
-  return Array.from(blocks.values());
-}
-
 export function getConditions(): ConditionsSnapshot {
-  return { weather: getWeather(), weatherMode, trafficLevel, blocks: getBlocks() };
+  return { weather: getWeather(), weatherMode, trafficLevel, reports: getReports() };
 }

@@ -8,7 +8,10 @@ import {
   startUserSession, getUserSession, updateSessionRoute,
   type DriveMode, type RerouteSuggestion, type UserSession,
 } from './userVehicleService.js';
-import { isEdgeBlocked, getWeather, type WeatherCondition } from './conditionsService.js';
+import { getWeather, type WeatherCondition } from './conditionsService.js';
+import {
+  isEdgeBlocked, observeDriver, reportsOnEdges, hasVoted, type PublicReport,
+} from './reportsService.js';
 import { groupForBearing, approachState, waitOnArrival, type ApproachState } from './signalTiming.js';
 
 export interface NavigationRequest {
@@ -40,6 +43,18 @@ export interface NavigationResponse {
   /** A road block is ahead and no way around it was found */
   blockedAhead: boolean;
   weather: WeatherCondition;
+  /** A crowd report on the road ahead that this driver hasn't voted on yet */
+  reportPrompt: ReportPrompt | null;
+}
+
+export interface ReportPrompt {
+  id: string;
+  type: PublicReport['type'];
+  status: PublicReport['status'];
+  roadName: string;
+  /** Metres along the route */
+  distance: number;
+  confirmations: number;
 }
 
 export interface RerouteOffer {
@@ -83,6 +98,8 @@ const MIN_REROUTE_SAVING_S = 60;
 const MIN_REROUTE_SAVING_SHARE = 0.1;
 /** Consecutive off-route GPS fixes before rerouting (filters GPS jitter). */
 const OFF_ROUTE_FIXES = 2;
+/** Ask drivers about reports this far ahead along their route. */
+const REPORT_PROMPT_M = 1500;
 
 export class NavigationError extends Error {
   status: number;
@@ -137,6 +154,7 @@ export function startNavigation(req: NavigationRequest, graph: RoadGraph, signal
     reroute: null,
     blockedAhead: false,
     weather: getWeather().condition,
+    reportPrompt: null,
   };
 }
 
@@ -152,6 +170,7 @@ export function getNavigationUpdate(userId: string, graph: RoadGraph, signals: T
       trafficConditions: { congestionLevel: 0, avgSpeed: 0, vehicleCount: 0 },
       routeInfo: route, alternatives: [], arrived: true,
       mode: session.mode, reroute: null, blockedAhead: false, weather: getWeather().condition,
+      reportPrompt: null,
     };
   }
 
@@ -184,7 +203,9 @@ export function getNavigationUpdate(userId: string, graph: RoadGraph, signals: T
   duration += ahead.reduce((s, sig) => s + sig.estimatedWait, 0);
 
   const blockedAhead = remainingIds.slice(1).some(isEdgeBlocked);
-  refreshRerouteSuggestion(session, index, remainingIds, blockedAhead, graph, signals);
+  const reportedAhead = reportsOnEdges(remainingIds.slice(1))
+    .some(r => r.status === 'unconfirmed' || r.type === 'waterlogging');
+  refreshRerouteSuggestion(session, index, remainingIds, blockedAhead, reportedAhead, graph, signals);
   const suggestion = session.pendingReroute;
 
   return {
@@ -207,7 +228,29 @@ export function getNavigationUpdate(userId: string, graph: RoadGraph, signals: T
     } : null,
     blockedAhead: blockedAhead && !suggestion,
     weather: getWeather().condition,
+    reportPrompt: nearestReportPrompt(userId, index, remainingIds, progress.edgeProgress),
   };
+}
+
+/** First report along the next REPORT_PROMPT_M of route that this driver hasn't voted on. */
+function nearestReportPrompt(
+  userId: string, index: GraphIndex, remainingIds: string[], edgeProgress: number,
+): ReportPrompt | null {
+  const candidates = reportsOnEdges(remainingIds).filter(r => r.type !== 'rain' && !hasVoted(r.id, userId));
+  if (candidates.length === 0) return null;
+  let distance = -edgeProgress;
+  for (const id of remainingIds) {
+    if (distance > REPORT_PROMPT_M) break;
+    const hit = candidates.find(r => r.edgeIds.includes(id));
+    if (hit) {
+      return {
+        id: hit.id, type: hit.type, status: hit.status, roadName: hit.roadName,
+        distance: Math.max(0, distance), confirmations: hit.confirmations,
+      };
+    }
+    distance += index.edges.get(id)?.length ?? 0;
+  }
+  return null;
 }
 
 /**
@@ -216,7 +259,7 @@ export function getNavigationUpdate(userId: string, graph: RoadGraph, signals: T
  */
 function refreshRerouteSuggestion(
   session: UserSession, index: GraphIndex, remainingIds: string[], blockedAhead: boolean,
-  graph: RoadGraph, signals: TrafficSignal[],
+  reportedAhead: boolean, graph: RoadGraph, signals: TrafficSignal[],
 ): void {
   const current = index.edges.get(remainingIds[0]);
   if (!current) return;
@@ -230,7 +273,8 @@ function refreshRerouteSuggestion(
   const now = Date.now();
   const due = now - session.lastRerouteCheck >= REROUTE_CHECK_MS;
   const needBlockedAlternative = blockedAhead && session.pendingReroute?.reason !== 'blocked';
-  if (!due && !needBlockedAlternative) return;
+  const needReportedAlternative = !blockedAhead && reportedAhead && !session.pendingReroute;
+  if (!due && !needBlockedAlternative && !needReportedAlternative) return;
   session.lastRerouteCheck = now;
   if (remainingIds.length < 2) return;
 
@@ -249,6 +293,12 @@ function refreshRerouteSuggestion(
   }
   const currentTime = describeRoute(index, current.to, rest, ctx).estimatedTime;
   const saved = currentTime - best.estimatedTime;
+  // An unconfirmed report ahead: offer a way around it if one avoids the reported roads
+  const avoidsReports = reportsOnEdges(best.edgeIds).every(r => r.type === 'rain');
+  if (reportedAhead && avoidsReports && saved > 0) {
+    session.pendingReroute = { reason: 'reported', fromEdgeId: current.id, route: best, savedSeconds: saved };
+    return;
+  }
   if (saved >= Math.max(MIN_REROUTE_SAVING_S, MIN_REROUTE_SAVING_SHARE * currentTime)) {
     session.pendingReroute = { reason: 'faster', fromEdgeId: current.id, route: best, savedSeconds: saved };
   } else if (session.pendingReroute?.reason === 'faster') {
@@ -293,6 +343,8 @@ export function updatePosition(
   const engine = getSimulationEngine();
   const match = engine?.updateUserGps(userId, lat, lng, speedKmh);
   if (!match) throw new NavigationError('No active navigation', 404);
+  // Real drivers confirm (stuck nearby) or clear (moving through) crowd reports
+  if (session.mode === 'gps') observeDriver(userId, lat, lng, match.speedKmh, match.edgeId);
   if (match.arrived || match.onRoute) {
     session.offRouteFixes = 0;
     return { onRoute: match.onRoute, arrived: match.arrived, rerouted: false };

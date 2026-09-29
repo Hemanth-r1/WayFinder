@@ -3,7 +3,8 @@ import {
   getGraphIndex, congestionFactor, edgeCapacity, activeRouteEdgeIds, recordObservedSpeed, type GraphIndex,
 } from './pathfindingService.js';
 import { groupForBearing, approachState } from './signalTiming.js';
-import { getWeather, getTrafficLevel, isEdgeBlocked, type TrafficLevel } from './conditionsService.js';
+import { getWeather, getTrafficLevel, type TrafficLevel } from './conditionsService.js';
+import { isEdgeBlocked, edgeSpeedFactor } from './reportsService.js';
 
 export interface SimState {
   vehicles: Map<string, Vehicle>;
@@ -20,6 +21,10 @@ export interface GpsMatch {
   arrived: boolean;
   /** Metres from the nearest point on the upcoming route */
   offset: number;
+  /** Route edge the fix was matched to (null when off-route) */
+  edgeId: string | null;
+  /** km/h, from the phone or derived from successive fixes */
+  speedKmh: number;
 }
 
 export interface NavigationProgress {
@@ -247,7 +252,7 @@ class SimulationEngine {
   /** Advances one vehicle; returns false when it should leave the simulation. */
   private updateVehicle(sv: SimVehicle, dt: number, ahead: SimVehicle | undefined): boolean {
     const edge = sv.edge;
-    const cruise = (edge.speedLimit / 3.6) * sv.speedFactor * getWeather().speedFactor /
+    const cruise = (edge.speedLimit / 3.6) * sv.speedFactor * getWeather().speedFactor * edgeSpeedFactor(edge.id) /
       congestionFactor(edge, this.occupancy.get(edge.id) ?? 0);
     let limit = edge.length + 1_000_000; // how far along this edge we may go
     let target = cruise;
@@ -478,7 +483,11 @@ class SimulationEngine {
       this.removeVehicle(sv.pub.id);
       this.arrivalHandler?.(userId);
     }
-    return { onRoute, arrived, offset: best.dist };
+    return {
+      onRoute, arrived, offset: best.dist,
+      edgeId: onRoute ? sv.route[best.index] : null,
+      speedKmh: sv.pub.speed,
+    };
   }
 
   private metres(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {

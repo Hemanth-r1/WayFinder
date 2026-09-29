@@ -9,7 +9,8 @@
  */
 import type { RoadGraph, RoadEdge, RoadNode, TrafficSignal, RouteInfo } from './types.js';
 import { expectedSignalDelay } from './signalTiming.js';
-import { getWeather, isEdgeBlocked } from './conditionsService.js';
+import { getWeather } from './conditionsService.js';
+import { isEdgeBlocked, edgeTimeFactor } from './reportsService.js';
 
 // ── Tuning ───────────────────────────────────────────────────────────────────
 
@@ -177,7 +178,8 @@ export function edgeTravelTime(edge: RoadEdge, ctx: RoutingContext): number {
   const modelled = freeFlowTime(edge) / getWeather().speedFactor * congestionFactor(edge, ctx.occupancy?.get(edge.id) ?? 0);
   const observed = observedKmh(edge.id);
   const measured = observed !== null ? edge.length / (Math.max(5, observed) / 3.6) : 0;
-  return Math.max(modelled, measured) * sharing;
+  // Crowd reports: unconfirmed blocks, waterlogging and local rain make roads costlier
+  return Math.max(modelled, measured) * sharing * edgeTimeFactor(edge.id);
 }
 
 function turnCost(prev: RoadEdge | undefined, next: RoadEdge): number {
