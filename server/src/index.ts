@@ -406,6 +406,7 @@ async function initializeServer() {
     const { graph, signals } = await getGraph();
     initReports(getGraphIndex(graph, signals));
     initJunctions(getGraphIndex(graph, signals), signals);
+    getClientGraph().catch(() => {}); // serialise once, now that signals carry their directions
     const engine = initSimulationEngine(graph, signals);
     engine.setArrivalHandler(markArrived);
     engine.start();

@@ -133,14 +133,16 @@ export default function JunctionPanel({ canControl, selectedId, onSelect, onFocu
               <span style={{ color: '#aaa', width: 14 }}>{a.group}</span>
               <span style={{ flex: 1, color: '#ddd', minWidth: 0 }}>
                 {a.road || 'Unnamed road'}
+                {a.direction && <span style={{ display: 'block', color: '#888', fontSize: 10 }}>{a.direction}</span>}
                 {a.from && (
                   <button onClick={() => select({ id: a.from!.id })} style={{ ...styles.link, display: 'block', fontSize: 10 }}>
                     from {a.from.name} ({a.from.metres} m)
                   </button>
                 )}
               </span>
-              <span style={{ color: a.queueVehicles > 20 ? '#FF9800' : '#888', textAlign: 'right', fontFamily: 'monospace' }}>
+              <span style={{ color: a.overLimit ? '#F44336' : a.queueVehicles > 20 ? '#FF9800' : '#888', textAlign: 'right', fontFamily: 'monospace' }}>
                 {a.queueVehicles} q · {a.queueMetres} m<br />{a.arrivalsPerHour}/h
+                <br />wait {a.waitSeconds >= 60 ? `${Math.floor(a.waitSeconds / 60)}m${a.waitSeconds % 60}s` : `${a.waitSeconds}s`}{a.overLimit ? ' ⚠' : ''}
               </span>
             </div>
           ))}

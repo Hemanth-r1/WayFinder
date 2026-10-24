@@ -84,6 +84,11 @@ export interface JunctionApproach {
   queueMetres: number;
   arrivalsPerHour: number;
   from?: { id: string; name: string; metres: number };
+  /** "from the south-east, towards …" */
+  direction: string;
+  /** Estimated wait for the last vehicle in the queue (s); over 5 min is flagged */
+  waitSeconds: number;
+  overLimit: boolean;
 }
 
 export interface JunctionDetail extends JunctionSummary {
@@ -200,6 +205,8 @@ export interface NavigationResponse {
   duration: number;
   signals: Array<{
     signalId: string;
+    name?: string;
+    direction?: string;
     position: { lat: number; lng: number };
     distance: number;
     currentState: 'RED' | 'YELLOW' | 'GREEN';

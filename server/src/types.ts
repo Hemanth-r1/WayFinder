@@ -32,6 +32,22 @@ export interface SignalApproach {
   group: string;
 }
 
+/** One direction of traffic at a junction, described for people. */
+export interface SignalArm {
+  /** Approach road (edge) and the phase group that lets it go */
+  edgeId: string;
+  group: string;
+  road: string;
+  /** Where traffic comes from and is heading, as compass words ("south-east") */
+  from: string;
+  heading: string;
+  /** Straight-ahead destination: next junction or road name */
+  towards: string;
+  /** Previous junction on this road, if within 1.5 km */
+  fromJunction?: string;
+  lanes: number;
+}
+
 export interface TrafficSignal {
   /**
    * Permanent junction ID ("J" + the OSM id of its main stop line, base 36), stable
@@ -50,6 +66,8 @@ export interface TrafficSignal {
   greenWaveDirection: string | null;
   congestionLevel: number; adaptiveTiming: boolean;
   approaches: SignalApproach[];
+  /** Each direction of traffic in plain words (set once the junction network is built) */
+  arms?: SignalArm[];
 }
 
 export interface Vehicle {

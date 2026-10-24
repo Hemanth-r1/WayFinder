@@ -75,6 +75,9 @@ export interface PositionResult {
 
 export interface SignalAhead {
   signalId: string;
+  /** Junction name and this driver's direction through it */
+  name: string;
+  direction: string;
   position: { lat: number; lng: number };
   distance: number;
   currentState: ApproachState;
@@ -386,8 +389,11 @@ function signalsAhead(index: GraphIndex, edgeIds: string[], fromIndex: number, f
     const { signal, group } = control;
     const wait = waitOnArrival(signal, group, eta);
     const node = index.nodes.get(edge.to)!;
+    const arm = signal.arms?.find(a => a.edgeId === edge.id);
     result.push({
       signalId: signal.id,
+      name: signal.name ?? signal.id,
+      direction: arm ? `from the ${arm.from}${arm.towards ? ` towards ${arm.towards}` : ''}` : '',
       position: { lat: node.lat, lng: node.lng },
       distance: Math.max(0, distance),
       currentState: approachState(signal, group),

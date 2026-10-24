@@ -29,6 +29,21 @@ export interface SignalApproach {
 
 /** group: 'A' main road, 'B' cross road, 'ALL' all red (legacy 'NS' / 'EW') */
 export interface SignalPhase { group: string; color: SignalColor; duration: number; yellowDuration: number; }
+/** One direction of traffic at a junction, in plain words. */
+export interface SignalArm {
+  edgeId: string;
+  /** Phase group that lets this direction go */
+  group: string;
+  road: string;
+  /** Compass words: where traffic comes from and is heading */
+  from: string;
+  heading: string;
+  /** Next junction (or road) straight ahead */
+  towards: string;
+  fromJunction?: string;
+  lanes: number;
+}
+
 export interface TrafficSignal {
   /** Permanent junction ID, e.g. "J869Y0Y" */
   id: string; nodeId: string;
@@ -36,6 +51,8 @@ export interface TrafficSignal {
   name?: string;
   /** Position (also for junctions on streets the browser doesn't load) */
   lat?: number; lng?: number;
+  /** Each direction of traffic, e.g. "Tumkur Road from the south-east towards …" */
+  arms?: SignalArm[];
   /** Every stop-line node of this junction controller */
   nodeIds?: string[];
   /** Bearing of the junction's main road (phase group 'A') */

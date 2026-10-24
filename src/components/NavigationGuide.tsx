@@ -35,6 +35,9 @@ function formatDistance(metres: number): string {
   return metres >= 1000 ? `${(metres / 1000).toFixed(1)} km` : `${Math.round(metres / 10) * 10} m`;
 }
 
+/** Waits at least this long are worth switching the engine off for (s). */
+const ENGINE_OFF_SECONDS = 30;
+
 export default function NavigationGuide({
   navigation, onClear, onOpenGoogleMaps, destLabel, isMobile,
   showReroute, rerouting, onAcceptReroute, onDismissReroute, onAnswerReport,
@@ -142,10 +145,18 @@ export default function NavigationGuide({
             <>
               <span style={{ width: 22, height: 22, borderRadius: 11, background: LIGHT[nextSignal.currentState], flexShrink: 0 }} />
               <div>
-                <div style={{ fontSize: 13, color: '#fff' }}>Signal in {formatDistance(nextSignal.distance)}</div>
+                <div style={{ fontSize: 13, color: '#fff' }}>
+                  {nextSignal.name && nextSignal.name !== nextSignal.signalId ? nextSignal.name : 'Signal'} in {formatDistance(nextSignal.distance)}
+                </div>
                 <div style={{ fontSize: 11, color: '#888' }}>
                   {nextSignal.currentState.charAt(0) + nextSignal.currentState.slice(1).toLowerCase()} now · {nextSignal.estimatedWait < 1 ? 'green when you get there' : `~${Math.round(nextSignal.estimatedWait)} s wait when you get there`}
                 </div>
+                {/* Stopped (or about to stop) at a long red: save fuel and air */}
+                {nextSignal.distance < 80 && nextSignal.currentState !== 'GREEN' && nextSignal.estimatedWait >= ENGINE_OFF_SECONDS && (
+                  <div style={{ fontSize: 12, color: '#FFD54F', marginTop: 3, fontWeight: 600 }}>
+                    ⏱ Red for ~{Math.round(nextSignal.estimatedWait)} s — switch off your engine
+                  </div>
+                )}
               </div>
             </>
           ) : (

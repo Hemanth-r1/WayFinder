@@ -17,6 +17,7 @@ import ControlPanel from './ControlPanel';
 import type { NavRouteSummary } from './NavigationPanel';
 import type { RoadReport, ReportType, ReportVote } from '../services/serverClient';
 import { distanceMetres } from '../utils/places';
+import SignalCard from './SignalCard';
 import {
   MAP_STYLES, SRC, LAYER, addOverlayLayers, addMissingImage, setSourceData,
   roadsData, trafficData, signalsData, vehiclesData, heatData, linesData, reportsData,
@@ -115,21 +116,6 @@ function pinElement(color: string, label: string): HTMLElement {
   return el;
 }
 
-function signalPopupHtml(sig: TrafficSignal, adjEdges: number): string {
-  const phase = sig.phases[sig.currentPhaseIndex];
-  const color = phase.color === 'GREEN' ? '#00E676' : phase.color === 'YELLOW' ? '#FFD600' : '#FF1744';
-  return `
-    <div style="font-family:monospace;font-size:11px;color:#ccc;min-width:160px;">
-      <div style="font-weight:bold;color:#fff;">${sig.name ?? sig.id}</div>
-      <div style="color:#888;margin-bottom:4px;">${sig.id}</div>
-      <div>Phase: <span style="color:${color}">${phase.color}</span> → ${phase.group}</div>
-      <div>Timer: ${sig.timer.toFixed(1)}s / ${phase.duration.toFixed(0)}s</div>
-      <div>Cycle: ${sig.cycleLength.toFixed(0)}s</div>
-      <div>Congestion: ${(sig.congestionLevel * 100).toFixed(0)}%</div>
-      <div>Edges: ${adjEdges}</div>
-      ${sig.greenWaveDirection ? `<div>Green Wave: ${sig.greenWaveDirection}</div>` : ''}
-    </div>`;
-}
 
 export default function MapView({
   graph, signals, vehicles, congestionZones, onCancelOverride,
@@ -155,6 +141,10 @@ export default function MapView({
   const loadedMap = () => (mapRef.current && loadedMapRef.current === mapRef.current ? mapRef.current : null);
   const [mapError, setMapError] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  /** Signal whose live timing card is open */
+  const [selectedSignal, setSelectedSignal] = useState<string | null>(null);
+  /** When the live signal states last arrived (for the card's countdown) */
+  const signalsAt = useRef(Date.now());
   /** Camera tracks the driver's car; paused when they drag or rotate the map */
   const [following, setFollowing] = useState(true);
   const followZoomPending = useRef(true);
@@ -215,16 +205,15 @@ export default function MapView({
     const hoverPopup = new maplibregl.Popup({ closeButton: false, closeOnClick: false, className: 'wf-tooltip', offset: 12 });
 
     map.on('click', (e: MapMouseEvent) => {
-      // Operators: tapping a signal shows its timing instead of the menu
-      if (!simpleViewRef.current && map.getLayer(LAYER.signals)) {
-        const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER.signals] })[0];
+      // Tapping a signal (finger-sized area) opens its live timing card, for everyone
+      if (map.getLayer(LAYER.signals)) {
+        const { x, y } = e.point;
+        const hit = map.queryRenderedFeatures([[x - 10, y - 10], [x + 10, y + 10]], { layers: [LAYER.signals] })[0];
         const sigId = hit?.properties?.id as string | undefined;
-        const sig = sigId ? [...signalsRef.current.values()].find(s => s.id === sigId) : undefined;
-        if (sig) {
-          onSelectJunctionRef.current?.(sig.id);
-          const adj = graphRef.current.adjacency.get(sig.nodeId)?.length ?? 0;
-          new maplibregl.Popup({ className: 'wf-popup', offset: 10 })
-            .setLngLat(e.lngLat).setHTML(signalPopupHtml(sig, adj)).addTo(map);
+        if (sigId && signalsRef.current.has(sigId)) {
+          setSelectedSignal(sigId);
+          setContextMenu(null);
+          if (!simpleViewRef.current) onSelectJunctionRef.current?.(sigId);
           return;
         }
       }
@@ -257,7 +246,7 @@ export default function MapView({
       map.getCanvas().style.cursor = '';
       hoverPopup.remove();
     });
-    map.on('mouseenter', LAYER.signals, () => { if (!simpleViewRef.current) map.getCanvas().style.cursor = 'pointer'; });
+    map.on('mouseenter', LAYER.signals, () => { map.getCanvas().style.cursor = 'pointer'; });
     map.on('mouseleave', LAYER.signals, () => { map.getCanvas().style.cursor = ''; });
 
     // A drag or rotate by the user pauses the follow camera (zooming doesn't)
@@ -382,6 +371,7 @@ export default function MapView({
 
   // ── Live layers ───────────────────────────────────────────────────────────
   useEffect(() => {
+    signalsAt.current = Date.now();
     const map = loadedMap();
     if (map) setSourceData(map, SRC.signals, signalsData(signals, graph));
   }, [signals, graph, loadCount]);
@@ -605,6 +595,15 @@ export default function MapView({
         navigatedVehicle={navigatedVehicle}
       />}
       {!simpleView && !compact && <ControlPanel />}
+
+      {selectedSignal && signals.get(selectedSignal) && (
+        <SignalCard
+          signal={signals.get(selectedSignal)!}
+          updatedAt={signalsAt.current}
+          onClose={() => setSelectedSignal(null)}
+          compact={compact}
+        />
+      )}
 
       {/* Context menu */}
       {contextMenu && (
