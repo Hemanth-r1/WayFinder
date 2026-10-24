@@ -2,13 +2,15 @@
  * Loads Bangalore's road network: the bundled OSM snapshot, else live Overpass, else a
  * small synthetic grid (last resort, so the app still starts with no data at all).
  */
-import type { RoadNode, RoadEdge, TrafficSignal, RoadGraph } from './types.js';
+import type { RoadNode, RoadEdge, TrafficSignal, RoadGraph, Place } from './types.js';
 import { buildGraphFromOsm, buildSignals, haversineMetres, bearing } from './osmGraph.js';
 import { readSnapshot, fetchBangaloreFromOverpass } from './osmSource.js';
 
 export interface Network {
   graph: RoadGraph;
   signals: TrafficSignal[];
+  /** Neighbourhood names for directions */
+  places: Place[];
   source: string;
 }
 
@@ -53,6 +55,7 @@ function buildSyntheticGrid(centerLat: number, centerLng: number): Network {
   return {
     graph: { nodes: [...nodes.values()], edges: [...edges.values()], adjacency: [...out] },
     signals,
+    places: [],
     source: 'synthetic grid',
   };
 }

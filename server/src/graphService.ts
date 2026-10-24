@@ -1,10 +1,11 @@
 import { gzipSync } from 'node:zlib';
-import type { RoadGraph, TrafficSignal } from './types.js';
+import type { RoadGraph, TrafficSignal, Place } from './types.js';
 import { buildBangaloreNetwork } from './roadNetwork.js';
 
 interface GraphState {
   graph: RoadGraph;
   signals: TrafficSignal[];
+  places: Place[];
   source: string;
   version: number;
 }

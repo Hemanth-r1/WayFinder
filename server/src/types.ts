@@ -12,6 +12,15 @@ export interface RoadEdge {
   bottleneck?: number;
   /** Position in the simulation's per-edge arrays (set by the engine) */
   ix?: number;
+  /** Flyover / elevated road (OSM bridge with layer ≥ 1, or a named flyover) */
+  elevated?: boolean;
+}
+
+/** A named neighbourhood (OSM place=suburb/neighbourhood/…), used to describe directions. */
+export interface Place {
+  name: string;
+  lat: number;
+  lng: number;
 }
 
 export interface RoadGraph {

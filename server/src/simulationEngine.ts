@@ -60,6 +60,21 @@ export interface SignalControlState {
   scale?: { group: string; factor: number; until: number; by: string };
 }
 
+/** One vehicle passing through a signalised junction: where it came from and left by. */
+export interface MovementEvent {
+  signalId: string;
+  /** Approach edge it arrived on, and exit edge it left by */
+  fromEdge: string;
+  toEdge: string;
+  vehicleType: string;
+  /** 'sim' = simulated (stands for `scale` real vehicles), 'gps' = real app user, 'user' = user on a simulated drive */
+  source: 'sim' | 'gps' | 'user';
+  scale: number;
+  /** Seconds spent stopped or crawling on the approach */
+  waitSeconds: number;
+  at: number;
+}
+
 /** Live numbers for one approach road of a junction. */
 export interface ApproachStats {
   /** Stopped vehicles in real-vehicle equivalents */
@@ -262,6 +277,9 @@ interface SimVehicle {
   dwellLeft: number;
   /** Seconds the 'ran a red' flag stays on */
   violationTimer: number;
+  /** Junction approach being driven (for movement counts), and seconds spent waiting on it */
+  approach?: { signalId: string; edgeId: string };
+  approachWait: number;
 }
 
 const rankOf = (e: RoadEdge) => ROAD_RANK[e.roadType] ?? 1;
@@ -336,6 +354,9 @@ class SimulationEngine {
   private vehicleCounter = 0;
   private updateCallbacks: Set<(state: SimState) => void> = new Set();
   private arrivalHandler: ((userId: string) => void) | null = null;
+  private movementHandler: ((m: MovementEvent) => void) | null = null;
+  /** Stop-line nodes of each junction controller */
+  private clusterOf = new Map<string, Set<string>>();
   private timer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(graph: RoadGraph, signals: TrafficSignal[]) {
@@ -370,6 +391,7 @@ class SimulationEngine {
     this.lanesByEdge = new Array(cix);
     this.rearmost = new Array(cix);
     for (const s of signals) this.basePhases.set(s.id, s.phases.map(p => p.duration));
+    for (const s of signals) this.clusterOf.set(s.id, new Set(s.nodeIds ?? [s.nodeId]));
     let acc = 0, accMajor = 0;
     for (const e of graph.edges) {
       const w = e.length * (RANK_WEIGHT[rankOf(e)] ?? 1) * e.lanes * coreWeight(e);
@@ -406,6 +428,33 @@ class SimulationEngine {
   /** Called with the userId when a navigated vehicle reaches its destination. */
   setArrivalHandler(handler: (userId: string) => void): void {
     this.arrivalHandler = handler;
+  }
+
+  /** Called for every vehicle that passes through a signalised junction. */
+  setMovementHandler(handler: (m: MovementEvent) => void): void {
+    this.movementHandler = handler;
+  }
+
+  /**
+   * Junction movement counting: entering an approach edge (ending at a junction's stop
+   * line) starts a passage; leaving the junction on an exit edge completes it.
+   */
+  private trackMovement(sv: SimVehicle, next: RoadEdge): void {
+    if (this.contraBase.has(next.id)) return; // wrong-way stretches aren't junction movements
+    const sigFrom = this.index.signalByNode.get(next.from);
+    if (sigFrom && sv.approach?.signalId === sigFrom.id && !this.clusterOf.get(sigFrom.id)?.has(next.to)) {
+      this.movementHandler?.({
+        signalId: sigFrom.id, fromEdge: sv.approach.edgeId, toEdge: next.id, vehicleType: sv.kind.type,
+        source: sv.gps ? 'gps' : sv.userId ? 'user' : 'sim',
+        scale: sv.userId ? 1 : DEMAND_SCALE, waitSeconds: Math.round(sv.approachWait), at: Date.now(),
+      });
+      sv.approach = undefined;
+    }
+    const sigTo = this.index.signalByNode.get(next.to);
+    if (sigTo && !this.clusterOf.get(sigTo.id)?.has(next.from)) {
+      sv.approach = { signalId: sigTo.id, edgeId: next.id };
+      sv.approachWait = 0;
+    }
   }
 
   private runLoop(): void {
@@ -606,7 +655,7 @@ class SimulationEngine {
       weave: (Math.random() - 0.5) * kind.weave,
       odo: 0,
       nextStopAt: kind.stopEvery ? Math.random() * kind.stopEvery : Infinity,
-      stopAt: null, dwellLeft: 0, violationTimer: 0,
+      stopAt: null, dwellLeft: 0, violationTimer: 0, approachWait: 0,
     };
     sv.v = this.cruiseSpeed(sv) * (0.4 + Math.random() * 0.4);
     sv.next = this.chooseNext(sv);
@@ -847,6 +896,7 @@ class SimulationEngine {
     sv.pub.speed = Math.round(sv.v * 3.6 * 10) / 10;
     sv.ttl -= dt;
     sv.stuck = sv.v < 0.3 && !sv.atRed && sv.stopAt === null ? sv.stuck + dt : 0;
+    if (sv.approach && sv.v < 1.5) sv.approachWait += dt;
 
     for (let hops = 0; sv.progress >= sv.edge.length && hops < 5; hops++) {
       const overflow = sv.progress - sv.edge.length;
@@ -880,6 +930,7 @@ class SimulationEngine {
     sv.stopAt = null;
     sv.edge = next;
     if (!sv.userId) this.entryPcu[next.ix!] += sv.kind.pcu;
+    this.trackMovement(sv, next);
     const wrong = this.contraBase.has(next.id);
     sv.pub.wrongWay = wrong || undefined;
     if (wrong) { sv.lane = 0; sv.latPos = 0; }
@@ -1156,7 +1207,7 @@ class SimulationEngine {
       userId,
       route,
       routeIndex: 0,
-      violator: false, weave: 0, odo: 0, nextStopAt: Infinity, stopAt: null, dwellLeft: 0, violationTimer: 0,
+      violator: false, weave: 0, odo: 0, nextStopAt: Infinity, stopAt: null, dwellLeft: 0, violationTimer: 0, approachWait: 0,
     };
     sv.next = this.chooseNext(sv);
     this.placeVehicle(sv);
@@ -1243,6 +1294,11 @@ class SimulationEngine {
 
     if (onRoute) {
       const edge = this.index.edges.get(sv.route[best.index])!;
+      // Count junction movements for every route edge passed since the last fix
+      for (let k = sv.routeIndex + 1; k <= best.index; k++) {
+        const passed = this.index.edges.get(sv.route[k]);
+        if (passed) this.trackMovement(sv, passed);
+      }
       sv.routeIndex = best.index;
       sv.edge = edge;
       sv.progress = best.along;

@@ -35,10 +35,13 @@ export function compactFromOverpass(elements: OverpassElement[], source: string,
   const nodes = new Map<number, [number, number, number]>();
   const signals = new Set<number>();
   const signalNames: Record<string, string> = {};
+  const places: [string, number, number][] = [];
   const ways = new Map<number, CompactWay>();
   for (const el of elements) {
     if (el.type === 'node' && el.lat !== undefined && el.lon !== undefined) {
       nodes.set(el.id, [el.id, el.lat, el.lon]);
+      const placeName = el.tags?.['name:en'] || el.tags?.name;
+      if (el.tags?.place && placeName) places.push([placeName, el.lat, el.lon]);
       if (el.tags?.highway === 'traffic_signals') {
         signals.add(el.id);
         const name = el.tags['name:en'] || el.tags.name;
@@ -52,6 +55,8 @@ export function compactFromOverpass(elements: OverpassElement[], source: string,
       if (t.lanes) w.lanes = t.lanes;
       if (t.maxspeed) w.maxspeed = t.maxspeed;
       if (t.junction) w.junction = t.junction;
+      if (t.bridge) w.bridge = t.bridge;
+      if (t.layer) w.layer = t.layer;
       ways.set(el.id, w);
     }
   }
@@ -64,12 +69,18 @@ export function compactFromOverpass(elements: OverpassElement[], source: string,
     ways: [...ways.values()],
     signals: [...signals].filter(id => onRoad.has(id)),
     signalNames,
+    places,
   };
 }
 
 async function fetchTile(bbox: string, timeoutMs: number): Promise<OverpassElement[]> {
   const query = `[out:json][timeout:300];(way["highway"~"${ROAD_FILTER}"]["access"!~"^(private|no)$"](${bbox});)->.w;` +
     `node["highway"="traffic_signals"](${bbox})->.s;(.w;.s;);out body;.w >;out skel qt;`;
+  return fetchQuery(query, timeoutMs);
+}
+
+/** Runs an Overpass query against each mirror in turn (two tries each). */
+async function fetchQuery(query: string, timeoutMs: number): Promise<OverpassElement[]> {
   let lastErr: unknown;
   for (const url of OVERPASS_MIRRORS) {
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -101,6 +112,15 @@ export async function fetchBangaloreFromOverpass(timeoutMs = 120_000): Promise<C
     tiles.push([s + (n - s) * r / 4, w + (e - w) * c / 4, s + (n - s) * (r + 1) / 4, w + (e - w) * (c + 1) / 4]);
   }
   const elements: OverpassElement[] = [];
+  // Neighbourhood names, for directions like "from Nagasandra"
+  const [ps, pw, pn, pe] = BANGALORE_BBOX;
+  try {
+    elements.push(...await fetchQuery(
+      `[out:json][timeout:120];node["place"~"^(suburb|neighbourhood|quarter|locality|village|town)$"]["name"](${ps},${pw},${pn},${pe});out body;`,
+      timeoutMs));
+  } catch (err) {
+    console.warn('[OSM] Place names unavailable:', (err as Error).message);
+  }
   for (const t of tiles) {
     const els = await fetchTile(t.join(','), timeoutMs);
     console.log(`[OSM] Tile ${t.map(v => v.toFixed(2)).join(',')}: ${els.length} elements`);

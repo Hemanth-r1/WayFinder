@@ -9,7 +9,8 @@
  * released traffic, and upstream junctions feeding the held (red) approaches shorten
  * their green towards it so queues don't spill back into them.
  */
-import type { RoadEdge, TrafficSignal, SignalArm } from './types.js';
+import type { RoadEdge, TrafficSignal, SignalArm, Place } from './types.js';
+import { haversineMetres } from './osmGraph.js';
 import type { GraphIndex } from './pathfindingService.js';
 import { getSimulationEngine } from './simulationEngine.js';
 import { approachState } from './signalTiming.js';
@@ -87,8 +88,9 @@ function turn(a: number, b: number): number {
 }
 
 /** Builds the junction-to-junction links by following each approach road upstream. */
-export function initJunctions(index: GraphIndex, signals: TrafficSignal[]): void {
+export function initJunctions(index: GraphIndex, signals: TrafficSignal[], placeList: Place[] = []): void {
   indexRef = index;
+  indexPlaces(placeList);
   const inEdges = new Map<string, RoadEdge[]>();
   for (const e of index.edgeList) (inEdges.get(e.to) ?? inEdges.set(e.to, []).get(e.to)!).push(e);
 
@@ -134,16 +136,61 @@ export function initJunctions(index: GraphIndex, signals: TrafficSignal[]): void
   console.log(`[Junctions] ${signals.length} junctions, ${links} links between neighbours`);
 
   // Describe every direction of traffic in words, for drivers and police alike
-  for (const j of signals) j.arms = describeArms(j, index, inEdges);
+  for (const j of signals) {
+    j.arms = describeArms(j, index, inEdges);
+    const members = new Set(j.nodeIds ?? [j.nodeId]);
+    exitsBySignal.set(j.id, describeExits(j, members, index, inEdges));
+    feedersBySignal.set(j.id, new Map(j.approaches
+      .filter(a => a.group !== 'FREE')
+      .map(a => [a.edgeId, findFeeders(index.edges.get(a.edgeId), members, index, inEdges)])));
+    mergesBySignal.set(j.id, findMerges(j.id, members, index, inEdges));
+  }
 }
+
+// ── Directions in words ──────────────────────────────────────────────────────
 
 /** How far to follow a road to name the next / previous junction for directions (m). */
 const NAME_SEARCH_METRES = 5000;
+/** Feeders: roads joining an approach within this distance of the stop line (m). */
+const FEEDER_METRES = 1200;
+/** Merges: roads joining an exit within this distance after the junction (m). */
+const MERGE_METRES = 500;
+
+let places: Place[] = [];
+const placeGrid = new Map<string, Place[]>();
+const PLACE_CELL = 0.02; // ~2 km
+
+function indexPlaces(list: Place[]): void {
+  places = list;
+  placeGrid.clear();
+  for (const p of list) {
+    const key = `${Math.floor(p.lat / PLACE_CELL)},${Math.floor(p.lng / PLACE_CELL)}`;
+    (placeGrid.get(key) ?? placeGrid.set(key, []).get(key)!).push(p);
+  }
+}
+
+/** Nearest neighbourhood name within `maxMetres`, e.g. "Nagasandra". */
+export function nearestPlace(lat: number, lng: number, maxMetres = 2500): string | undefined {
+  if (places.length === 0) return undefined;
+  const cy = Math.floor(lat / PLACE_CELL), cx = Math.floor(lng / PLACE_CELL);
+  let best: { name: string; d: number } | undefined;
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+    for (const p of placeGrid.get(`${cy + dy},${cx + dx}`) ?? []) {
+      const d = haversineMetres({ lat, lng }, p);
+      if (d <= maxMetres && (!best || d < best.d)) best = { name: p.name, d };
+    }
+  }
+  return best?.name;
+}
+
+function km(m: number): string {
+  return m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.round(m)} m`;
+}
 
 /**
  * Follows a road (straightest continuation, no U-turns) forwards or backwards until it
- * reaches another signalised junction; returns its name and distance, or the first new
- * road name met on the way.
+ * reaches another signalised junction ("Yeshwanthpur Circle (2.1 km)"). Otherwise names
+ * the neighbourhood where the road leads ("Nagasandra"), or the first new road met.
  */
 function followRoad(
   start: RoadEdge, index: GraphIndex, inEdges: Map<string, RoadEdge[]>, forward: boolean, skip: Set<string>,
@@ -151,16 +198,16 @@ function followRoad(
   let edge: RoadEdge | undefined = start;
   let metres = 0;
   let newRoad = '';
+  let lastNode = forward ? start.to : start.from;
   const seen = new Set<string>();
   while (edge && metres < NAME_SEARCH_METRES && !seen.has(edge.id)) {
     seen.add(edge.id);
     metres += edge.length;
     const node = forward ? edge.to : edge.from;
+    lastNode = node;
     if (!newRoad && edge.name && edge.name !== start.name) newRoad = edge.name;
     const sig = index.signalByNode.get(node);
-    if (sig && !skip.has(node)) {
-      return `${sig.name ?? sig.id} (${metres >= 1000 ? `${(metres / 1000).toFixed(1)} km` : `${Math.round(metres)} m`})`;
-    }
+    if (sig && !skip.has(node)) return `${sig.name ?? sig.id} (${km(metres)})`;
     const cur: RoadEdge = edge;
     const nexts = forward
       ? (index.outEdges.get(cur.to) ?? []).filter(e => e.to !== cur.from)
@@ -168,6 +215,9 @@ function followRoad(
     edge = nexts.sort((p, q) => turn(p.bearing, cur.bearing) - turn(q.bearing, cur.bearing))[0];
     if (edge && turn(edge.bearing, cur.bearing) > 60) break; // the road ends here
   }
+  const end = index.nodes.get(lastNode);
+  const place = end && metres > 600 ? nearestPlace(end.lat, end.lng) : undefined;
+  if (place) return newRoad ? `${place} (via ${newRoad})` : place;
   return newRoad;
 }
 
@@ -211,6 +261,163 @@ function describeArms(j: TrafficSignal, index: GraphIndex, inEdges: Map<string, 
   return arms;
 }
 
+// ── Exits, feeders (flyovers, ramps) and merges ──────────────────────────────
+
+/** Where traffic can leave a junction. */
+export interface JunctionExit {
+  edgeId: string;
+  road: string;
+  heading: string;
+  towards: string;
+}
+
+/** A road joining an approach before the stop line, or an exit just after the junction. */
+export interface FeederRoad {
+  edgeId: string;
+  road: string;
+  kind: 'flyover' | 'ramp' | 'road';
+  /** Metres from the stop line (feeders) or from the junction (merges) */
+  metres: number;
+  /** Where its traffic comes from, e.g. "Nagasandra" */
+  from: string;
+  /** Merges: the exit road it joins */
+  joins?: string;
+}
+
+const exitsBySignal = new Map<string, JunctionExit[]>();
+const feedersBySignal = new Map<string, Map<string, FeederRoad[]>>();
+const mergesBySignal = new Map<string, FeederRoad[]>();
+
+function kindOf(e: RoadEdge): FeederRoad['kind'] {
+  return e.elevated ? 'flyover' : e.roadType === 'link' ? 'ramp' : 'road';
+}
+
+/** Feeders worth showing: flyovers, ramps and anything bigger than a residential lane. */
+function significant(e: RoadEdge): boolean {
+  return !!e.elevated || !['residential', 'living_street'].includes(e.roadType);
+}
+
+function describeExits(j: TrafficSignal, members: Set<string>, index: GraphIndex, inEdges: Map<string, RoadEdge[]>): JunctionExit[] {
+  const exits: JunctionExit[] = [];
+  for (const n of members) {
+    for (const e of index.outEdges.get(n) ?? []) {
+      if (members.has(e.to)) continue;
+      exits.push({
+        edgeId: e.id, road: e.name || 'Unnamed road', heading: compass(departureBearing(e)),
+        towards: followRoad(e, index, inEdges, true, members) || e.name || '',
+      });
+    }
+  }
+  return exits;
+}
+
+/** Where a flyover begins: walks back along elevated road and names that neighbourhood. */
+function flyoverOrigin(fly: RoadEdge, members: Set<string>, index: GraphIndex, inEdges: Map<string, RoadEdge[]>): string {
+  let edge = fly;
+  const seen = new Set<string>();
+  for (;;) {
+    seen.add(edge.id);
+    const cur = edge;
+    const prev = (inEdges.get(cur.from) ?? []).find(p => p.elevated && !seen.has(p.id) && turn(p.bearing, cur.bearing) <= 45);
+    if (!prev) break;
+    edge = prev;
+  }
+  const start = index.nodes.get(edge.from);
+  const place = start && nearestPlace(start.lat, start.lng, 3000);
+  return place ? `${place} (flyover starts there)` : followRoad(fly, index, inEdges, false, members) || compass(fly.bearing + 180);
+}
+
+/**
+ * What a feeding branch really is: walks back along it (straightest predecessor, up to
+ * 800 m) past short unnamed links, so a flyover landing on a slip road is still reported
+ * as the flyover — with where its traffic comes from.
+ */
+function branchIdentity(
+  start: RoadEdge, members: Set<string>, index: GraphIndex, inEdges: Map<string, RoadEdge[]>,
+): { road: string; kind: FeederRoad['kind']; from: string } {
+  let edge: RoadEdge | undefined = start;
+  let metres = 0;
+  let named: RoadEdge | undefined;
+  const seen = new Set<string>();
+  while (edge && metres < 800 && !seen.has(edge.id)) {
+    seen.add(edge.id);
+    if (edge.elevated) {
+      return { road: edge.name || 'Flyover', kind: 'flyover', from: flyoverOrigin(edge, members, index, inEdges) };
+    }
+    if (!named && edge.name) named = edge;
+    metres += edge.length;
+    const cur: RoadEdge = edge;
+    const preds = (inEdges.get(cur.from) ?? []).filter(p => p.from !== cur.to);
+    // A flyover landing beside the ground road: report the flyover
+    const fly = preds.find(p => p.elevated && turn(p.bearing, cur.bearing) <= 45);
+    if (fly) {
+      return { road: fly.name || 'Flyover', kind: 'flyover', from: flyoverOrigin(fly, members, index, inEdges) };
+    }
+    edge = preds.sort((p, q) => turn(p.bearing, cur.bearing) - turn(q.bearing, cur.bearing))[0];
+    if (edge && turn(edge.bearing, cur.bearing) > 70) break;
+  }
+  const base = named ?? start;
+  return {
+    road: base.name || (start.roadType === 'link' ? 'Slip road' : 'Unnamed road'),
+    kind: kindOf(start),
+    from: followRoad(base, index, inEdges, false, members) || compass(start.bearing + 180),
+  };
+}
+
+/** Roads that join an approach within FEEDER_METRES of the stop line (walking upstream). */
+function findFeeders(
+  approach: RoadEdge | undefined, members: Set<string>, index: GraphIndex, inEdges: Map<string, RoadEdge[]>,
+): FeederRoad[] {
+  if (!approach) return [];
+  const feeders: FeederRoad[] = [];
+  const seen = new Set<string>([approach.id]);
+  const stack: { edge: RoadEdge; dist: number }[] = [{ edge: approach, dist: 0 }];
+  while (stack.length > 0 && feeders.length < 12) {
+    const { edge, dist } = stack.pop()!;
+    const reach = dist + edge.length;
+    const sig = index.signalByNode.get(edge.from);
+    if (sig && !members.has(edge.from)) continue; // another junction: its own approaches
+    const preds = (inEdges.get(edge.from) ?? []).filter(p => p.from !== edge.to && !members.has(p.from) && !seen.has(p.id));
+    for (const p of preds) {
+      seen.add(p.id);
+      if (preds.length > 1 && significant(p)) {
+        feeders.push({ edgeId: p.id, metres: Math.round(reach), ...branchIdentity(p, members, index, inEdges) });
+      }
+      if (reach + p.length <= FEEDER_METRES && significant(p)) stack.push({ edge: p, dist: reach });
+    }
+  }
+  return feeders;
+}
+
+/** Roads joining any exit within MERGE_METRES after the junction (e.g. a flyover landing). */
+function findMerges(id: string, members: Set<string>, index: GraphIndex, inEdges: Map<string, RoadEdge[]>): FeederRoad[] {
+  const merges: FeederRoad[] = [];
+  for (const exit of exitsBySignal.get(id) ?? []) {
+    let edge = index.edges.get(exit.edgeId);
+    let metres = 0;
+    const seen = new Set<string>();
+    while (edge && metres < MERGE_METRES && !seen.has(edge.id)) {
+      seen.add(edge.id);
+      metres += edge.length;
+      if (index.signalByNode.get(edge.to) && !members.has(edge.to)) break;
+      const cur: RoadEdge = edge;
+      for (const m of inEdges.get(cur.to) ?? []) {
+        if (m.id === cur.id || members.has(m.from) || m.from === (index.outEdges.get(cur.to) ?? [])[0]?.to || !significant(m)) continue;
+        if (merges.some(x => x.edgeId === m.id)) continue;
+        merges.push({ edgeId: m.id, metres: Math.round(metres), joins: exit.road, ...branchIdentity(m, members, index, inEdges) });
+      }
+      const nexts = (index.outEdges.get(cur.to) ?? []).filter(e => e.to !== cur.from);
+      edge = nexts.sort((p, q) => turn(p.bearing, cur.bearing) - turn(q.bearing, cur.bearing))[0];
+    }
+  }
+  return merges;
+}
+
+/** Exit descriptions for a junction (used to label movement counts). */
+export function junctionExits(id: string): JunctionExit[] {
+  return exitsBySignal.get(id) ?? [];
+}
+
 // ── Live view and recommendations ────────────────────────────────────────────
 
 export interface ApproachView {
@@ -230,6 +437,8 @@ export interface ApproachView {
   /** Estimated wait for the last vehicle in the queue (s), and whether it breaks MAX_WAIT_S */
   waitSeconds: number;
   overLimit: boolean;
+  /** Roads (flyovers, ramps…) feeding this approach before the stop line, with live flow */
+  feeders: (FeederRoad & { arrivalsPerHour: number })[];
 }
 
 export interface JunctionSummary {
@@ -260,6 +469,8 @@ export interface JunctionDetail extends JunctionSummary {
     summary: string;
   };
   advice: string[];
+  /** Roads joining the exits just after the junction (e.g. a flyover landing) */
+  merges: (FeederRoad & { arrivalsPerHour: number })[];
   neighbours: {
     upstream: { id: string; name: string; road: string; metres: number; seconds: number; toGroup: string }[];
     downstream: { id: string; name: string; road: string; metres: number; seconds: number; fromGroup: string }[];
@@ -280,6 +491,24 @@ function lastVehicleWait(s: TrafficSignal, group: string, queue: number, lanes: 
   const perCycle = green * Math.max(1, lanes) * DISCHARGE_PER_LANE_S;
   const cycles = Math.ceil(queue / perCycle);
   return red + (cycles - 1) * C;
+}
+
+/**
+ * Adds each road's live arrival rate (real vehicles per hour). The same road reached
+ * through two merge points is listed once (its busiest branch).
+ */
+function withFlow(roads: FeederRoad[]): (FeederRoad & { arrivalsPerHour: number })[] {
+  const engine = getSimulationEngine();
+  if (!engine || roads.length === 0) return [];
+  const stats = engine.getApproachStats(roads.map(r => r.edgeId));
+  const best = new Map<string, FeederRoad & { arrivalsPerHour: number }>();
+  for (const r of roads) {
+    const withRate = { ...r, arrivalsPerHour: stats.get(r.edgeId)?.arrivalsPerHour ?? 0 };
+    const key = `${r.kind}|${r.road}|${r.from}|${r.joins ?? ''}`;
+    const prev = best.get(key);
+    if (!prev || withRate.arrivalsPerHour > prev.arrivalsPerHour) best.set(key, withRate);
+  }
+  return [...best.values()].sort((a, b) => b.arrivalsPerHour - a.arrivalsPerHour);
 }
 
 function nameOf(id: string): string {
@@ -320,8 +549,10 @@ function analyse(s: TrafficSignal): JunctionDetail | null {
       from: link ? { id: link.from, name: nameOf(link.from), metres: link.metres } : undefined,
       direction: arm ? `from the ${arm.from}${arm.fromJunction ? ` (${arm.fromJunction})` : ''}${arm.towards ? `, towards ${arm.towards}` : ''}` : '',
       waitSeconds: Math.round(wait), overLimit: wait > MAX_WAIT_S,
+      feeders: withFlow(feedersBySignal.get(s.id)?.get(a.edgeId) ?? []).filter(f => f.kind !== 'road' || f.arrivalsPerHour > 0).slice(0, 5),
     };
   });
+  const merges = withFlow(mergesBySignal.get(s.id) ?? []).filter(m => m.kind !== 'road' || m.arrivalsPerHour > 0).slice(0, 5);
 
   // Webster: critical flow ratio per group, optimal cycle, greens in proportion
   const groups = [...new Set(s.phases.filter(p => p.color === 'GREEN').map(p => p.group))];
@@ -375,6 +606,17 @@ function analyse(s: TrafficSignal): JunctionDetail | null {
     advice.push(`Green wave: start ${d.to} (${nameOf(d.to)}) green about ${d.seconds} s after this junction's ` +
       `${groupLabel(s, heavy, approaches)} green turns on (${d.metres} m along ${d.road || 'the road'}).`);
   }
+  // Flyover / ramp traffic feeding approaches, and traffic merging just after the junction
+  for (const a of approaches) {
+    for (const f of a.feeders.filter(f => f.kind !== 'road' && f.arrivalsPerHour >= 300)) {
+      advice.push(`${a.road || 'An approach'} includes ~${f.arrivalsPerHour}/h coming off the ${f.road}${f.kind === 'flyover' ? ' (flyover)' : ''}` +
+        `${f.from ? ` from ${f.from}` : ''}, joining ${f.metres} m before the stop line — count it when timing group ${a.group}.`);
+    }
+  }
+  for (const m of merges.filter(m => m.arrivalsPerHour >= 300)) {
+    advice.push(`~${m.arrivalsPerHour}/h from ${m.road}${m.kind === 'flyover' ? ' (flyover)' : m.kind === 'ramp' ? ' (slip road)' : ''}` +
+      `${m.from ? ` (from ${m.from})` : ''} joins ${m.joins} ${m.metres} m after this junction — if that stretch backs up, the exit blocks; hold the green into it short.`);
+  }
   for (const a of approaches.filter(x => x.overLimit)) {
     advice.unshift(`Drivers on ${a.road || 'an approach'} (${a.direction}) wait up to ${Math.round(a.waitSeconds / 60)} min — over the ${MAX_WAIT_S / 60} min limit: ` +
       `give group ${a.group} more green now (Hold ${a.group}) or apply the suggested timing.`);
@@ -400,6 +642,7 @@ function analyse(s: TrafficSignal): JunctionDetail | null {
       saturation: Math.round(Y * 100) / 100, summary,
     },
     advice,
+    merges,
     neighbours: {
       upstream: ups.map(l => ({ id: l.from, name: nameOf(l.from), road: l.road, metres: l.metres, seconds: l.seconds, toGroup: l.toGroup })),
       downstream: (net.downstream.get(s.id) ?? []).map(l => ({ id: l.to, name: nameOf(l.to), road: l.road, metres: l.metres, seconds: l.seconds, fromGroup: l.fromGroup })),
@@ -517,4 +760,31 @@ export function resetJunction(id: string, by: string): string[] {
   if (!engine?.resetSignal(id)) throw new ControlError(`Unknown junction ${id}`, 404);
   record({ by, junction: id, action: 'reset', detail: 'default timing' });
   return [`${id} (${nameOf(id)}): back to default timing`];
+}
+
+/** Labels for one movement through a junction: from which road/direction to which, and the turn. */
+export interface MovementLabel {
+  fromRoad: string;
+  fromDir: string;
+  toRoad: string;
+  toDir: string;
+  turn: 'straight' | 'left' | 'right' | 'U-turn';
+}
+
+export function describeMovement(signalId: string, fromEdge: string, toEdge: string): MovementLabel {
+  const s = net?.signals.get(signalId);
+  const arm = s?.arms?.find(a => a.edgeId === fromEdge);
+  const exit = exitsBySignal.get(signalId)?.find(x => x.edgeId === toEdge);
+  const inE = indexRef?.edges.get(fromEdge), outE = indexRef?.edges.get(toEdge);
+  const approachBearing = s?.approaches.find(a => a.edgeId === fromEdge)?.bearing ?? inE?.bearing ?? 0;
+  const diff = outE ? ((departureBearing(outE) - approachBearing + 540) % 360) - 180 : 0;
+  // India drives on the left: a negative (anticlockwise) turn is a left turn
+  const turnType: MovementLabel['turn'] = Math.abs(diff) < 30 ? 'straight' : Math.abs(diff) > 150 ? 'U-turn' : diff < 0 ? 'left' : 'right';
+  return {
+    fromRoad: arm?.road ?? inE?.name ?? 'Unnamed road',
+    fromDir: arm ? `from the ${arm.from}${arm.fromJunction ? ` (${arm.fromJunction})` : ''}` : `from the ${compass(approachBearing + 180)}`,
+    toRoad: exit?.road ?? outE?.name ?? 'Unnamed road',
+    toDir: exit ? `heading ${exit.heading}${exit.towards ? ` towards ${exit.towards}` : ''}` : '',
+    turn: turnType,
+  };
 }

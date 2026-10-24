@@ -10,7 +10,7 @@
  *   approaches into two groups along the junction's main road (A = main road, B = cross
  *   road); stop lines with only one group are pedestrian crossings.
  */
-import type { RoadNode, RoadEdge, RoadGraph, TrafficSignal, SignalPhase, SignalApproach } from './types.js';
+import type { RoadNode, RoadEdge, RoadGraph, TrafficSignal, SignalPhase, SignalApproach, Place } from './types.js';
 
 // ── Compact OSM snapshot ─────────────────────────────────────────────────────
 
@@ -24,6 +24,9 @@ export interface CompactWay {
   lanes?: string;
   maxspeed?: string;
   junction?: string;
+  /** OSM bridge / layer tags (flyovers) */
+  bridge?: string;
+  layer?: string;
 }
 
 export interface CompactOsm {
@@ -38,6 +41,8 @@ export interface CompactOsm {
   signals: number[];
   /** Names tagged on signal nodes (e.g. "Silk Board Junction"), by OSM id */
   signalNames?: Record<string, string>;
+  /** Neighbourhood names: [name, lat, lng] */
+  places?: [string, number, number][];
 }
 
 // ── Road attributes (Bangalore) ──────────────────────────────────────────────
@@ -453,6 +458,13 @@ function contractPassThrough(nodes: Map<string, RoadNode>, edges: Map<string, Ro
 export interface BuiltNetwork {
   graph: RoadGraph;
   signals: TrafficSignal[];
+  places: Place[];
+}
+
+/** Flyovers: OSM bridges raised a level (or more), and roads named as flyovers / elevated. */
+function isElevated(w: CompactWay): boolean {
+  const layer = parseInt(w.layer ?? '0', 10);
+  return (w.bridge !== undefined && w.bridge !== 'no' && layer >= 1) || /flyover|elevated/i.test(w.name ?? '');
 }
 
 export function buildGraphFromOsm(osm: CompactOsm): BuiltNetwork {
@@ -492,6 +504,7 @@ export function buildGraphFromOsm(osm: CompactOsm): BuiltNetwork {
     if (existing && existing.length <= length) return; // parallel way: keep the shorter
     const g = simplify(geom, 0.00002).map(p => ({ lat: round6(p.lat), lng: round6(p.lng) }));
     edges.set(id, {
+      ...(isElevated(w) ? { elevated: true } : {}),
       id, from, to, name: w.name ?? '', roadType,
       speedLimit: freeFlowSpeed(w, roadType), lanes,
       length: Math.round(length * 10) / 10,
@@ -553,5 +566,6 @@ export function buildGraphFromOsm(osm: CompactOsm): BuiltNetwork {
   return {
     graph: { nodes: [...nodes.values()], edges: [...edges.values()], adjacency: [...out] },
     signals,
+    places: (osm.places ?? []).map(([name, lat, lng]) => ({ name, lat, lng })),
   };
 }

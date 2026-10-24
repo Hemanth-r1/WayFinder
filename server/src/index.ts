@@ -17,6 +17,7 @@ import {
 import {
   initJunctions, listJunctions, getJunction, holdGreen, applyPlan, resetJunction, controlLog, ControlError,
 } from './junctionService.js';
+import { recordMovement, startCounts, junctionMovements, countsCsv } from './countsService.js';
 import { initSimulationEngine, getSimulationEngine } from './simulationEngine.js';
 import { removeUserVehicle, getUserVehiclePosition, markArrived } from './userVehicleService.js';
 import {
@@ -377,6 +378,21 @@ app.post('/api/junctions/:id/reset', requireUser, requireController, (req, res) 
   } catch (err) { sendControlError(res, err); }
 });
 
+/** Turning movements at a junction over the last ?hours=1 (estimated vehicles and people per hour). */
+app.get('/api/junctions/:id/movements', requireUser, requireOperator, (req, res) => {
+  const hours = Math.min(24, Math.max(0.25, Number(req.query.hours) || 1));
+  res.json(junctionMovements(String(req.params.id), hours));
+});
+
+/** 15-minute movement counts as CSV, for traffic studies and urban planning (?hours=24&junction=ID). */
+app.get('/api/counts.csv', requireUser, requireOperator, (req, res) => {
+  const hours = Math.min(24, Math.max(0.25, Number(req.query.hours) || 24));
+  const junction = typeof req.query.junction === 'string' ? req.query.junction : undefined;
+  res.type('text/csv');
+  res.set('Content-Disposition', `attachment; filename="wayfinder-junction-counts-${junction ?? 'all'}.csv"`);
+  res.send(countsCsv(hours, junction));
+});
+
 /** Who changed which signal, newest first. */
 app.get('/api/control/log', requireUser, requireOperator, (_req, res) => {
   res.json({ log: controlLog() });
@@ -405,10 +421,12 @@ async function initializeServer() {
   try {
     const { graph, signals } = await getGraph();
     initReports(getGraphIndex(graph, signals));
-    initJunctions(getGraphIndex(graph, signals), signals);
+    initJunctions(getGraphIndex(graph, signals), signals, (await getGraph()).places);
     getClientGraph().catch(() => {}); // serialise once, now that signals carry their directions
     const engine = initSimulationEngine(graph, signals);
     engine.setArrivalHandler(markArrived);
+    engine.setMovementHandler(recordMovement);
+    startCounts();
     engine.start();
     startWeatherPolling();
     console.log('[WayFinder Server] Simulation engine started');

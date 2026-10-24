@@ -73,6 +73,33 @@ export interface JunctionSummary {
   controlled: boolean;
 }
 
+/** A road feeding a junction approach (or merging just after an exit) with live flow. */
+export interface FeederRoad {
+  edgeId: string;
+  road: string;
+  kind: 'flyover' | 'ramp' | 'road';
+  metres: number;
+  from: string;
+  joins?: string;
+  arrivalsPerHour: number;
+}
+
+/** Vehicles moving from one approach to one exit (turning movement count). */
+export interface MovementRow {
+  fromRoad: string;
+  fromDir: string;
+  toRoad: string;
+  toDir: string;
+  turn: 'straight' | 'left' | 'right' | 'U-turn';
+  vehicles: number;
+  persons: number;
+  vehiclesPerHour: number;
+  personsPerHour: number;
+  realVehicles: number;
+  byType: Record<string, number>;
+  avgWaitSeconds: number;
+}
+
 export interface JunctionApproach {
   edgeId: string;
   road: string;
@@ -89,6 +116,8 @@ export interface JunctionApproach {
   /** Estimated wait for the last vehicle in the queue (s); over 5 min is flagged */
   waitSeconds: number;
   overLimit: boolean;
+  /** Flyovers, ramps and roads feeding this approach before the stop line */
+  feeders: FeederRoad[];
 }
 
 export interface JunctionDetail extends JunctionSummary {
@@ -105,6 +134,8 @@ export interface JunctionDetail extends JunctionSummary {
     summary: string;
   };
   advice: string[];
+  /** Roads joining the exits just after the junction */
+  merges: FeederRoad[];
   neighbours: {
     upstream: { id: string; name: string; road: string; metres: number; seconds: number; toGroup: string }[];
     downstream: { id: string; name: string; road: string; metres: number; seconds: number; fromGroup: string }[];
@@ -384,6 +415,20 @@ class ServerClient {
 
   async resetJunction(id: string): Promise<{ changes: string[] }> {
     return this.post(`/api/junctions/${encodeURIComponent(id)}/reset`, {}, 'Failed to reset signal');
+  }
+
+  /** Turning movements at a junction over the last `hours`. */
+  async junctionMovements(id: string, hours = 1): Promise<{ hours: number; rows: MovementRow[] }> {
+    return this.getJson(`/api/junctions/${encodeURIComponent(id)}/movements?hours=${hours}`, 'Failed to load movements');
+  }
+
+  /** 15-minute movement counts as a CSV file (all junctions, or one). */
+  async countsCsv(hours = 24, junction?: string): Promise<Blob> {
+    const params = new URLSearchParams({ hours: String(hours) });
+    if (junction) params.set('junction', junction);
+    const response = await this.send(`/api/counts.csv?${params}`);
+    if (!response.ok) throw new Error(await errorMessage(response, 'Failed to export counts'));
+    return response.blob();
   }
 
   async controlLog(): Promise<ControlLogEntry[]> {

@@ -5,7 +5,7 @@
  * simulation (hold a green with coordinated neighbours, apply a timing plan, reset).
  */
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
-import { serverClient, type JunctionSummary, type JunctionDetail, type ControlLogEntry } from '../services/serverClient';
+import { serverClient, type JunctionSummary, type JunctionDetail, type ControlLogEntry, type MovementRow } from '../services/serverClient';
 
 interface Props {
   canControl: boolean;
@@ -28,6 +28,31 @@ export default function JunctionPanel({ canControl, selectedId, onSelect, onFocu
   const [coordinate, setCoordinate] = useState(true);
   const [holdSeconds, setHoldSeconds] = useState(60);
   const [log, setLog] = useState<ControlLogEntry[]>([]);
+  const [movements, setMovements] = useState<{ hours: number; rows: MovementRow[] } | null>(null);
+
+  // Turning movements for the open junction (refreshed every 30 s)
+  useEffect(() => {
+    if (!selectedId) { setMovements(null); return; }
+    let alive = true;
+    const load = () => serverClient.junctionMovements(selectedId, 1).then(m => { if (alive) setMovements(m); }).catch(() => {});
+    load();
+    const t = window.setInterval(load, 30000);
+    return () => { alive = false; window.clearInterval(t); };
+  }, [selectedId]);
+
+  const downloadCsv = async (junction?: string) => {
+    try {
+      const blob = await serverClient.countsCsv(24, junction);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `wayfinder-junction-counts-${junction ?? 'all'}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
 
   // Junction list, refreshed every 10 s
   useEffect(() => {
@@ -101,6 +126,7 @@ export default function JunctionPanel({ canControl, selectedId, onSelect, onFocu
             value={query} onChange={e => setQuery(e.target.value)} placeholder="Search by ID or road name"
             style={styles.input}
           />
+          <button onClick={() => downloadCsv()} style={{ ...styles.link, marginBottom: 6 }}>⬇ Download movement counts for all junctions (CSV, 24 h)</button>
           <div style={{ maxHeight: 320, overflowY: 'auto' }}>
             {filtered.slice(0, 80).map(j => (
               <button key={j.id} onClick={() => select(j)} style={styles.row}>
@@ -134,6 +160,11 @@ export default function JunctionPanel({ canControl, selectedId, onSelect, onFocu
               <span style={{ flex: 1, color: '#ddd', minWidth: 0 }}>
                 {a.road || 'Unnamed road'}
                 {a.direction && <span style={{ display: 'block', color: '#888', fontSize: 10 }}>{a.direction}</span>}
+                {a.feeders.filter(f => f.kind !== 'road' || f.arrivalsPerHour >= 100).slice(0, 3).map(f => (
+                  <span key={f.edgeId} style={{ display: 'block', color: f.kind === 'flyover' ? '#CE93D8' : '#777', fontSize: 10 }}>
+                    ↳ {f.kind === 'flyover' ? '🛣 ' : f.kind === 'ramp' ? '↗ ' : ''}{f.road}{f.from ? ` from ${f.from}` : ''} · {f.arrivalsPerHour}/h, joins {f.metres} m before
+                  </span>
+                ))}
                 {a.from && (
                   <button onClick={() => select({ id: a.from!.id })} style={{ ...styles.link, display: 'block', fontSize: 10 }}>
                     from {a.from.name} ({a.from.metres} m)
@@ -158,6 +189,34 @@ export default function JunctionPanel({ canControl, selectedId, onSelect, onFocu
             <>
               <div style={styles.label}>Neighbouring junctions</div>
               {detail.advice.map((a, i) => <div key={i} style={{ fontSize: 11, color: '#bbb', marginBottom: 4 }}>• {a}</div>)}
+            </>
+          )}
+
+          {detail.merges.length > 0 && (
+            <>
+              <div style={styles.label}>Joining just after the junction</div>
+              {detail.merges.map(m => (
+                <div key={m.edgeId} style={{ fontSize: 11, color: m.kind === 'flyover' ? '#CE93D8' : '#aaa', marginBottom: 3 }}>
+                  {m.kind === 'flyover' ? '🛣 ' : m.kind === 'ramp' ? '↗ ' : '• '}{m.road}{m.from ? ` (from ${m.from})` : ''} joins {m.joins} {m.metres} m after · {m.arrivalsPerHour}/h
+                </div>
+              ))}
+            </>
+          )}
+
+          {movements && (
+            <>
+              <div style={styles.label}>Movements · last {movements.hours >= 1 ? `${movements.hours} h` : `${Math.round(movements.hours * 60)} min`} (estimated, per hour)</div>
+              {movements.rows.length === 0 && <div style={{ fontSize: 11, color: '#666' }}>Counting… vehicles are counted as they cross the junction.</div>}
+              {movements.rows.slice(0, 10).map((r, i) => (
+                <div key={i} style={{ display: 'flex', gap: 8, fontSize: 11, padding: '3px 0', borderBottom: '1px solid #1a1a2e' }}>
+                  <span style={{ width: 52, color: '#888' }}>{r.turn === 'straight' ? '↑ straight' : r.turn === 'left' ? '↰ left' : r.turn === 'right' ? '↱ right' : '↶ U-turn'}</span>
+                  <span style={{ flex: 1, color: '#ccc', minWidth: 0 }}>{r.fromRoad} → {r.toRoad}</span>
+                  <span style={{ color: '#ddd', fontFamily: 'monospace', textAlign: 'right' }}>
+                    {r.vehiclesPerHour}/h<br /><span style={{ color: '#777' }}>{r.personsPerHour} people/h</span>
+                  </span>
+                </div>
+              ))}
+              <button onClick={() => downloadCsv(detail.id)} style={{ ...styles.link, marginTop: 6 }}>⬇ Download this junction's counts (CSV, 24 h)</button>
             </>
           )}
 
