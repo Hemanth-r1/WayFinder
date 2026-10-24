@@ -8,7 +8,9 @@ import MapView from './components/MapView';
 import RoleSelector from './components/RoleSelector';
 import UserPanel, { type RecentTrip } from './roles/UserPanel';
 import SupporterPanel from './roles/SupporterPanel';
-import ControllerPanel from './roles/ControllerPanel';
+import JunctionPanel from './roles/JunctionPanel';
+import OfflineCard from './components/OfflineCard';
+import { offlineRoute } from './utils/offlineRoute';
 import NavigationGuide from './components/NavigationGuide';
 import { progressiveLoader, type LoadUpdate, type LoadPhase } from './services/progressiveLoader';
 import { serverClient } from './services/serverClient';
@@ -50,6 +52,16 @@ function AppContent() {
   const [signals, setSignals] = useState<Map<string, TrafficSignal>>(new Map());
   const [vehicles, setVehicles] = useState<Map<string, Vehicle>>(new Map());
   const [traffic, setTraffic] = useState<Map<string, number>>(new Map());
+  const [online, setOnline] = useState(() => navigator.onLine);
+  useEffect(() => {
+    const up = () => setOnline(true), down = () => setOnline(false);
+    window.addEventListener('online', up);
+    window.addEventListener('offline', down);
+    return () => { window.removeEventListener('online', up); window.removeEventListener('offline', down); };
+  }, []);
+  /** Junction open in the police panel, and where the map should move to */
+  const [selectedJunction, setSelectedJunction] = useState<string | null>(null);
+  const [mapFocus, setMapFocus] = useState<{ lat: number; lng: number; zoom: number; key: number } | null>(null);
   const [stats, setStats] = useState<ServerStats>({
     totalVehicles: 0, avgSpeed: 0, avgDelay: 0, congestionHotspots: 0,
     greenWaveActive: false, signalCoordinationScore: 0, throughput: 0, maxCongestion: 0,
@@ -141,6 +153,11 @@ function AppContent() {
     };
   }, [user]);
 
+  const graphRef = useRef(graph);
+  graphRef.current = graph;
+  const signalsRef = useRef(signals);
+  signalsRef.current = signals;
+
   // Route options for the selected origin/destination. The server spreads users across
   // nearby routes, so options are fetched per user rather than computed locally.
   useEffect(() => {
@@ -160,6 +177,16 @@ function AppContent() {
       })
       .catch(err => {
         if (controller.signal.aborted) return;
+        // Server unreachable or failing (offline, proxy 5xx): plan on the device with the saved road network
+        {
+          const local = offlineRoute(graphRef.current, signalsRef.current, selectedSource, selectedDest);
+          if (local) {
+            setRouteOptions([local]);
+            setSelectedRouteIndex(0);
+            setRouteError('Offline route — typical speeds, no live traffic or road reports');
+            return;
+          }
+        }
         setRouteOptions([]);
         setRouteError(err instanceof Error ? err.message : 'Failed to plan route');
       })
@@ -170,8 +197,6 @@ function AppContent() {
   }, [user, selectedSource, selectedDest, navigatedVehicle]);
 
   // ── Choosing places ──────────────────────────────────────────────────────
-  const graphRef = useRef(graph);
-  graphRef.current = graph;
 
   const setSource = useCallback((id: string | null, label?: string) => {
     setSelectedSource(id);
@@ -464,7 +489,7 @@ function AppContent() {
   if (conditions?.weather.condition === 'rain') conditionBadges.push('🌧 Rain');
   if (conditions?.weather.condition === 'heavy_rain') conditionBadges.push('⛈ Heavy rain');
   if (conditions?.trafficLevel === 'heavy') conditionBadges.push('🚗 Heavy traffic');
-  for (const type of ['block', 'waterlogging', 'rain'] as const) {
+  for (const type of ['block', 'tree', 'waterlogging', 'rain'] as const) {
     const ofType = conditions?.reports.filter(r => r.type === type) ?? [];
     const confirmed = ofType.filter(r => r.status === 'confirmed').length;
     const unconfirmed = ofType.length - confirmed;
@@ -544,6 +569,7 @@ function AppContent() {
               onOpenGoogleMaps={handleOpenGoogleMaps}
             />
           )}
+          <OfflineCard online={online} />
           {/* Operators set city-wide conditions and review driver reports */}
           {role !== 'user' && (
             <ConditionsPanel
@@ -559,24 +585,13 @@ function AppContent() {
               signals={signals}
             />
           )}
-          {role === 'controller' && (
-            <ControllerPanel
-              graph={graph}
-              signals={signals}
-              congestionZones={[]}
-              userRoutes={[]}
-              stats={stats}
-              onOverrideSignal={() => {}}
-              onOverrideRoute={() => {}}
-              onCancelOverride={() => {}}
-              onSpawnEmergency={() => {}}
-              onExportStats={() => {}}
-              onExportSignals={() => {}}
-              onRunOptimizer={() => {}}
-              onRefreshRoads={handleRefresh}
-              lastOptResult={null}
-              overrideActive={false}
-              overrideTimeRemaining={0}
+          {/* Police view: junctions by ID; controllers can try changes in the simulation */}
+          {role !== 'user' && (
+            <JunctionPanel
+              canControl={role === 'controller'}
+              selectedId={selectedJunction}
+              onSelect={setSelectedJunction}
+              onFocus={(lat, lng) => setMapFocus({ lat, lng, zoom: 17, key: Date.now() })}
             />
           )}
         </div>
@@ -649,6 +664,8 @@ function AppContent() {
           canRemoveReports={role !== 'user'}
           followVehicleId={simpleView && navigatedVehicle ? `user_${user.uid}` : undefined}
           traffic={traffic}
+          focus={mapFocus}
+          onSelectJunction={setSelectedJunction}
           onViewportChange={(bbox, zoom) => serverClient.setViewport(bbox, zoom)}
         />
       </div>

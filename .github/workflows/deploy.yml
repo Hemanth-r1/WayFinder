@@ -42,6 +42,11 @@ jobs:
           source: server/
           env_vars: >
             GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }}
+          # The city simulation lives in memory and runs all the time: exactly one
+          # instance, CPU always on, room for the full Bangalore road network.
+          flags: >-
+            --memory=2Gi --cpu=2 --min-instances=1 --max-instances=1
+            --no-cpu-throttling --timeout=3600
 
       - name: Show server URL
         if: github.ref == 'refs/heads/main'

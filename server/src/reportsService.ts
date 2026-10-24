@@ -8,7 +8,11 @@
  */
 import type { GraphIndex } from './pathfindingService.js';
 
-export type ReportType = 'block' | 'waterlogging' | 'rain';
+/** 'tree' = fallen tree: a partial block (fully blocks single-lane roads once confirmed) */
+export type ReportType = 'block' | 'tree' | 'waterlogging' | 'rain';
+
+/** Report types tied to one road segment (both directions) rather than an area. */
+export const SEGMENT_TYPES: ReadonlySet<ReportType> = new Set(['block', 'tree']);
 export type ReportStatus = 'unconfirmed' | 'confirmed';
 export type Vote = 'confirm' | 'clear';
 
@@ -72,6 +76,10 @@ const RULES: Record<ReportType, TypeRules> = {
     radius: 0, mergeWithin: 80, unconfirmedTtl: 45 * MIN, confirmedTtl: 120 * MIN,
     unconfirmedTimeFactor: 3, confirmedTimeFactor: Infinity, stuckBelowKmh: 5, passingAboveKmh: 15,
   },
+  tree: {
+    radius: 0, mergeWithin: 80, unconfirmedTtl: 60 * MIN, confirmedTtl: 240 * MIN,
+    unconfirmedTimeFactor: 2, confirmedTimeFactor: 5, stuckBelowKmh: 5, passingAboveKmh: 20,
+  },
   waterlogging: {
     radius: 150, mergeWithin: 120, unconfirmedTtl: 45 * MIN, confirmedTtl: 90 * MIN,
     unconfirmedTimeFactor: 1.6, confirmedTimeFactor: 3, stuckBelowKmh: 8, passingAboveKmh: 25,
@@ -125,9 +133,12 @@ function rebuildEffects(): void {
   const next = new Map<string, { blocked: boolean; timeFactor: number; speedFactor: number }>();
   for (const r of reports.values()) {
     const rules = RULES[r.type];
-    const factor = r.status === 'confirmed' ? rules.confirmedTimeFactor : rules.unconfirmedTimeFactor;
+    const baseFactor = r.status === 'confirmed' ? rules.confirmedTimeFactor : rules.unconfirmedTimeFactor;
     for (const id of r.edgeIds) {
       const cur = next.get(id) ?? { blocked: false, timeFactor: 1, speedFactor: 1 };
+      // A confirmed fallen tree closes a single-lane road; wider roads squeeze past it
+      const singleLane = (index?.edges.get(id)?.lanes ?? 1) <= 1;
+      const factor = r.type === 'tree' && r.status === 'confirmed' && singleLane ? Infinity : baseFactor;
       if (factor === Infinity) cur.blocked = true;
       else cur.timeFactor = Math.min(10, cur.timeFactor * factor);
       // Simulated traffic slows for weather; it can't know about unconfirmed blocks
@@ -225,7 +236,7 @@ export function createReport(input: NewReport): { report: PublicReport; merged: 
   const rules = RULES[input.type];
   const at = input.segment ?? { lat: input.lat, lng: input.lng };
   const existing = [...reports.values()].find(r => r.type === input.type && (
-    input.type === 'block'
+    SEGMENT_TYPES.has(input.type)
       ? r.edgeIds.some(id => input.segment?.edgeIds.includes(id))
       : metres(r, at) <= rules.mergeWithin));
   if (existing) {
@@ -312,7 +323,7 @@ export function observeDriver(uid: string, lat: number, lng: number, speedKmh: n
     }
 
     if (rules.stuckBelowKmh !== null && r.status === 'unconfirmed') {
-      const near = r.type === 'block' ? metres(r, { lat, lng }) <= STUCK_NEAR_BLOCK_M : onAffectedRoad;
+      const near = SEGMENT_TYPES.has(r.type) ? metres(r, { lat, lng }) <= STUCK_NEAR_BLOCK_M : onAffectedRoad;
       if (near && speedKmh < rules.stuckBelowKmh) {
         const since = r.stuckSince.get(uid) ?? now;
         r.stuckSince.set(uid, since);

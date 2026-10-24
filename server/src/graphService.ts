@@ -24,16 +24,24 @@ export async function getGraph(): Promise<GraphState> {
   return loading;
 }
 
+/** Residential lanes stay on the server (routing, simulation); the base map draws them. */
+const SERVER_ONLY_TYPES = new Set(['residential', 'living_street']);
+
 /**
- * Graph for browsers, serialised once. Two-way roads send their shape only on one
- * direction (`geometry: null` on the other — the client reverses it); adjacency is
- * rebuilt from the edges. Signals carry static timing; live phases come with updates.
+ * Graph for browsers, serialised once: every road except residential lanes (those would
+ * make it ~14 MB). Two-way roads send their shape only on one direction (`geometry:
+ * null` on the other — the client reverses it); adjacency is rebuilt from the edges.
+ * Signals carry static timing and their position; live phases come with updates.
  */
 export async function getClientGraph(): Promise<{ json: string; gzip: Buffer }> {
   if (clientGraph) return clientGraph;
   const { graph, signals, source, version } = await getGraph();
   const sent = new Set<string>();
-  const edges = graph.edges.map(e => {
+  const kept = graph.edges.filter(e => !SERVER_ONLY_TYPES.has(e.roadType));
+  const used = new Set<string>();
+  for (const e of kept) { used.add(e.from); used.add(e.to); }
+  const nodeById = new Map(graph.nodes.map(n => [n.id, n]));
+  const edges = kept.map(e => {
     const reverseSent = sent.has(`${e.to}-${e.from}`);
     sent.add(e.id);
     return [e.id, e.from, e.to, e.name, e.roadType, e.speedLimit, e.lanes, Math.round(e.length), e.bearing,
@@ -41,9 +49,12 @@ export async function getClientGraph(): Promise<{ json: string; gzip: Buffer }> 
   });
   const json = JSON.stringify({
     format: 2,
-    nodes: graph.nodes.map(n => [n.id, n.lat, n.lng]),
+    nodes: graph.nodes.filter(n => used.has(n.id)).map(n => [n.id, n.lat, n.lng]),
     edges,
-    signals: signals.map(({ approaches: _a, ...s }) => s),
+    signals: signals.map(({ approaches: _a, ...s }) => {
+      const n = nodeById.get(s.nodeId);
+      return { ...s, lat: n?.lat, lng: n?.lng };
+    }),
     source, version,
   });
   clientGraph = { json, gzip: gzipSync(json, { level: 6 }) };

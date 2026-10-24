@@ -22,7 +22,8 @@ const OVERPASS_MIRRORS = [
   'https://overpass.private.coffee/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
 ];
-const ROAD_FILTER = '^(motorway|trunk|primary|secondary|tertiary)(_link)?$';
+/** Every road a car, auto or bike can drive on (residential included) */
+const ROAD_FILTER = '^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street)(_link)?$';
 
 interface OverpassElement {
   type: string; id: number; lat?: number; lon?: number;
@@ -33,11 +34,16 @@ interface OverpassElement {
 export function compactFromOverpass(elements: OverpassElement[], source: string, bbox = BANGALORE_BBOX): CompactOsm {
   const nodes = new Map<number, [number, number, number]>();
   const signals = new Set<number>();
+  const signalNames: Record<string, string> = {};
   const ways = new Map<number, CompactWay>();
   for (const el of elements) {
     if (el.type === 'node' && el.lat !== undefined && el.lon !== undefined) {
       nodes.set(el.id, [el.id, el.lat, el.lon]);
-      if (el.tags?.highway === 'traffic_signals') signals.add(el.id);
+      if (el.tags?.highway === 'traffic_signals') {
+        signals.add(el.id);
+        const name = el.tags['name:en'] || el.tags.name;
+        if (name) signalNames[String(el.id)] = name;
+      }
     } else if (el.type === 'way' && el.nodes && el.tags?.highway) {
       const t = el.tags;
       const w: CompactWay = { id: el.id, nodes: el.nodes, hw: t.highway };
@@ -57,11 +63,12 @@ export function compactFromOverpass(elements: OverpassElement[], source: string,
     nodes: [...nodes.values()].filter(([id]) => onRoad.has(id)),
     ways: [...ways.values()],
     signals: [...signals].filter(id => onRoad.has(id)),
+    signalNames,
   };
 }
 
 async function fetchTile(bbox: string, timeoutMs: number): Promise<OverpassElement[]> {
-  const query = `[out:json][timeout:300];(way["highway"~"${ROAD_FILTER}"](${bbox});)->.w;` +
+  const query = `[out:json][timeout:300];(way["highway"~"${ROAD_FILTER}"]["access"!~"^(private|no)$"](${bbox});)->.w;` +
     `node["highway"="traffic_signals"](${bbox})->.s;(.w;.s;);out body;.w >;out skel qt;`;
   let lastErr: unknown;
   for (const url of OVERPASS_MIRRORS) {
@@ -87,12 +94,12 @@ async function fetchTile(bbox: string, timeoutMs: number): Promise<OverpassEleme
 
 /** Downloads Bangalore's main roads and signals from Overpass in a 2×2 grid of tiles. */
 export async function fetchBangaloreFromOverpass(timeoutMs = 120_000): Promise<CompactOsm> {
+  // 4×4 tiles: with residential streets a quarter of the city is too much for one query
   const [s, w, n, e] = BANGALORE_BBOX;
-  const midLat = (s + n) / 2, midLng = (w + e) / 2;
-  const tiles = [
-    [s, w, midLat, midLng], [s, midLng, midLat, e],
-    [midLat, w, n, midLng], [midLat, midLng, n, e],
-  ];
+  const tiles: number[][] = [];
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) {
+    tiles.push([s + (n - s) * r / 4, w + (e - w) * c / 4, s + (n - s) * (r + 1) / 4, w + (e - w) * (c + 1) / 4]);
+  }
   const elements: OverpassElement[] = [];
   for (const t of tiles) {
     const els = await fetchTile(t.join(','), timeoutMs);

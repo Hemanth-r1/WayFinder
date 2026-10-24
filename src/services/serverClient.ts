@@ -58,7 +58,66 @@ export type TrafficLevel = 'light' | 'normal' | 'heavy';
 export type TrafficMode = 'auto' | TrafficLevel;
 export type DriveMode = 'gps' | 'simulated';
 
-export type ReportType = 'block' | 'waterlogging' | 'rain';
+export type ReportType = 'block' | 'tree' | 'waterlogging' | 'rain';
+
+/** A signalised junction in the police list. */
+export interface JunctionSummary {
+  id: string;
+  name: string;
+  lat: number;
+  lng: number;
+  status: 'ok' | 'busy' | 'critical';
+  score: number;
+  queueVehicles: number;
+  cycle: number;
+  controlled: boolean;
+}
+
+export interface JunctionApproach {
+  edgeId: string;
+  road: string;
+  group: string;
+  bearing: number;
+  lanes: number;
+  light: 'RED' | 'YELLOW' | 'GREEN';
+  queueVehicles: number;
+  queueMetres: number;
+  arrivalsPerHour: number;
+  from?: { id: string; name: string; metres: number };
+}
+
+export interface JunctionDetail extends JunctionSummary {
+  axis: number;
+  phase: { index: number; group: string; color: string; timer: number; duration: number };
+  phases: { group: string; color: string; duration: number }[];
+  greens: Record<string, number>;
+  approaches: JunctionApproach[];
+  recommendation: {
+    cycle: number;
+    greens: Record<string, number>;
+    flowRatio: Record<string, number>;
+    saturation: number;
+    summary: string;
+  };
+  advice: string[];
+  neighbours: {
+    upstream: { id: string; name: string; road: string; metres: number; seconds: number; toGroup: string }[];
+    downstream: { id: string; name: string; road: string; metres: number; seconds: number; fromGroup: string }[];
+  };
+  control: {
+    hold?: { group: string; from: number; until: number; by: string };
+    plan?: { greens: Record<string, number>; by: string; at: number };
+    scale?: { group: string; factor: number; until: number; by: string };
+  } | null;
+}
+
+export interface ControlLogEntry {
+  at: number;
+  by: string;
+  junction: string;
+  action: string;
+  detail: string;
+}
 export type ReportVote = 'confirm' | 'clear';
 
 /** Crowd report of a road block, waterlogging or local heavy rain. */
@@ -288,6 +347,40 @@ class ServerClient {
   async removeReport(id: string): Promise<void> {
     const response = await this.send(`/api/reports/${encodeURIComponent(id)}`, { method: 'DELETE' });
     if (!response.ok) throw new Error(await errorMessage(response, 'Failed to remove report'));
+  }
+
+  // ── Junctions (police view and signal control) ───────────────────────────────
+
+  private async getJson<T>(path: string, failure: string): Promise<T> {
+    const response = await this.send(path);
+    if (!response.ok) throw new Error(await errorMessage(response, failure));
+    return response.json();
+  }
+
+  async listJunctions(): Promise<JunctionSummary[]> {
+    return (await this.getJson<{ junctions: JunctionSummary[] }>('/api/junctions', 'Failed to load junctions')).junctions;
+  }
+
+  async getJunction(id: string): Promise<JunctionDetail> {
+    return this.getJson(`/api/junctions/${encodeURIComponent(id)}`, 'Failed to load junction');
+  }
+
+  /** Controllers: keep a group green; with coordinate, neighbours open a green wave / hold traffic back. */
+  async holdJunction(id: string, group: string, seconds: number, coordinate: boolean): Promise<{ changes: string[] }> {
+    return this.post(`/api/junctions/${encodeURIComponent(id)}/hold`, { group, seconds, coordinate }, 'Failed to hold signal');
+  }
+
+  async planJunction(id: string, plan: Record<string, number> | 'recommended'): Promise<{ changes: string[] }> {
+    const body = plan === 'recommended' ? { recommended: true } : { greens: plan };
+    return this.post(`/api/junctions/${encodeURIComponent(id)}/plan`, body, 'Failed to set timing');
+  }
+
+  async resetJunction(id: string): Promise<{ changes: string[] }> {
+    return this.post(`/api/junctions/${encodeURIComponent(id)}/reset`, {}, 'Failed to reset signal');
+  }
+
+  async controlLog(): Promise<ControlLogEntry[]> {
+    return (await this.getJson<{ log: ControlLogEntry[] }>('/api/control/log', 'Failed to load log')).log;
   }
 
   private async post<T>(path: string, body: unknown, failure: string): Promise<T> {

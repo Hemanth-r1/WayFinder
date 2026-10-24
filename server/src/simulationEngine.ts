@@ -50,6 +50,30 @@ export interface NavigationProgress {
 /** [west, south, east, north] */
 export type BBox = [number, number, number, number];
 
+/** What a controller (or the coordination engine) has done to a signal. */
+export interface SignalControlState {
+  /** Hold this group's green from `from` until `until` (ms timestamps) */
+  hold?: { group: string; from: number; until: number; by: string };
+  /** Timing plan replacing the default greens, per group (s) */
+  plan?: { greens: Record<string, number>; by: string; at: number };
+  /** Temporary green scaling for a group (gating upstream traffic) */
+  scale?: { group: string; factor: number; until: number; by: string };
+}
+
+/** Live numbers for one approach road of a junction. */
+export interface ApproachStats {
+  /** Stopped vehicles in real-vehicle equivalents */
+  queueVehicles: number;
+  /** Metres from the stop line back to the last stopped vehicle */
+  queueMetres: number;
+  /** Arrivals in real vehicles per hour (smoothed) */
+  arrivalsPerHour: number;
+}
+
+/** Seconds between arrival-rate updates, and the smoothing weight of each update. */
+const RATE_WINDOW_S = 30;
+const RATE_ALPHA = 0.3;
+
 // ── Tuning ───────────────────────────────────────────────────────────────────
 
 /** Simulated vehicles on the network at peak hour (scaled by demand). */
@@ -111,18 +135,28 @@ interface VehicleKind {
   keepLeft: number;
   /** Lowest road rank it spawns on (buses keep to bus routes, trucks to highways) */
   minRank: number;
+  /** Share of drivers who jump a red light that has just turned */
+  redJump: number;
+  /** Chance of taking a short wrong-way stretch against a one-way at a junction */
+  wrongWay: number;
+  /** Kerbside stop for passengers about every this many metres (buses, autos) */
+  stopEvery?: number;
+  /** Seconds stopped [min, max] */
+  dwell?: [number, number];
+  /** Sideways drift within the lane, in lanes (two-wheelers straddle lanes) */
+  weave: number;
 }
 
 /** Bangalore traffic mix (two-wheelers dominate). */
 const KINDS: VehicleKind[] = [
-  { type: 'bike', color: '#FFB300', share: 0.46, length: 2, pcu: 0.5, speedFactor: 1.0, T: 0.8, s0: 1, a: 2.0, b: 3.0, politeness: 0, lcThreshold: 0.1, keepLeft: 0, minRank: 0 },
-  { type: 'hatchback', color: '#42A5F5', share: 0.14, length: 3.8, pcu: 1, speedFactor: 0.95, T: 1.2, s0: 2, a: 1.5, b: 2.5, politeness: 0.2, lcThreshold: 0.2, keepLeft: 0.05, minRank: 0 },
-  { type: 'sedan', color: '#1E88E5', share: 0.09, length: 4.5, pcu: 1, speedFactor: 0.95, T: 1.2, s0: 2, a: 1.5, b: 2.5, politeness: 0.2, lcThreshold: 0.2, keepLeft: 0.05, minRank: 0 },
-  { type: 'suv', color: '#26A69A', share: 0.07, length: 4.8, pcu: 1.2, speedFactor: 0.95, T: 1.3, s0: 2, a: 1.4, b: 2.5, politeness: 0.2, lcThreshold: 0.2, keepLeft: 0.05, minRank: 0 },
-  { type: 'auto', color: '#8BC34A', share: 0.12, length: 2.8, pcu: 0.8, speedFactor: 0.75, T: 1.0, s0: 1.2, a: 1.2, b: 2.5, politeness: 0.1, lcThreshold: 0.15, keepLeft: 0.15, minRank: 0 },
-  { type: 'bus', color: '#EF5350', share: 0.05, length: 12, pcu: 3, speedFactor: 0.75, T: 1.6, s0: 2.5, a: 0.8, b: 2.0, politeness: 0.3, lcThreshold: 0.3, keepLeft: 0.3, minRank: 3 },
-  { type: 'truck', color: '#8D6E63', share: 0.02, length: 9, pcu: 2.5, speedFactor: 0.7, T: 1.8, s0: 2.5, a: 0.7, b: 2.0, politeness: 0.3, lcThreshold: 0.3, keepLeft: 0.3, minRank: 4 },
-  { type: 'van', color: '#7E57C2', share: 0.05, length: 5, pcu: 1.4, speedFactor: 0.85, T: 1.3, s0: 2, a: 1.2, b: 2.5, politeness: 0.2, lcThreshold: 0.2, keepLeft: 0.1, minRank: 0 },
+  { type: 'bike', color: '#FFB300', share: 0.46, length: 2, pcu: 0.5, speedFactor: 1.0, T: 0.8, s0: 1, a: 2.0, b: 3.0, politeness: 0, lcThreshold: 0.1, keepLeft: 0, minRank: 0, redJump: 0.12, wrongWay: 0.04, weave: 0.7 },
+  { type: 'hatchback', color: '#42A5F5', share: 0.14, length: 3.8, pcu: 1, speedFactor: 0.95, T: 1.2, s0: 2, a: 1.5, b: 2.5, politeness: 0.2, lcThreshold: 0.2, keepLeft: 0.05, minRank: 0, redJump: 0.03, wrongWay: 0.002, weave: 0.1 },
+  { type: 'sedan', color: '#1E88E5', share: 0.09, length: 4.5, pcu: 1, speedFactor: 0.95, T: 1.2, s0: 2, a: 1.5, b: 2.5, politeness: 0.2, lcThreshold: 0.2, keepLeft: 0.05, minRank: 0, redJump: 0.03, wrongWay: 0.002, weave: 0.1 },
+  { type: 'suv', color: '#26A69A', share: 0.07, length: 4.8, pcu: 1.2, speedFactor: 0.95, T: 1.3, s0: 2, a: 1.4, b: 2.5, politeness: 0.2, lcThreshold: 0.2, keepLeft: 0.05, minRank: 0, redJump: 0.03, wrongWay: 0.002, weave: 0.1 },
+  { type: 'auto', color: '#8BC34A', share: 0.12, length: 2.8, pcu: 0.8, speedFactor: 0.75, T: 1.0, s0: 1.2, a: 1.2, b: 2.5, politeness: 0.1, lcThreshold: 0.15, keepLeft: 0.15, minRank: 0, redJump: 0.08, wrongWay: 0.02, stopEvery: 2500, dwell: [5, 15], weave: 0.3 },
+  { type: 'bus', color: '#EF5350', share: 0.05, length: 12, pcu: 3, speedFactor: 0.75, T: 1.6, s0: 2.5, a: 0.8, b: 2.0, politeness: 0.3, lcThreshold: 0.3, keepLeft: 0.3, minRank: 3, redJump: 0.02, wrongWay: 0, stopEvery: 700, dwell: [15, 35], weave: 0.05 },
+  { type: 'truck', color: '#8D6E63', share: 0.02, length: 9, pcu: 2.5, speedFactor: 0.7, T: 1.8, s0: 2.5, a: 0.7, b: 2.0, politeness: 0.3, lcThreshold: 0.3, keepLeft: 0.3, minRank: 4, redJump: 0.01, wrongWay: 0, weave: 0.05 },
+  { type: 'van', color: '#7E57C2', share: 0.05, length: 5, pcu: 1.4, speedFactor: 0.85, T: 1.3, s0: 2, a: 1.2, b: 2.5, politeness: 0.2, lcThreshold: 0.2, keepLeft: 0.1, minRank: 0, redJump: 0.04, wrongWay: 0.005, weave: 0.1 },
 ];
 
 /**
@@ -174,10 +208,10 @@ function accModel(k: VehicleKind, v: number, v0: number, s: number, vLead: numbe
 const USER_KIND: VehicleKind = { ...KINDS[2], type: 'sedan', color: '#4488FF' };
 
 const ROAD_RANK: Record<string, number> = {
-  motorway: 5, trunk: 5, primary: 4, secondary: 3, tertiary: 2, link: 1, residential: 1,
+  motorway: 5, trunk: 5, primary: 4, secondary: 3, tertiary: 2, link: 1, unclassified: 1, residential: 0, living_street: 0,
 };
 /** Traffic concentrates on arterials: spawn and turn weight per road rank. */
-const RANK_WEIGHT = [0.5, 1, 1.5, 3, 5, 6];
+const RANK_WEIGHT = [0.25, 1, 1.5, 3, 5, 6];
 
 interface SimVehicle {
   pub: Vehicle;
@@ -215,6 +249,19 @@ interface SimVehicle {
   gps?: { at: number; lat: number; lng: number };
   /** Simulated vehicle that keeps to real users' routes */
   corridor?: boolean;
+  /** Jumps reds that have just turned */
+  violator: boolean;
+  /** Fixed sideways offset within the lane (lanes) */
+  weave: number;
+  /** Metres driven */
+  odo: number;
+  /** Odometer reading of the next kerbside stop (buses, autos) */
+  nextStopAt: number;
+  /** Progress on the current edge where it is stopping at the kerb, and seconds left */
+  stopAt: number | null;
+  dwellLeft: number;
+  /** Seconds the 'ran a red' flag stays on */
+  violationTimer: number;
 }
 
 const rankOf = (e: RoadEdge) => ROAD_RANK[e.roadType] ?? 1;
@@ -256,10 +303,25 @@ class SimulationEngine {
   /** Per-step lookups: vehicles per edge and lane (front first) and the rear-most per edge */
   private lanesByEdge: (SimVehicle[][] | undefined)[] = [];
   private rearmost: (SimVehicle | undefined)[] = [];
+  /** Edge indexes filled in the lane tables this step */
+  private usedEdges: number[] = [];
   /** Desired speed per edge before the vehicle's own factor, cached for one step */
   private v0Val: Float64Array;
   private v0Tick: Int32Array;
   private occTimer = 0;
+  /** Vehicles entering each edge (PCU) since the last rate update, and the smoothed rate (PCU/h) */
+  private entryPcu = new Float64Array(0);
+  private arrivalRate = new Float64Array(0);
+  private rateTimer = 0;
+  /** Controller actions and coordination per signal id */
+  private control = new Map<string, SignalControlState>();
+  /** Default phase durations per signal id, restored on reset */
+  private basePhases = new Map<string, number[]>();
+  /** Wrong-way copies of one-way roads: contra id → real edge id, and by start node */
+  private contraBase = new Map<string, string>();
+  private contraFrom = new Map<string, RoadEdge[]>();
+  /** When red lights were jumped (last 5 min) */
+  private redJumpTimes: number[] = [];
   /** Weather speed factor, read once per step */
   private weatherSpeed = 1;
   private tick = 0;
@@ -289,8 +351,25 @@ class SimulationEngine {
 
     for (const e of graph.edges) if (this.index.edges.has(`${e.to}-${e.from}`)) this.twoWay.add(e.id);
     graph.edges.forEach((e, i) => { e.ix = i; });
-    this.v0Val = new Float64Array(graph.edges.length);
-    this.v0Tick = new Int32Array(graph.edges.length).fill(-1);
+    // Wrong-way stretches: a reversed copy of every one-way road, used only by wrong-way riders
+    let cix = graph.edges.length;
+    for (const e of graph.edges) {
+      if (this.twoWay.has(e.id)) continue;
+      const contra: RoadEdge = {
+        ...e, id: `${e.id}~wrong`, from: e.to, to: e.from,
+        bearing: (e.bearing + 180) % 360, geometry: [...e.geometry].reverse(),
+        speedLimit: Math.round(e.speedLimit * 0.6), ix: cix++,
+      };
+      this.contraBase.set(contra.id, e.id);
+      (this.contraFrom.get(contra.from) ?? this.contraFrom.set(contra.from, []).get(contra.from)!).push(contra);
+    }
+    this.v0Val = new Float64Array(cix);
+    this.v0Tick = new Int32Array(cix).fill(-1);
+    this.entryPcu = new Float64Array(cix);
+    this.arrivalRate = new Float64Array(cix);
+    this.lanesByEdge = new Array(cix);
+    this.rearmost = new Array(cix);
+    for (const s of signals) this.basePhases.set(s.id, s.phases.map(p => p.duration));
     let acc = 0, accMajor = 0;
     for (const e of graph.edges) {
       const w = e.length * (RANK_WEIGHT[rankOf(e)] ?? 1) * e.lanes * coreWeight(e);
@@ -359,16 +438,29 @@ class SimulationEngine {
       this.rebuildOccupancy(this.occTimer);
       this.occTimer = 0;
     }
+    // Arrivals per edge, as real vehicles per hour, smoothed over a few minutes
+    this.rateTimer += dt;
+    if (this.rateTimer >= RATE_WINDOW_S) {
+      const k = 3600 / this.rateTimer * DEMAND_SCALE;
+      for (let i = 0; i < this.entryPcu.length; i++) {
+        this.arrivalRate[i] += RATE_ALPHA * (this.entryPcu[i] * k - this.arrivalRate[i]);
+        this.entryPcu[i] = 0;
+      }
+      this.rateTimer = 0;
+    }
     // Vehicles per edge and lane, front-most first; and the rear-most vehicle per edge
-    const lanesByEdge: (SimVehicle[][] | undefined)[] = new Array(this.v0Val.length);
+    // Reuse the per-edge tables: clear only the edges used last step
+    const lanesByEdge = this.lanesByEdge;
+    const rearmost = this.rearmost;
+    for (const ix of this.usedEdges) { lanesByEdge[ix] = undefined; rearmost[ix] = undefined; }
     const used: number[] = [];
+    this.usedEdges = used;
     for (const sv of this.sim.values()) {
       const ix = sv.edge.ix!;
       let lanes = lanesByEdge[ix];
       if (!lanes) { lanes = []; lanesByEdge[ix] = lanes; used.push(ix); }
       (lanes[sv.lane] ??= []).push(sv);
     }
-    const rearmost: (SimVehicle | undefined)[] = new Array(this.v0Val.length);
     for (const ix of used) {
       let rear: SimVehicle | undefined;
       for (const list of lanesByEdge[ix]!) {
@@ -380,8 +472,6 @@ class SimulationEngine {
       }
       rearmost[ix] = rear;
     }
-    this.lanesByEdge = lanesByEdge;
-    this.rearmost = rearmost;
 
     for (const [id, sv] of this.sim) {
       if (sv.gps) continue; // real drivers move with their GPS updates
@@ -408,7 +498,10 @@ class SimulationEngine {
     const instant = new Map<string, number>();
     for (const sv of this.sim.values()) {
       const load = sv.userId ? 1 : sv.kind.pcu * DEMAND_SCALE;
-      instant.set(sv.edge.id, (instant.get(sv.edge.id) ?? 0) + load);
+      // A wrong-way rider gets in the way of the road's real traffic (counted double)
+      const base = this.contraBase.get(sv.edge.id);
+      const id = base ?? sv.edge.id;
+      instant.set(id, (instant.get(id) ?? 0) + (base ? load * 2 : load));
     }
     const a = Math.min(1, dt / LOAD_SMOOTHING_S);
     for (const [id, prev] of this.occupancy) {
@@ -490,20 +583,30 @@ class SimulationEngine {
     this.spawnBuckets.add(bucket);
 
     this.vehicleCounter++;
+    // Driver temperament (~N(1, 0.15)): aggressive drivers keep shorter gaps, pick up faster, care less
+    const aggr = Math.min(1.45, Math.max(0.6, 1 + (Math.random() + Math.random() + Math.random() - 1.5) * 0.3));
+    const driver: VehicleKind = {
+      ...kind, T: kind.T / aggr, s0: kind.s0 / aggr, a: kind.a * aggr, politeness: kind.politeness / aggr,
+    };
     const sv: SimVehicle = {
       pub: {
         id: `v${this.vehicleCounter}`, lat: 0, lng: 0, speed: 0, bearing: edge.bearing,
         type: kind.type, color: kind.color, isNavigated: false,
       },
-      kind, edge, progress, lane, latPos: lane,
+      kind: driver, edge, progress, lane, latPos: lane,
       lcTimer: Math.random() * LANE_CHANGE_INTERVAL, idx: -1, seg: 1,
       v: 0, acc: 0,
-      speedFactor: kind.speedFactor * (0.85 + Math.random() * 0.25),
+      speedFactor: kind.speedFactor * (0.85 + Math.random() * 0.25) * Math.sqrt(aggr),
       next: null,
       ttl: LIFETIME.min + Math.random() * (LIFETIME.max - LIFETIME.min),
       stuck: 0, atRed: false,
       routeIndex: 0,
       corridor,
+      violator: Math.random() < kind.redJump * aggr,
+      weave: (Math.random() - 0.5) * kind.weave,
+      odo: 0,
+      nextStopAt: kind.stopEvery ? Math.random() * kind.stopEvery : Infinity,
+      stopAt: null, dwellLeft: 0, violationTimer: 0,
     };
     sv.v = this.cruiseSpeed(sv) * (0.4 + Math.random() * 0.4);
     sv.next = this.chooseNext(sv);
@@ -594,15 +697,26 @@ class SimulationEngine {
     // Navigated vehicles wait before a road block on their route until rerouted; dead ends stop
     if ((sv.route && sv.next && isEdgeBlocked(sv.next.id)) || (!sv.next && !sv.route)) return Math.max(0, toLine);
     const isLastEdge = sv.route !== undefined && sv.routeIndex >= sv.route.length - 1;
-    const control = isLastEdge ? null : signalControl(this.index.signalByNode, edge);
+    // Wrong-way riders don't stop for lights meant for the other direction
+    const control = isLastEdge || this.contraBase.has(edge.id) ? null : signalControl(this.index.signalByNode, edge);
     if (!control) return Infinity;
     const state = approachState(control.signal, control.group);
     // Go through yellow only when too close to stop comfortably
     const canStop = toLine > (sv.v * sv.v) / (2 * sv.kind.b);
     if (state === 'RED' || (state === 'YELLOW' && canStop)) {
       if (toLine < -0.5) return Infinity; // already over the line
+      // Red-light jumpers go if the red is only seconds old and they're close and moving
+      if (sv.violator && state === 'RED' && toLine < 25 && sv.v > 2) {
+        const phase = control.signal.phases[control.signal.currentPhaseIndex];
+        if (phase.group === 'ALL' || control.signal.timer < 4) {
+          if (sv.violationTimer <= 0) this.redJumpTimes.push(Date.now());
+          sv.violationTimer = 6;
+          return Infinity;
+        }
+      }
       sv.atRed = toLine < 80;
-      return Math.max(0, toLine);
+      // Two-wheelers creep right up to the junction
+      return Math.max(0, sv.kind.type === 'bike' ? toLine + 0.8 : toLine);
     }
     return Infinity;
   }
@@ -685,7 +799,28 @@ class SimulationEngine {
     const v0 = this.cruiseSpeed(sv);
     const lead = this.leaderIn(sv, sv.lane);
     const stop = this.stopLineGap(sv);
-    sv.acc = Math.min(accModel(k, sv.v, v0, lead.s, lead.vLead, lead.aLead), idm(k, sv.v, v0, stop, 0));
+    // Buses and autos pull over at the kerb (left lane) for passengers
+    if (k.stopEvery && sv.stopAt === null && sv.odo >= sv.nextStopAt && sv.lane === 0 &&
+        rankOf(sv.edge) >= 2 && sv.edge.length - sv.progress > 40) {
+      sv.stopAt = sv.progress + 15;
+      sv.dwellLeft = k.dwell![0] + Math.random() * (k.dwell![1] - k.dwell![0]);
+    }
+    let stopGap = stop;
+    if (sv.stopAt !== null) {
+      const toStop = sv.stopAt - sv.progress;
+      stopGap = Math.min(stopGap, Math.max(0, toStop));
+      if (toStop < k.s0 + 1.5 && sv.v < 0.5) { // IDM keeps s0 back from the stop point
+        sv.dwellLeft -= dt;
+        if (sv.dwellLeft <= 0) {
+          sv.stopAt = null;
+          sv.nextStopAt = sv.odo + k.stopEvery! * (0.7 + Math.random() * 0.6);
+          stopGap = stop;
+        }
+      }
+    }
+    sv.violationTimer = Math.max(0, sv.violationTimer - dt);
+    sv.pub.violation = sv.violationTimer > 0 || undefined;
+    sv.acc = Math.min(accModel(k, sv.v, v0, lead.s, lead.vLead, lead.aLead), idm(k, sv.v, v0, stopGap, 0));
     if (sv.v > 1 && dt > 0) sv.acc += Math.sqrt(ACC_NOISE / dt) * (Math.random() - 0.5);
 
     // Ballistic update (no reversing): stop exactly when braking to zero within the step
@@ -703,6 +838,7 @@ class SimulationEngine {
     moved = Math.max(0, Math.min(moved, limit - sv.progress));
     if (dt > 0 && moved < sv.v * dt * 0.5) sv.v = Math.min(sv.v, moved / dt);
     sv.progress += moved;
+    sv.odo += moved;
 
     // Drift sideways towards the target lane (drawing only)
     const dl = sv.lane - sv.latPos;
@@ -710,7 +846,7 @@ class SimulationEngine {
 
     sv.pub.speed = Math.round(sv.v * 3.6 * 10) / 10;
     sv.ttl -= dt;
-    sv.stuck = sv.v < 0.3 && !sv.atRed ? sv.stuck + dt : 0;
+    sv.stuck = sv.v < 0.3 && !sv.atRed && sv.stopAt === null ? sv.stuck + dt : 0;
 
     for (let hops = 0; sv.progress >= sv.edge.length && hops < 5; hops++) {
       const overflow = sv.progress - sv.edge.length;
@@ -741,7 +877,12 @@ class SimulationEngine {
     sv.lane = sv.lane < lanes ? sv.lane : lanes - 1;
     sv.latPos = Math.min(sv.latPos, lanes - 1);
     sv.seg = 1;
+    sv.stopAt = null;
     sv.edge = next;
+    if (!sv.userId) this.entryPcu[next.ix!] += sv.kind.pcu;
+    const wrong = this.contraBase.has(next.id);
+    sv.pub.wrongWay = wrong || undefined;
+    if (wrong) { sv.lane = 0; sv.latPos = 0; }
     sv.next = this.chooseNext(sv);
     return next;
   }
@@ -756,6 +897,11 @@ class SimulationEngine {
       return id ? this.index.edges.get(id) ?? null : null;
     }
     const edge = sv.edge;
+    // Now and then a rider takes a short stretch the wrong way down a one-way
+    if (sv.kind.wrongWay > 0 && !this.contraBase.has(edge.id) && Math.random() < sv.kind.wrongWay) {
+      const shortcuts = (this.contraFrom.get(edge.to) ?? []).filter(c => c.to !== edge.from && c.length < 400);
+      if (shortcuts.length > 0) return shortcuts[Math.floor(Math.random() * shortcuts.length)];
+    }
     const options = (this.index.outEdges.get(edge.to) ?? []).filter(e => !isEdgeBlocked(e.id));
     const forward = options.filter(e => e.to !== edge.from);
     let pool = forward.length > 0 ? forward : options;
@@ -824,9 +970,10 @@ class SimulationEngine {
 
     // Lateral offset to the left of travel: two-way roads use the left half, one-ways centre their lanes
     const lanes = Math.max(1, sv.edge.lanes);
+    const lat0 = Math.min(lanes - 0.6, Math.max(-0.4, sv.latPos + sv.weave));
     const left = this.twoWay.has(sv.edge.id)
-      ? (lanes - 0.5 - sv.latPos) * LANE_WIDTH
-      : ((lanes - 1) / 2 - sv.latPos) * LANE_WIDTH;
+      ? (lanes - 0.5 - lat0) * LANE_WIDTH
+      : ((lanes - 1) / 2 - lat0) * LANE_WIDTH;
     const h = heading * Math.PI / 180;
     // Left normal of heading (east, north) = (-cos h, sin h)
     sv.pub.lat = Math.round((lat + (left * Math.sin(h)) / 111320) * 1e6) / 1e6;
@@ -834,15 +981,118 @@ class SimulationEngine {
     sv.pub.bearing = Math.round(heading);
   }
 
+  /**
+   * Advances every signal. Controller holds keep a group green (switching to it safely
+   * through yellow and all-red first); temporary scaling shortens a group's green.
+   */
   private updateSignals(dt: number): void {
+    const now = Date.now();
     for (const signal of this.state.signals.values()) {
+      const ctl = this.control.get(signal.id);
+      if (ctl?.hold && now >= ctl.hold.until) delete ctl.hold;
+      if (ctl?.scale && now >= ctl.scale.until) delete ctl.scale;
+      const hold = ctl?.hold && now >= ctl.hold.from ? ctl.hold : undefined;
+
       signal.timer += dt;
-      const currentPhase = signal.phases[signal.currentPhaseIndex];
-      if (signal.timer >= currentPhase.duration) {
-        signal.timer -= currentPhase.duration;
+      const phase = signal.phases[signal.currentPhaseIndex];
+      if (hold) {
+        if (phase.color === 'GREEN' && phase.group === hold.group) {
+          signal.timer = Math.min(signal.timer, Math.max(0, phase.duration - 0.1)); // stay green
+          continue;
+        }
+        if (phase.color === 'GREEN') { // another group is green: end it now via its yellow
+          signal.currentPhaseIndex = (signal.currentPhaseIndex + 1) % signal.phases.length;
+          signal.timer = 0;
+          continue;
+        }
+      }
+      const scaled = ctl?.scale && phase.color === 'GREEN' && phase.group === ctl.scale.group
+        ? phase.duration * ctl.scale.factor : phase.duration;
+      if (signal.timer >= scaled) {
+        signal.timer -= scaled;
         signal.currentPhaseIndex = (signal.currentPhaseIndex + 1) % signal.phases.length;
       }
     }
+  }
+
+  // ── Signal control (controllers and the coordination engine) ──────────────
+
+  getSignalControl(id: string): SignalControlState | undefined {
+    const c = this.control.get(id);
+    return c && (c.hold || c.plan || c.scale) ? c : undefined;
+  }
+
+  /** Keeps `group` green for `seconds`, starting `delay` seconds from now. */
+  holdSignal(id: string, group: string, seconds: number, by: string, delay = 0): boolean {
+    const s = this.state.signals.get(id);
+    if (!s || !s.phases.some(p => p.group === group && p.color === 'GREEN')) return false;
+    const from = Date.now() + delay * 1000;
+    const ctl = this.control.get(id) ?? {};
+    ctl.hold = { group, from, until: from + seconds * 1000, by };
+    this.control.set(id, ctl);
+    return true;
+  }
+
+  /** Replaces green times per group (other phases unchanged). */
+  setSignalPlan(id: string, greens: Record<string, number>, by: string): boolean {
+    const s = this.state.signals.get(id);
+    const base = this.basePhases.get(id);
+    if (!s || !base) return false;
+    s.phases.forEach((p, i) => {
+      p.duration = p.color === 'GREEN' && greens[p.group] !== undefined
+        ? Math.round(Math.min(180, Math.max(10, greens[p.group])))
+        : base[i];
+    });
+    s.cycleLength = s.phases.reduce((t, p) => t + p.duration, 0);
+    const ctl = this.control.get(id) ?? {};
+    ctl.plan = { greens, by, at: Date.now() };
+    this.control.set(id, ctl);
+    return true;
+  }
+
+  /** Shortens (factor < 1) or lengthens a group's green for `seconds`. */
+  scaleSignalGreen(id: string, group: string, factor: number, seconds: number, by: string): boolean {
+    if (!this.state.signals.has(id)) return false;
+    const ctl = this.control.get(id) ?? {};
+    ctl.scale = { group, factor, until: Date.now() + seconds * 1000, by };
+    this.control.set(id, ctl);
+    return true;
+  }
+
+  /** Back to the default timing; ends holds and scaling. */
+  resetSignal(id: string): boolean {
+    const s = this.state.signals.get(id);
+    const base = this.basePhases.get(id);
+    if (!s || !base) return false;
+    s.phases.forEach((p, i) => { p.duration = base[i]; });
+    s.cycleLength = s.phases.reduce((t, p) => t + p.duration, 0);
+    this.control.delete(id);
+    return true;
+  }
+
+  /** Queue and arrival rate on each approach edge. */
+  getApproachStats(edgeIds: string[]): Map<string, ApproachStats> {
+    const result = new Map<string, ApproachStats>();
+    for (const id of edgeIds) {
+      const edge = this.index.edges.get(id);
+      if (!edge || edge.ix === undefined) continue;
+      let queuePcu = 0, back = edge.length;
+      for (const list of this.lanesByEdge[edge.ix] ?? []) {
+        if (!list) continue;
+        // Front-first: count the stopped vehicles from the stop line backwards
+        for (const sv of list) {
+          if (sv.v > 1.5) break;
+          queuePcu += sv.kind.pcu;
+          back = Math.min(back, sv.progress - sv.kind.length);
+        }
+      }
+      result.set(id, {
+        queueVehicles: Math.round(queuePcu * DEMAND_SCALE),
+        queueMetres: Math.round(Math.max(0, edge.length - back)),
+        arrivalsPerHour: Math.round(this.arrivalRate[edge.ix]),
+      });
+    }
+    return result;
   }
 
   /**
@@ -906,6 +1156,7 @@ class SimulationEngine {
       userId,
       route,
       routeIndex: 0,
+      violator: false, weave: 0, odo: 0, nextStopAt: Infinity, stopAt: null, dwellLeft: 0, violationTimer: 0,
     };
     sv.next = this.chooseNext(sv);
     this.placeVehicle(sv);
@@ -1099,13 +1350,17 @@ class SimulationEngine {
   }
 
   getStats(): TrafficStats {
-    let total = 0, n = 0, simulated = 0, atSignal = 0, queued = 0;
+    let total = 0, n = 0, simulated = 0, atSignal = 0, queued = 0, wrongWay = 0, kerbStops = 0;
     for (const sv of this.sim.values()) {
       total += sv.pub.speed; n++;
       if (!sv.userId) simulated++;
       if (sv.atRed) atSignal++;
+      else if (sv.stopAt !== null) kerbStops++;
       else if (sv.v < 0.5) queued++;
+      if (sv.pub.wrongWay) wrongWay++;
     }
+    const cutoff = Date.now() - 5 * 60 * 1000;
+    while (this.redJumpTimes.length > 0 && this.redJumpTimes[0] < cutoff) this.redJumpTimes.shift();
     const avgSpeed = n > 0 ? total / n : 0;
     let hotspots = 0, maxCongestion = 0;
     for (const [edgeId, load] of this.occupancy) {
@@ -1131,7 +1386,7 @@ class SimulationEngine {
       activeCorridors: 0,
       simulatedVehicles: simulated,
       realVehicles: n - simulated,
-      atSignal, queued,
+      atSignal, queued, wrongWay, kerbStops, redJumps: this.redJumpTimes.length,
     };
   }
 }

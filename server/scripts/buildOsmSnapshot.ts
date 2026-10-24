@@ -3,6 +3,7 @@
  *
  *   npm run build:osm                  # download from Overpass
  *   npm run build:osm -- --from <dir>  # use Overpass JSON files already downloaded (*.json)
+ *   add --out <file> to write somewhere else (e.g. to try a build)
  *
  * Re-run occasionally to pick up OpenStreetMap edits; commit the result.
  */
@@ -29,11 +30,16 @@ async function main() {
     osm.source = `OpenStreetMap via Overpass (${new Date().toISOString().slice(0, 10)})`;
   }
 
+  const tb = Date.now();
   const { graph, signals } = buildGraphFromOsm(osm);
-  const bytes = await writeSnapshot(osm);
+  console.log(`Built graph in ${Date.now() - tb} ms`);
+  const outIdx = process.argv.indexOf('--out');
+  const outPath = outIdx > 0 ? process.argv[outIdx + 1] : SNAPSHOT_PATH;
+  const t0 = Date.now();
+  const bytes = await writeSnapshot(osm, outPath);
   console.log(`OSM: ${osm.ways.length} ways, ${osm.nodes.length} nodes, ${osm.signals.length} signal nodes`);
   console.log(`Graph: ${graph.nodes.length} nodes, ${graph.edges.length} edges, ${signals.length} signal controllers`);
-  console.log(`Wrote ${SNAPSHOT_PATH} (${(bytes / 1024 / 1024).toFixed(2)} MB)`);
+  console.log(`Wrote ${outPath} (${(bytes / 1024 / 1024).toFixed(2)} MB) in ${Date.now() - t0} ms`);
 }
 
 main().catch(err => { console.error(err); process.exit(1); });

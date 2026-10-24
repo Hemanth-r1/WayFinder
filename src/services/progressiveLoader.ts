@@ -1,5 +1,6 @@
 import { serverClient } from './serverClient.ts';
 import { dataCache } from './dataCache.ts';
+import { saveToIndexedDB, loadFromIndexedDB } from '../data/indexedDBCache';
 import type { RoadGraph, RoadEdge, RoadNode, TrafficSignal, RoadType, GeoPoint } from '../types';
 
 /**
@@ -44,6 +45,9 @@ function hydrate(raw: RawGraphData): { graph: RoadGraph; signals: Map<string, Tr
   };
 }
 
+/** IndexedDB key for the saved road network (roads, junctions, signals). */
+const GRAPH_KEY = 'bangalore-graph-v2';
+
 export type LoadPhase = 'empty' | 'map' | 'roads' | 'signals' | 'vehicles' | 'full';
 
 export interface LoadUpdate {
@@ -81,12 +85,25 @@ export class ProgressiveLoader {
     dataCache.remove('graph'); // drop graphs cached by older versions (could be the demo grid)
 
     try {
-      const raw = await serverClient.fetchGraph() as RawGraphData;
-      if (raw.format !== 2) throw new Error('Unexpected graph format — reload after the server updates');
+      let raw: RawGraphData;
+      let source: string;
+      try {
+        raw = await serverClient.fetchGraph() as RawGraphData;
+        if (raw.format !== 2) throw new Error('Unexpected graph format — reload after the server updates');
+        source = raw.source;
+        // Keep a copy on the device for offline use
+        saveToIndexedDB(GRAPH_KEY, { data: raw, timestamp: Date.now() }).catch(() => {});
+      } catch (err) {
+        const saved = await loadFromIndexedDB<RawGraphData>(GRAPH_KEY).catch(() => null);
+        if (!saved || saved.data.format !== 2) throw err;
+        console.warn('[ProgressiveLoader] Server unreachable — using the road network saved on this device');
+        raw = saved.data;
+        source = `${raw.source} (saved ${new Date(saved.timestamp).toLocaleDateString()})`;
+      }
       const { graph, signals } = hydrate(raw);
-      this.notify({ phase: 'roads', source: raw.source, graph, signals });
-      this.notify({ phase: 'signals', source: raw.source, signals });
-      this.notify({ phase: 'full', source: raw.source });
+      this.notify({ phase: 'roads', source, graph, signals });
+      this.notify({ phase: 'signals', source, signals });
+      this.notify({ phase: 'full', source });
     } catch (err) {
       console.error('[ProgressiveLoader] Failed to load from server:', err);
       this.notify({

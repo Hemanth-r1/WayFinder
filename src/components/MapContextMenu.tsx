@@ -120,7 +120,7 @@ export default function MapContextMenu({
         {/* New reports (all roles) */}
         <div style={{ borderBottom: '1px solid #1a1a2e' }}>
           <div style={{ padding: '6px 14px 0', fontSize: 10, color: '#555', textTransform: 'uppercase', letterSpacing: 1 }}>Report here</div>
-          {(['block', 'waterlogging', 'rain'] as const)
+          {(['block', 'tree', 'waterlogging', 'rain'] as const)
             .filter(t => !nearbyReports.some(r => r.type === t))
             .map(t => (
               <MenuItem key={t} icon={REPORT_LABEL[t].icon} label={REPORT_LABEL[t].label} onClick={() => { onReport(t); onClose(); }} accent="#FF9800" />

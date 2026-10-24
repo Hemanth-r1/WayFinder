@@ -7,7 +7,7 @@
 const DB_NAME = 'WayFinderCache';
 const DB_VERSION = 1;
 const STORE_NAME = 'roadGraph';
-const TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const TTL_MS = 90 * 24 * 60 * 60 * 1000; // 90 days: the offline road network must outlast trips without signal
 
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {

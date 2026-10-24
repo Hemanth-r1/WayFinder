@@ -280,6 +280,17 @@ export function addOverlayLayers(map: MLMap, opts: { showRoads: boolean }): void
     filter: ['all', ['get', 'nav'], ['!', ['get', 'self']]],
     paint: { 'circle-radius': 11, 'circle-color': '#4488FF', 'circle-blur': 0.8, 'circle-opacity': 0.55 },
   });
+  // Wrong-way riders (red) and red-light jumpers (orange)
+  map.addLayer({
+    id: 'wf-vehicle-flag', type: 'circle', source: SRC.vehicles, minzoom: 14,
+    filter: ['!=', ['get', 'flag'], ''],
+    paint: {
+      'circle-radius': ['interpolate', ['linear'], ['zoom'], 14, 6, 18, 14],
+      'circle-color': ['match', ['get', 'flag'], 'wrong', '#FF1744', '#FF9100'],
+      'circle-opacity': 0.35, 'circle-stroke-width': 1.5,
+      'circle-stroke-color': ['match', ['get', 'flag'], 'wrong', '#FF1744', '#FF9100'],
+    },
+  });
   map.addLayer({
     id: LAYER.vehicles, type: 'symbol', source: SRC.vehicles, filter: ['!', ['get', 'self']],
     layout: {
@@ -356,7 +367,7 @@ export function signalColor(sig: TrafficSignal): string {
 export function signalsData(signals: Map<string, TrafficSignal>, graph: RoadGraph): FC {
   const features: Feature<Geometry, Props>[] = [];
   for (const sig of signals.values()) {
-    const node = graph.nodes.get(sig.nodeId);
+    const node = graph.nodes.get(sig.nodeId) ?? (sig.lat !== undefined && sig.lng !== undefined ? { lat: sig.lat, lng: sig.lng } : null);
     if (!node) continue;
     features.push(pointFeature(node.lat, node.lng, { id: sig.id, color: signalColor(sig) }));
   }
@@ -369,6 +380,7 @@ export function vehiclesData(vehicles: Iterable<Vehicle>, selfId: string | undef
     features.push(pointFeature(v.lat, v.lng, {
       id: v.id, icon: vehicleIconId(v.type, v.isNavigated ? '#4488FF' : v.color),
       nav: !!v.isNavigated, self: v.id === selfId, bearing: Number(v.bearing) || 0,
+      flag: v.wrongWay ? 'wrong' : v.violation ? 'red' : '',
       label: `${v.type.toUpperCase()} · ${Math.round(v.speed)} km/h`,
     }));
   }
@@ -394,7 +406,7 @@ export function reportsData(reports: RoadReport[], graph: RoadGraph): { blocks: 
   const icons: Feature<Geometry, Props>[] = [];
   for (const r of reports) {
     const confirmed = r.status === 'confirmed';
-    if (r.type === 'block') {
+    if (r.type === 'block' || r.type === 'tree') {
       for (const id of r.edgeIds) {
         const geom = graph.edges.get(id)?.geometry;
         if (geom && geom.length > 1) blocks.push(lineFeature(geom.map(p => [p.lat, p.lng]), { confirmed }));

@@ -33,8 +33,13 @@ export interface SignalApproach {
 }
 
 export interface TrafficSignal {
-  /** Representative node (drawn on the map) */
+  /**
+   * Permanent junction ID ("J" + the OSM id of its main stop line, base 36), stable
+   * across map refreshes; nodeId = representative node (drawn on the map)
+   */
   id: string; nodeId: string;
+  /** Junction name: OSM name if tagged, else the crossing roads ("Hosur Road × Outer Ring Road") */
+  name?: string;
   /** Every stop-line node this controller runs (defaults to [nodeId]) */
   nodeIds?: string[];
   /** Bearing of the junction's main road; group 'A' runs along it */
@@ -52,6 +57,10 @@ export interface Vehicle {
   speed: number; bearing: number;
   type: string; color: string;
   isNavigated: boolean;
+  /** Riding against a one-way */
+  wrongWay?: boolean;
+  /** Ran a red light in the last few seconds */
+  violation?: boolean;
 }
 
 export interface CongestionZone {
@@ -73,6 +82,12 @@ export interface TrafficStats {
   atSignal?: number;
   /** Vehicles stopped in queues (not at a red light) */
   queued?: number;
+  /** Vehicles riding against a one-way right now */
+  wrongWay?: number;
+  /** Red lights jumped in the last 5 minutes */
+  redJumps?: number;
+  /** Buses and autos stopped at the kerb for passengers */
+  kerbStops?: number;
 }
 
 export interface RouteInfo {

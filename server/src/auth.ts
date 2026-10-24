@@ -96,6 +96,12 @@ export function requireOperator(_req: Request, res: Response, next: NextFunction
   next();
 }
 
+/** Signal control: controllers (traffic police) only. */
+export function requireController(_req: Request, res: Response, next: NextFunction) {
+  if (caller(res).role !== 'controller') return res.status(403).json({ error: 'Controller role required' });
+  next();
+}
+
 /** At most `max` calls per caller per window (in memory, per server instance). */
 export function rateLimit(name: string, max: number, windowMs: number) {
   const hits = new Map<string, number[]>();

@@ -29,6 +29,13 @@ const METRES_PER_VEHICLE = 25;
 /** Seconds for a full 90° turn; 180° U-turns cost double plus a fixed penalty. */
 const TURN_SECONDS_PER_90 = 3;
 const U_TURN_PENALTY = 30;
+/**
+ * Residential lanes and living streets are used only this close to the start or end
+ * (like navigation apps: main roads in between). Keeps routes sane and searches fast.
+ */
+const LOCAL_STREET_METRES = 1500;
+const LOCAL_TYPES = new Set(['residential', 'living_street']);
+
 /** Alternatives: accept routes up to this multiple of the best ETA... */
 const MAX_ALT_STRETCH = 1.3;
 /** ...that share at most this fraction of their length with an accepted route. */
@@ -252,8 +259,13 @@ function aStar(
   extraPenalty?: Map<string, number>,
 ): string[] | null {
   const dest = index.nodes.get(destId);
-  if (!dest || !index.nodes.has(sourceId)) return null;
+  const src = index.nodes.get(sourceId);
+  if (!dest || !src) return null;
   if (sourceId === destId) return [];
+  const localOk = (nodeId: string) => {
+    const n = index.nodes.get(nodeId)!;
+    return haversine(n, src) <= LOCAL_STREET_METRES || haversine(n, dest) <= LOCAL_STREET_METRES;
+  };
 
   const g = new Map<string, number>([[sourceId, 0]]);
   const via = new Map<string, RoadEdge>();
@@ -278,6 +290,7 @@ function aStar(
     const inEdge = via.get(current);
     for (const edge of index.outEdges.get(current) ?? []) {
       if (closed.has(edge.to) || isEdgeBlocked(edge.id)) continue;
+      if (LOCAL_TYPES.has(edge.roadType) && !localOk(edge.to) && !localOk(edge.from)) continue;
       const control = signalControl(index.signalByNode, edge);
       const cost =
         edgeTravelTime(edge, ctx) * userSpread(ctx.userId, edge.id) * (extraPenalty?.get(edge.id) ?? 1) +

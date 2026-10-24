@@ -73,6 +73,10 @@ interface MapViewProps {
   traffic?: Map<string, number>;
   /** Visible area ([west, south, east, north]) and zoom, after the map stops moving */
   onViewportChange?: (bbox: [number, number, number, number], zoom: number) => void;
+  /** Fly here when `key` changes */
+  focus?: { lat: number; lng: number; zoom: number; key: number } | null;
+  /** Operators tapped a signal */
+  onSelectJunction?: (id: string) => void;
 }
 
 interface ContextMenuState {
@@ -116,7 +120,8 @@ function signalPopupHtml(sig: TrafficSignal, adjEdges: number): string {
   const color = phase.color === 'GREEN' ? '#00E676' : phase.color === 'YELLOW' ? '#FFD600' : '#FF1744';
   return `
     <div style="font-family:monospace;font-size:11px;color:#ccc;min-width:160px;">
-      <div style="font-weight:bold;color:#fff;margin-bottom:4px;">${sig.id}</div>
+      <div style="font-weight:bold;color:#fff;">${sig.name ?? sig.id}</div>
+      <div style="color:#888;margin-bottom:4px;">${sig.id}</div>
       <div>Phase: <span style="color:${color}">${phase.color}</span> → ${phase.group}</div>
       <div>Timer: ${sig.timer.toFixed(1)}s / ${phase.duration.toFixed(0)}s</div>
       <div>Cycle: ${sig.cycleLength.toFixed(0)}s</div>
@@ -133,7 +138,7 @@ export default function MapView({
   onAddSignal, onSpawnVehicleAt, showHeatmap = true, routePolyline, altRoutePolylines, speed: _speed, onSpeedChange: _onSpeedChange,
   onStartNavigation, routeInfo, clearRoute, navigatedVehicle, simpleView = false, compact = false,
   reports = [], reroutePolyline, onReport, onVoteReport, onRemoveReport, canRemoveReports = false,
-  followVehicleId, traffic, onViewportChange,
+  followVehicleId, traffic, onViewportChange, focus, onSelectJunction,
 }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const miniRef = useRef<HTMLDivElement>(null);
@@ -163,6 +168,8 @@ export default function MapView({
   signalsRef.current = signals;
   const onViewportChangeRef = useRef(onViewportChange);
   onViewportChangeRef.current = onViewportChange;
+  const onSelectJunctionRef = useRef(onSelectJunction);
+  onSelectJunctionRef.current = onSelectJunction;
   const followRef = useRef(followVehicleId);
   followRef.current = followVehicleId;
   const animRef = useRef<{ vehicles: Map<string, AnimVehicle>; lastUpdate: number; interval: number }>(
@@ -214,6 +221,7 @@ export default function MapView({
         const sigId = hit?.properties?.id as string | undefined;
         const sig = sigId ? [...signalsRef.current.values()].find(s => s.id === sigId) : undefined;
         if (sig) {
+          onSelectJunctionRef.current?.(sig.id);
           const adj = graphRef.current.adjacency.get(sig.nodeId)?.length ?? 0;
           new maplibregl.Popup({ className: 'wf-popup', offset: 10 })
             .setLngLat(e.lngLat).setHTML(signalPopupHtml(sig, adj)).addTo(map);
@@ -280,6 +288,12 @@ export default function MapView({
       map.remove(); mapRef.current = null; loadedMapRef.current = null;
     };
   }, []); // intentionally empty — one-time init, props reach handlers via refs
+
+  // Fly to a junction picked in the police panel
+  useEffect(() => {
+    const map = mapRef.current;
+    if (map && focus) map.flyTo({ center: [focus.lng, focus.lat], zoom: focus.zoom, duration: 900 });
+  }, [focus]);
 
   // ── Mini-map (operators) ──────────────────────────────────────────────────
   useEffect(() => {

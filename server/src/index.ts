@@ -10,10 +10,13 @@ import {
   getConditions, setWeatherMode, setTrafficLevel, startWeatherPolling,
   type WeatherMode, type TrafficMode,
 } from './conditionsService.js';
-import { initReports, createReport, vote, withdraw, type ReportType } from './reportsService.js';
+import { initReports, createReport, vote, withdraw, SEGMENT_TYPES, type ReportType } from './reportsService.js';
 import {
-  requireUser, optionalUser, requireSelf, requireOperator, rateLimit, caller, authMode,
+  requireUser, optionalUser, requireSelf, requireOperator, requireController, rateLimit, caller, authMode,
 } from './auth.js';
+import {
+  initJunctions, listJunctions, getJunction, holdGreen, applyPlan, resetJunction, controlLog, ControlError,
+} from './junctionService.js';
 import { initSimulationEngine, getSimulationEngine } from './simulationEngine.js';
 import { removeUserVehicle, getUserVehiclePosition, markArrived } from './userVehicleService.js';
 import {
@@ -52,12 +55,16 @@ app.get('/api/me', requireUser, (_req, res) => {
   res.json({ ...caller(res), auth: authMode() });
 });
 
-// Static once loaded: sent pre-compressed and cacheable for an hour
+// Static once loaded: sent pre-compressed; browsers revalidate by version (ETag) so a
+// server with a new road network is picked up at once, and an unchanged one costs a 304
 app.get('/api/graph', async (req, res) => {
   try {
     const { json, gzip } = await getClientGraph();
-    res.set('Cache-Control', 'public, max-age=3600');
+    const etag = `"graph-${(await getGraph()).version}"`;
+    res.set('Cache-Control', 'no-cache');
+    res.set('ETag', etag);
     res.set('Vary', 'Accept-Encoding');
+    if (req.headers['if-none-match'] === etag) return res.status(304).end();
     res.type('application/json');
     if (/\bgzip\b/.test(String(req.headers['accept-encoding'] ?? ''))) {
       res.set('Content-Encoding', 'gzip');
@@ -111,7 +118,7 @@ app.get('/api/state', (req, res) => {
 
 const WEATHER_MODES: WeatherMode[] = ['live', 'clear', 'rain', 'heavy_rain'];
 const TRAFFIC_LEVELS: TrafficMode[] = ['auto', 'light', 'normal', 'heavy'];
-const REPORT_TYPES: ReportType[] = ['block', 'waterlogging', 'rain'];
+const REPORT_TYPES: ReportType[] = ['block', 'tree', 'waterlogging', 'rain'];
 
 function sendError(res: express.Response, err: any) {
   res.status(err instanceof NavigationError ? err.status : 500).json({ error: err.message });
@@ -176,7 +183,7 @@ app.post('/api/reports', requireUser, rateLimit('reports', 6, 10 * 60 * 1000), a
     const { uid, trusted } = caller(res);
     const result = createReport({
       type, lat, lng, uid, trusted, roadName,
-      segment: type === 'block' ? { edgeIds: nearest.edgeIds, roadName, lat: mid.lat, lng: mid.lng } : undefined,
+      segment: SEGMENT_TYPES.has(type) ? { edgeIds: nearest.edgeIds, roadName, lat: mid.lat, lng: mid.lng } : undefined,
     });
     res.json(result);
   } catch (err: any) {
@@ -323,6 +330,58 @@ app.post('/api/corridors', (req, res) => {
 });
 
 // Route options on the server's own graph. `route` (the first option) is kept for older clients.
+// ── Junctions: police view and signal control ────────────────────────────────
+
+function sendControlError(res: express.Response, err: any) {
+  res.status(err instanceof ControlError ? err.status : 500).json({ error: err.message });
+}
+
+/** Every signalised junction with live status, worst first (operators). */
+app.get('/api/junctions', requireUser, requireOperator, (_req, res) => {
+  res.json({ junctions: listJunctions() });
+});
+
+/** One junction: approaches, queues, recommendation, neighbours, active control. */
+app.get('/api/junctions/:id', requireUser, requireOperator, (req, res) => {
+  const j = getJunction(String(req.params.id));
+  if (!j) return res.status(404).json({ error: 'Unknown junction' });
+  res.json(j);
+});
+
+/** Controller: hold a group green (seconds), optionally coordinating neighbours. */
+app.post('/api/junctions/:id/hold', requireUser, requireController, (req, res) => {
+  try {
+    const { group, seconds, coordinate } = req.body ?? {};
+    if (typeof group !== 'string' || typeof seconds !== 'number') {
+      return res.status(400).json({ error: 'group (string) and seconds (number) required' });
+    }
+    res.json({ changes: holdGreen(String(req.params.id), group, seconds, coordinate !== false, caller(res).uid) });
+  } catch (err) { sendControlError(res, err); }
+});
+
+/** Controller: new green times { greens: { A: 60, B: 40 } } or { recommended: true }. */
+app.post('/api/junctions/:id/plan', requireUser, requireController, (req, res) => {
+  try {
+    const { greens, recommended } = req.body ?? {};
+    const plan = recommended ? 'recommended' as const : greens;
+    if (plan !== 'recommended' && (typeof plan !== 'object' || !plan || !Object.values(plan).every(v => typeof v === 'number'))) {
+      return res.status(400).json({ error: 'greens { group: seconds } or recommended: true required' });
+    }
+    res.json({ changes: applyPlan(String(req.params.id), plan, caller(res).uid) });
+  } catch (err) { sendControlError(res, err); }
+});
+
+app.post('/api/junctions/:id/reset', requireUser, requireController, (req, res) => {
+  try {
+    res.json({ changes: resetJunction(String(req.params.id), caller(res).uid) });
+  } catch (err) { sendControlError(res, err); }
+});
+
+/** Who changed which signal, newest first. */
+app.get('/api/control/log', requireUser, requireOperator, (_req, res) => {
+  res.json({ log: controlLog() });
+});
+
 app.post('/api/route', optionalUser, async (req, res) => {
   try {
     const { sourceId, destId } = req.body;
@@ -346,6 +405,7 @@ async function initializeServer() {
   try {
     const { graph, signals } = await getGraph();
     initReports(getGraphIndex(graph, signals));
+    initJunctions(getGraphIndex(graph, signals), signals);
     const engine = initSimulationEngine(graph, signals);
     engine.setArrivalHandler(markArrived);
     engine.start();

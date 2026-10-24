@@ -36,6 +36,8 @@ export interface CompactOsm {
   ways: CompactWay[];
   /** OSM ids of traffic signal nodes */
   signals: number[];
+  /** Names tagged on signal nodes (e.g. "Silk Board Junction"), by OSM id */
+  signalNames?: Record<string, string>;
 }
 
 // ── Road attributes (Bangalore) ──────────────────────────────────────────────
@@ -43,14 +45,17 @@ export interface CompactOsm {
 /** Importance: used for signal timing, spawning and turn choice. */
 export const ROAD_RANK: Record<string, number> = {
   motorway: 5, trunk: 5, primary: 4, secondary: 3, tertiary: 2, link: 1,
+  unclassified: 1, residential: 0, living_street: 0,
 };
 /** Typical free-flow speeds on Bangalore roads (km/h) with side friction (pedestrians, stopping autos and buses, U-turns), below legal limits. */
 const FREE_FLOW_KMH: Record<string, number> = {
   motorway: 65, trunk: 45, primary: 35, secondary: 30, tertiary: 25, link: 22,
+  unclassified: 22, residential: 18, living_street: 10,
 };
 /** Lanes per direction when OSM has no lanes tag. */
 const DEFAULT_LANES: Record<string, number> = {
   motorway: 3, trunk: 3, primary: 2, secondary: 2, tertiary: 1, link: 1,
+  unclassified: 1, residential: 1, living_street: 1,
 };
 
 /** OSM highway tag → WayFinder road type, or null for roads we don't model. */
@@ -225,6 +230,7 @@ export function buildSignals(
   nodes: Map<string, RoadNode>,
   inEdges: Map<string, RoadEdge[]>,
   seed = 1,
+  opts: { idFor?: (nodeId: string) => string; tagName?: (nodeId: string) => string | undefined } = {},
 ): TrafficSignal[] {
   const signals: TrafficSignal[] = [];
   const rand = seededRandom(seed);
@@ -299,16 +305,30 @@ export function buildSignals(
     const c = memberNodes.reduce((s, n) => ({ lat: s.lat + n.lat / memberNodes.length, lng: s.lng + n.lng / memberNodes.length }), { lat: 0, lng: 0 });
     const rep = memberNodes.reduce((b, n) => haversineMetres(n, c) < haversineMetres(b, c) ? n : b);
 
-    const id = `SIG-${String(ci + 1).padStart(4, '0')}`;
+    const id = opts.idFor ? opts.idFor(rep.id) : `SIG-${String(ci + 1).padStart(4, '0')}`;
+    const name = cluster.map(n => opts.tagName?.(n)).find(Boolean) ?? junctionName(incoming);
     for (const n of memberNodes) n.trafficSignalId = id;
     signals.push({
-      id, nodeId: rep.id, nodeIds: cluster, axis: Math.round(axis),
+      id, name, nodeId: rep.id, nodeIds: cluster, axis: Math.round(axis),
       phases, currentPhaseIndex: phaseIndex, timer: t, cycleLength, offset,
       greenWaveDirection: null, congestionLevel: 0, adaptiveTiming: false,
       approaches,
     });
   });
   return signals;
+}
+
+/** "Hosur Road × Outer Ring Road" from the most important differently named approaches. */
+function junctionName(incoming: RoadEdge[]): string {
+  const byName = new Map<string, number>();
+  for (const e of incoming) {
+    if (!e.name) continue;
+    byName.set(e.name, Math.max(byName.get(e.name) ?? -1, ROAD_RANK[e.roadType] ?? 0));
+  }
+  const names = [...byName].sort((a, b) => b[1] - a[1]).map(([n]) => n);
+  if (names.length >= 2) return `${names[0]} × ${names[1]}`;
+  if (names.length === 1) return `${names[0]} signal`;
+  return 'Unnamed junction';
 }
 
 /** Groups node ids whose points lie within `metres` of each other (union-find on a grid). */
@@ -375,6 +395,59 @@ function markBottlenecks(edges: Iterable<RoadEdge>): void {
   }
 }
 
+// ── Pass-through merging ─────────────────────────────────────────────────────
+
+function sameRoad(a: RoadEdge, b: RoadEdge): boolean {
+  return a.name === b.name && a.roadType === b.roadType && a.lanes === b.lanes && a.speedLimit === b.speedLimit;
+}
+
+function joinEdges(a: RoadEdge, b: RoadEdge): RoadEdge {
+  const geometry = [...a.geometry, ...b.geometry.slice(1)];
+  return {
+    ...a, id: `${a.from}-${b.to}`, to: b.to,
+    length: Math.round((a.length + b.length) * 10) / 10,
+    bearing: Math.round(bearing(geometry[0], geometry[geometry.length - 1])),
+    geometry,
+  };
+}
+
+/**
+ * Removes nodes where a road simply continues (OSM splits ways at bridges, name tags
+ * and so on): one-way chains (1 in, 1 out) and two-way pass-throughs (2 neighbours),
+ * when both sides are the same road. Junctions and signal stop lines stay.
+ */
+function contractPassThrough(nodes: Map<string, RoadNode>, edges: Map<string, RoadEdge>, keep: Set<string>): void {
+  const out = new Map<string, Set<string>>();
+  const inn = new Map<string, Set<string>>();
+  const add = (e: RoadEdge) => {
+    (out.get(e.from) ?? out.set(e.from, new Set()).get(e.from)!).add(e.id);
+    (inn.get(e.to) ?? inn.set(e.to, new Set()).get(e.to)!).add(e.id);
+  };
+  const remove = (e: RoadEdge) => { out.get(e.from)?.delete(e.id); inn.get(e.to)?.delete(e.id); edges.delete(e.id); };
+  for (const e of edges.values()) add(e);
+
+  const queue = [...nodes.keys()];
+  for (const n of queue) {
+    if (keep.has(n) || !nodes.has(n)) continue;
+    const ins = [...(inn.get(n) ?? [])].map(id => edges.get(id)!);
+    const outs = [...(out.get(n) ?? [])].map(id => edges.get(id)!);
+    const pairs: [RoadEdge, RoadEdge][] = [];
+    if (ins.length === 1 && outs.length === 1 && ins[0].from !== outs[0].to) {
+      pairs.push([ins[0], outs[0]]);
+    } else if (ins.length === 2 && outs.length === 2) {
+      const [a1, a2] = ins;
+      const b1 = outs.find(o => o.to === a2.from), b2 = outs.find(o => o.to === a1.from);
+      if (b1 && b2 && a1.from !== a2.from) pairs.push([a1, b1], [a2, b2]);
+    }
+    if (pairs.length === 0 || !pairs.every(([a, b]) => sameRoad(a, b))) continue;
+    const joined = pairs.map(([a, b]) => joinEdges(a, b));
+    if (joined.some(j => edges.has(j.id))) continue; // would collide with a parallel road
+    for (const [a, b] of pairs) { remove(a); remove(b); }
+    for (const j of joined) { edges.set(j.id, j); add(j); }
+    nodes.delete(n);
+  }
+}
+
 // ── Graph ────────────────────────────────────────────────────────────────────
 
 export interface BuiltNetwork {
@@ -404,7 +477,7 @@ export function buildGraphFromOsm(osm: CompactOsm): BuiltNetwork {
   const graphId = (osmId: number): string => {
     let id = idOf.get(osmId);
     if (!id) {
-      id = `n${idOf.size}`;
+      id = `n${osmId.toString(36)}`; // stable across snapshot refreshes
       idOf.set(osmId, id);
       const c = coords.get(osmId)!;
       nodes.set(id, { id, lat: round6(c.lat), lng: round6(c.lng) });
@@ -458,6 +531,9 @@ export function buildGraphFromOsm(osm: CompactOsm): BuiltNetwork {
   for (const id of [...nodes.keys()]) if (!keep.has(id)) nodes.delete(id);
   for (const [id, e] of [...edges]) if (!keep.has(e.from) || !keep.has(e.to)) edges.delete(id);
 
+  const signalNodes = [...signalOsm].map(o => idOf.get(o)).filter((id): id is string => !!id && nodes.has(id));
+  contractPassThrough(nodes, edges, new Set(signalNodes));
+
   const out = new Map<string, string[]>();
   const inEdges = new Map<string, RoadEdge[]>();
   for (const e of edges.values()) {
@@ -467,8 +543,12 @@ export function buildGraphFromOsm(osm: CompactOsm): BuiltNetwork {
 
   markBottlenecks(edges.values());
 
-  const signalNodes = [...signalOsm].map(o => idOf.get(o)).filter((id): id is string => !!id && nodes.has(id));
-  const signals = buildSignals(clusterNodes(signalNodes, nodes), nodes, inEdges);
+  const osmOf = new Map<string, number>();
+  for (const [osm, id] of idOf) osmOf.set(id, osm);
+  const signals = buildSignals(clusterNodes(signalNodes, nodes), nodes, inEdges, 1, {
+    idFor: nodeId => `J${(osmOf.get(nodeId) ?? 0).toString(36).toUpperCase()}`,
+    tagName: nodeId => osm.signalNames?.[String(osmOf.get(nodeId))],
+  });
 
   return {
     graph: { nodes: [...nodes.values()], edges: [...edges.values()], adjacency: [...out] },
