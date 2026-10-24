@@ -55,7 +55,8 @@ export default function NavigationGuide({
     : { position: 'fixed', right: 20, bottom: 20, width: 380 };
 
   return (
-    <div style={{
+    // data-map-cover: the map's follow camera keeps the car above this card
+    <div data-map-cover="bottom" style={{
       ...container,
       background: 'rgba(8,8,18,0.96)', border: '1px solid #2a2a40', borderRadius: 14,
       padding: 14, zIndex: 1500, boxShadow: '0 6px 24px rgba(0,0,0,0.55)',

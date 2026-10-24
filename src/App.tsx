@@ -632,6 +632,7 @@ function AppContent() {
           onVoteReport={handleVoteReport}
           onRemoveReport={handleRemoveReport}
           canRemoveReports={role !== 'user'}
+          followVehicleId={simpleView && navigatedVehicle ? `user_${user.uid}` : undefined}
         />
       </div>
 

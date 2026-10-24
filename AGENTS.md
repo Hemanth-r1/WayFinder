@@ -73,7 +73,7 @@ Real authentication and data persistence via Firebase Auth + Firestore.
 - Traffic simulation runs via `requestAnimationFrame` loop in `App.tsx` with a capped dt of 50ms.
 - Manual signal override lasts 30 seconds, then resets all signals to adaptive mode.
 - Inline styles throughout (no CSS modules, no Tailwind).
-- Mini-map is a second Leaflet map instance drawing on `#mini-map`.
+- Map: MapLibre GL on free OpenFreeMap vector tiles (no API key) — light style for drivers, dark for operators. WayFinder overlays (roads, signals, vehicles, routes, reports) are GeoJSON layers in `src/components/mapLayers.ts`; emoji icons are drawn to canvas on demand. While a driver navigates, the camera follows their car (`user_<uid>`), rotated to its heading and tilted; dragging pauses it until "Re-center". Needs WebGL. Operators get a second MapLibre instance as mini-map.
 - User navigation routing runs on the server (`server/src/pathfindingService.ts`): time-based A* with live edge congestion, signal delay, and a penalty per other navigator already routed over an edge, so users with similar trips are spread across nearby routes. `POST /api/route` returns up to 3 options; `POST /api/user/start` accepts the chosen `edgeIds`.
 - Driver UI (`role === 'user'`): search box (`src/utils/places.ts` — road names from the loaded graph, plus OSM Nominatim for addresses, limited to Bangalore), GPS "My location", and an "Open in Google Maps" hand-off that passes 3 waypoints along the user's route. Operator overlays (stats HUD, legend, mini-map, floating nav panel) are hidden for drivers. Phones (≤768px, `useIsMobile`) get a bottom-sheet layout.
 - Demo mode (no Firebase config) gives each browser its own `demo-…` user ID so route spreading can be tried with several tabs/devices.

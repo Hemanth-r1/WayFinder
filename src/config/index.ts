@@ -9,7 +9,7 @@ export const MAP_CONFIG = {
   DEFAULT_ZOOM: 13,
   MINI_MAP_ZOOM: 11,
   MINI_MAP_SIZE: { width: 160, height: 120 },
-  OSM_TILE_URL: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+  // Base map styles live in src/components/mapLayers.ts (OpenFreeMap, no key)
   MAX_ZOOM: 19,
 } as const;
 

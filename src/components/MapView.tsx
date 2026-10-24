@@ -1,12 +1,14 @@
 /**
  * MapView.tsx
- * REQ-G3: Roads rendered as full geometry polylines.
- * REQ-M1: Click opens context menu popup.
- * Vehicle markers rotated to match bearing.
+ * MapLibre GL map on free OpenFreeMap vector tiles, with WayFinder's own overlay:
+ * roads, signals, vehicles, routes and crowd reports (see mapLayers.ts).
+ * Tapping the map opens the context menu. While a driver navigates, the camera
+ * follows their car, turning with its heading (Ola/Uber style).
  */
 import { useEffect, useRef, useState, useCallback } from 'react';
-import L from 'leaflet';
-import 'leaflet/dist/leaflet.css';
+import maplibregl from 'maplibre-gl';
+import type { Map as MLMap, MapMouseEvent } from 'maplibre-gl';
+import 'maplibre-gl/dist/maplibre-gl.css';
 import type { RoadGraph, TrafficSignal, Vehicle, CongestionZone, VehicleType } from '../types';
 import { findNearestNode } from '../data/roadNetwork';
 import MapContextMenu from './MapContextMenu';
@@ -14,15 +16,15 @@ import NavigationPanel from './NavigationPanel';
 import ControlPanel from './ControlPanel';
 import type { NavRouteSummary } from './NavigationPanel';
 import type { RoadReport, ReportType, ReportVote } from '../services/serverClient';
-import { REPORT_LABEL } from '../utils/reports';
 import { distanceMetres } from '../utils/places';
-
-const VEHICLE_ICONS: Record<string, string> = {
-  sedan: '🚗', suv: '🚙', hatchback: '🚗', truck: '🚚',
-  bus: '🚌', emergency: '🚨', bike: '🛵', auto: '🛺', van: '📦',
-};
+import {
+  MAP_STYLES, SRC, LAYER, addOverlayLayers, addMissingImage, setSourceData,
+  roadsData, signalsData, vehiclesData, heatData, linesData, reportsData,
+} from './mapLayers';
 
 const MAP_CENTER: [number, number] = [12.9716, 77.5946];
+const FOLLOW_ZOOM = 16.5;
+const FOLLOW_PITCH = 50;
 
 interface MapViewProps {
   graph: RoadGraph;
@@ -65,12 +67,42 @@ interface MapViewProps {
   onRemoveReport?: (id: string) => void;
   /** Operators: remove reports outright */
   canRemoveReports?: boolean;
+  /** The driver's own vehicle: drawn as a heading arrow and followed by the camera */
+  followVehicleId?: string;
 }
 
 interface ContextMenuState {
   lat: number; lng: number; nodeId: string | null;
   nodeDegree: number; roadNames: string[];
   screenX: number; screenY: number;
+}
+
+/** Start/end pin: a dot on the point with its label above. Taps pass through to the map. */
+function pinElement(color: string, label: string): HTMLElement {
+  const el = document.createElement('div');
+  el.style.cssText = 'position:relative;width:20px;height:20px;pointer-events:none;';
+  el.innerHTML = `
+    <div style="position:absolute;bottom:26px;left:50%;transform:translateX(-50%);white-space:nowrap;
+      background:rgba(0,0,0,0.8);border:1px solid #444;color:#fff;font:11px system-ui,sans-serif;
+      padding:2px 6px;border-radius:4px;">${label}</div>
+    <div style="width:20px;height:20px;border-radius:50%;background:${color};border:3px solid #fff;
+      box-shadow:0 1px 6px rgba(0,0,0,0.5);"></div>`;
+  return el;
+}
+
+function signalPopupHtml(sig: TrafficSignal, adjEdges: number): string {
+  const phase = sig.phases[sig.currentPhaseIndex];
+  const color = phase.color === 'GREEN' ? '#00E676' : phase.color === 'YELLOW' ? '#FFD600' : '#FF1744';
+  return `
+    <div style="font-family:monospace;font-size:11px;color:#ccc;min-width:160px;">
+      <div style="font-weight:bold;color:#fff;margin-bottom:4px;">${sig.id}</div>
+      <div>Phase: <span style="color:${color}">${phase.color}</span> → ${phase.group}</div>
+      <div>Timer: ${sig.timer.toFixed(1)}s / ${phase.duration.toFixed(0)}s</div>
+      <div>Cycle: ${sig.cycleLength.toFixed(0)}s</div>
+      <div>Congestion: ${(sig.congestionLevel * 100).toFixed(0)}%</div>
+      <div>Edges: ${adjEdges}</div>
+      ${sig.greenWaveDirection ? `<div>Green Wave: ${sig.greenWaveDirection}</div>` : ''}
+    </div>`;
 }
 
 export default function MapView({
@@ -80,62 +112,91 @@ export default function MapView({
   onAddSignal, onSpawnVehicleAt, showHeatmap = true, routePolyline, altRoutePolylines, speed: _speed, onSpeedChange: _onSpeedChange,
   onStartNavigation, routeInfo, clearRoute, navigatedVehicle, simpleView = false, compact = false,
   reports = [], reroutePolyline, onReport, onVoteReport, onRemoveReport, canRemoveReports = false,
+  followVehicleId,
 }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const mapRef = useRef<L.Map | null>(null);
-  const miniMapRef = useRef<L.Map | null>(null);
-  const roadLayerRef = useRef<L.LayerGroup | null>(null);
-  const signalLayerRef = useRef<L.LayerGroup | null>(null);
-  const vehicleLayerRef = useRef<L.LayerGroup | null>(null);
-  const heatmapLayerRef = useRef<L.LayerGroup | null>(null);
-  const routeLayerRef = useRef<L.LayerGroup | null>(null);
-  const sourceDestLayerRef = useRef<L.LayerGroup | null>(null);
-  const blockLayerRef = useRef<L.LayerGroup | null>(null);
-  const vehicleMarkersRef = useRef<Map<string, L.Marker>>(new Map());
-  const lastGraphVersion = useRef(0);
+  const miniRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<MLMap | null>(null);
+  const lastGraphVersion = useRef(-1);
   const firstFitDone = useRef(false);
-  const iconCacheRef = useRef<Map<string, L.DivIcon>>(new Map());
+  const pinMarkersRef = useRef<maplibregl.Marker[]>([]);
 
+  /** Bumped each time a map instance finishes loading; overlay effects re-run on it */
+  const [loadCount, setLoadCount] = useState(0);
+  const loadedMapRef = useRef<MLMap | null>(null);
+  const styleUrlRef = useRef<string>(MAP_STYLES.light);
+  /** The map once its style and overlay layers are in place, else null */
+  const loadedMap = () => (mapRef.current && loadedMapRef.current === mapRef.current ? mapRef.current : null);
+  const [mapError, setMapError] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  /** Camera tracks the driver's car; paused when they drag or rotate the map */
+  const [following, setFollowing] = useState(true);
+  const followZoomPending = useRef(true);
+  const wasFollowing = useRef(false);
 
-  // Prop refs to avoid stale closures in the map click handler
+  // Prop refs to avoid stale closures in map event handlers
   const graphRef = useRef(graph);
+  const signalsRef = useRef(signals);
   const simpleViewRef = useRef(simpleView);
-  const roleRef = useRef(role);
-  const selectedSourceRef = useRef(selectedSource);
-  const selectedDestRef = useRef(selectedDest);
-  const onSelectSourceRef = useRef(onSelectSource);
-  const onSelectDestRef = useRef(onSelectDest);
-
   graphRef.current = graph;
-  roleRef.current = role;
-  selectedSourceRef.current = selectedSource;
-  selectedDestRef.current = selectedDest;
-  onSelectSourceRef.current = onSelectSource;
-  onSelectDestRef.current = onSelectDest;
+  signalsRef.current = signals;
+  simpleViewRef.current = simpleView;
 
   // ── Init map once ──────────────────────────────────────────────────────────
   useEffect(() => {
     const container = containerRef.current;
     if (!container || mapRef.current) return;
 
-    const map = L.map(container, { center: MAP_CENTER, zoom: 13, zoomControl: false });
-    L.control.zoom({ position: 'bottomleft' }).addTo(map);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19, attribution: '&copy; OpenStreetMap contributors',
-    }).addTo(map);
-
+    let map: MLMap;
+    styleUrlRef.current = simpleViewRef.current ? MAP_STYLES.light : MAP_STYLES.dark;
+    try {
+      map = new maplibregl.Map({
+        container,
+        style: styleUrlRef.current,
+        center: [MAP_CENTER[1], MAP_CENTER[0]],
+        zoom: 13,
+        maxZoom: 19,
+        attributionControl: { compact: true },
+      });
+    } catch (err) {
+      // No WebGL (very old browser or GPU blocked)
+      setMapError(err instanceof Error ? err.message : 'Map could not start');
+      return;
+    }
     mapRef.current = map;
-    roadLayerRef.current = L.layerGroup().addTo(map);
-    signalLayerRef.current = L.layerGroup().addTo(map);
-    vehicleLayerRef.current = L.layerGroup().addTo(map);
-    heatmapLayerRef.current = L.layerGroup().addTo(map);
-    routeLayerRef.current = L.layerGroup().addTo(map);
-    sourceDestLayerRef.current = L.layerGroup().addTo(map);
-    blockLayerRef.current = L.layerGroup().addTo(map);
+    map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'bottom-left');
 
-    map.on('click', (e: L.LeafletMouseEvent) => {
-      const nearest = findNearestNode(graphRef.current.nodes, e.latlng.lat, e.latlng.lng);
+    map.on('styleimagemissing', e => addMissingImage(map, e.id));
+    // Fires on first load and after each style switch (which drops our layers)
+    map.on('style.load', () => {
+      addOverlayLayers(map, { showRoads: !simpleViewRef.current });
+      loadedMapRef.current = map;
+      lastGraphVersion.current = -1; // new map: draw the roads again
+      setLoadCount(c => c + 1);
+    });
+
+    const hoverPopup = new maplibregl.Popup({ closeButton: false, closeOnClick: false, className: 'wf-tooltip', offset: 12 });
+
+    map.on('click', (e: MapMouseEvent) => {
+      // Operators: tapping a signal shows its timing instead of the menu
+      if (!simpleViewRef.current && map.getLayer(LAYER.signals)) {
+        // Same thinning as the layer's opacity: hidden signals can't be tapped
+        const z = map.getZoom();
+        const minDeg = z < 14 ? 0 : z < 16 ? 2 : 3;
+        const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER.signals] })
+          .find(f => Number(f.properties?.deg ?? 0) >= minDeg);
+        const sigId = hit?.properties?.id as string | undefined;
+        const sig = sigId ? [...signalsRef.current.values()].find(s => s.id === sigId) : undefined;
+        if (sig) {
+          const adj = graphRef.current.adjacency.get(sig.nodeId)?.length ?? 0;
+          new maplibregl.Popup({ className: 'wf-popup', offset: 10 })
+            .setLngLat(e.lngLat).setHTML(signalPopupHtml(sig, adj)).addTo(map);
+          return;
+        }
+      }
+
+      const { lat, lng } = e.lngLat;
+      const nearest = findNearestNode(graphRef.current.nodes, lat, lng);
       const nodeId = nearest?.id ?? null;
       const nodeDegree = nodeId ? (graphRef.current.adjacency.get(nodeId)?.length ?? 0) : 0;
       const roadNames: string[] = nodeId
@@ -145,278 +206,201 @@ export default function MapView({
               .filter(Boolean) as string[]
           )]
         : [];
-
       setContextMenu({
-        lat: e.latlng.lat, lng: e.latlng.lng, nodeId, nodeDegree, roadNames,
+        lat, lng, nodeId, nodeDegree, roadNames,
         screenX: e.originalEvent.clientX, screenY: e.originalEvent.clientY,
       });
     });
 
-    // Mini-map
-    const miniEl = simpleViewRef.current ? null : document.getElementById('mini-map');
-    if (miniEl && !miniMapRef.current) {
-      const mm = L.map(miniEl, {
-        center: MAP_CENTER, zoom: 11, zoomControl: false,
-        attributionControl: false, dragging: false, scrollWheelZoom: false,
-      });
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(mm);
-      L.circleMarker(MAP_CENTER, { radius: 5, color: '#FF6D00', fillColor: '#FF6D00', fillOpacity: 1, weight: 2 }).addTo(mm);
-      miniMapRef.current = mm;
-    }
+    // Operators: hover a vehicle for its type and speed
+    map.on('mousemove', LAYER.vehicles, e => {
+      const f = e.features?.[0];
+      if (!f || simpleViewRef.current) return;
+      map.getCanvas().style.cursor = 'pointer';
+      hoverPopup.setLngLat(e.lngLat).setHTML(String(f.properties?.label ?? '')).addTo(map);
+    });
+    map.on('mouseleave', LAYER.vehicles, () => {
+      map.getCanvas().style.cursor = '';
+      hoverPopup.remove();
+    });
+    map.on('mouseenter', LAYER.signals, () => { if (!simpleViewRef.current) map.getCanvas().style.cursor = 'pointer'; });
+    map.on('mouseleave', LAYER.signals, () => { map.getCanvas().style.cursor = ''; });
 
-    // Keep Leaflet in sync when the layout changes (phone bottom sheet, rotation)
-    const resizeObserver = new ResizeObserver(() => map.invalidateSize());
+    // A drag or rotate by the user pauses the follow camera (zooming doesn't)
+    const pauseFollow = (e: { originalEvent?: unknown }) => { if (e.originalEvent) setFollowing(false); };
+    map.on('dragstart', pauseFollow);
+    map.on('rotatestart', pauseFollow);
+
+    // Keep the map sized to its box (phone bottom sheet, rotation)
+    const resizeObserver = new ResizeObserver(() => map.resize());
     resizeObserver.observe(container);
 
     return () => {
       resizeObserver.disconnect();
-      map.remove(); mapRef.current = null;
-      if (miniMapRef.current) { miniMapRef.current.remove(); miniMapRef.current = null; }
+      hoverPopup.remove();
+      map.remove(); mapRef.current = null; loadedMapRef.current = null;
     };
-  }, []); // intentionally empty — one-time init, all props via refs
+  }, []); // intentionally empty — one-time init, props reach handlers via refs
 
-  // ── Draw roads (REQ-G3: full geometry polyline) ───────────────────────────
+  // ── Mini-map (operators) ──────────────────────────────────────────────────
   useEffect(() => {
-    const layer = roadLayerRef.current;
-    if (!layer || !mapRef.current) return;
-    if (graphVersion === lastGraphVersion.current) return;
-    lastGraphVersion.current = graphVersion;
-    layer.clearLayers();
-
-    const drawn = new Set<string>();
-    for (const [, edge] of graph.edges) {
-      const key = [edge.from, edge.to].sort().join('|');
-      if (drawn.has(key)) continue; drawn.add(key);
-
-      // Use full geometry array (REQ-G3)
-      const geom = edge.geometry;
-      if (!geom || geom.length < 2) continue;
-      const latlngs = geom.map(p => [p.lat, p.lng] as [number, number]);
-
-      const isPrimary = edge.roadType === 'primary' || edge.roadType === 'motorway' || edge.roadType === 'trunk';
-      const isSecondary = edge.roadType === 'secondary';
-      L.polyline(latlngs, {
-        color: isPrimary ? '#FF6D00' : isSecondary ? '#FF9100' : '#FFAB4044',
-        weight: isPrimary ? 4 : isSecondary ? 3 : 1.5,
-        opacity: isPrimary ? 0.85 : isSecondary ? 0.65 : 0.4,
-        interactive: false, // taps fall through to the map menu
-      }).addTo(layer);
+    if (simpleView || !miniRef.current || mapError) return;
+    let mini: MLMap;
+    try {
+      mini = new maplibregl.Map({
+        container: miniRef.current,
+        style: MAP_STYLES.dark,
+        center: [MAP_CENTER[1], MAP_CENTER[0]],
+        zoom: 10,
+        interactive: false,
+        attributionControl: false,
+      });
+    } catch {
+      return; // mini-map is optional
     }
+    const dot = document.createElement('div');
+    dot.style.cssText = 'width:10px;height:10px;border-radius:50%;background:#FF6D00;border:2px solid #fff;';
+    new maplibregl.Marker({ element: dot }).setLngLat([MAP_CENTER[1], MAP_CENTER[0]]).addTo(mini);
+    return () => mini.remove();
+  }, [simpleView, mapError]);
+
+  // ── Roads ─────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const map = loadedMap();
+    if (!map || graphVersion === lastGraphVersion.current) return;
+    lastGraphVersion.current = graphVersion;
+    setSourceData(map, SRC.roads, roadsData(graph));
 
     if (graph.nodes.size > 0 && !firstFitDone.current) {
-      const allPoints = Array.from(graph.nodes.values()).map(n => [n.lat, n.lng] as [number, number]);
-      if (allPoints.length > 0) {
-        mapRef.current.fitBounds(L.latLngBounds(allPoints), { padding: [20, 20] });
-        firstFitDone.current = true;
-      }
+      const bounds = new maplibregl.LngLatBounds();
+      for (const n of graph.nodes.values()) bounds.extend([n.lng, n.lat]);
+      map.fitBounds(bounds, { padding: 20, duration: 0 });
+      firstFitDone.current = true;
     }
-  }, [graph, graphVersion]);
+  }, [graph, graphVersion, loadCount]);
 
-  // ── Source / Destination markers ──────────────────────────────────────────
+  // Role changed (demo role switch): light map for drivers, dark for operators
   useEffect(() => {
-    const layer = sourceDestLayerRef.current; if (!layer) return;
-    layer.clearLayers();
-    if (selectedSource) {
-      const n = graph.nodes.get(selectedSource);
-      if (n) {
-        L.circleMarker([n.lat, n.lng], { radius: 10, color: '#4CAF50', fillColor: '#4CAF50', fillOpacity: 0.9, weight: 3 })
-          .bindTooltip('Origin', { permanent: true, direction: 'top', className: 'wf-tooltip' })
-          .addTo(layer);
-      }
-    }
-    if (selectedDest) {
-      const n = graph.nodes.get(selectedDest);
-      if (n) {
-        L.circleMarker([n.lat, n.lng], { radius: 10, color: '#F44336', fillColor: '#F44336', fillOpacity: 0.9, weight: 3 })
-          .bindTooltip('Destination', { permanent: true, direction: 'top', className: 'wf-tooltip' })
-          .addTo(layer);
-      }
-    }
+    const map = mapRef.current;
+    if (!map || !loadedMap()) return;
+    const want = simpleView ? MAP_STYLES.light : MAP_STYLES.dark;
+    if (styleUrlRef.current === want) return;
+    styleUrlRef.current = want;
+    loadedMapRef.current = null; // overlay waits for 'style.load'
+    map.setStyle(want, { diff: false });
+  }, [simpleView, loadCount]);
+
+  // Drivers see the base map's roads; operators also see the simulated network
+  useEffect(() => {
+    const map = loadedMap();
+    if (map) map.setLayoutProperty('wf-roads', 'visibility', simpleView ? 'none' : 'visible');
+  }, [simpleView, loadCount]);
+
+  // ── Source / destination pins ─────────────────────────────────────────────
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    for (const m of pinMarkersRef.current) m.remove();
+    pinMarkersRef.current = [];
+    const add = (id: string | null, color: string, label: string) => {
+      const n = id ? graph.nodes.get(id) : undefined;
+      if (n) pinMarkersRef.current.push(new maplibregl.Marker({ element: pinElement(color, label) }).setLngLat([n.lng, n.lat]).addTo(map));
+    };
+    add(selectedSource, '#4CAF50', 'Origin');
+    add(selectedDest, '#F44336', 'Destination');
   }, [selectedSource, selectedDest, graph]);
 
   // ── Bring newly chosen places into view ───────────────────────────────────
   useEffect(() => {
-    const map = mapRef.current; if (!map) return;
+    const map = mapRef.current;
+    if (!map) return;
     const pts = [selectedSource, selectedDest]
       .map(id => id ? graphRef.current.nodes.get(id) : undefined)
       .filter((n): n is NonNullable<typeof n> => !!n)
-      .map(n => [n.lat, n.lng] as [number, number]);
+      .map(n => [n.lng, n.lat] as [number, number]);
     if (pts.length === 2) {
-      map.fitBounds(L.latLngBounds(pts), { padding: [60, 60], maxZoom: 16 });
-    } else if (pts.length === 1 && !map.getBounds().pad(-0.1).contains(pts[0])) {
-      map.setView(pts[0], Math.max(map.getZoom(), 15));
+      map.fitBounds(new maplibregl.LngLatBounds(pts[0], pts[0]).extend(pts[1]), { padding: 60, maxZoom: 16 });
+    } else if (pts.length === 1 && !map.getBounds().contains(pts[0])) {
+      map.easeTo({ center: pts[0], zoom: Math.max(map.getZoom(), 15) });
     }
   }, [selectedSource, selectedDest]);
 
-  // ── Update signals (circles only, zoom-dependent LOD) ────────────────────
+  // ── Live layers ───────────────────────────────────────────────────────────
   useEffect(() => {
-    const layer = signalLayerRef.current; if (!layer) return;
+    const map = loadedMap();
+    if (map) setSourceData(map, SRC.signals, signalsData(signals, graph));
+  }, [signals, graph, loadCount]);
 
-    layer.clearLayers();
-    const hasRoads = graph.edges.size > 0;
-    const mapZoom = mapRef.current?.getZoom() ?? 13;
-    const minEdgeCount = mapZoom <= 13 ? 0 : mapZoom <= 15 ? 2 : 3;
-
-    for (const sig of signals.values()) {
-      const nodeId = sig.nodeId;
-      const node = graph.nodes.get(nodeId); if (!node) continue;
-      const adjEdges = graph.adjacency.get(nodeId)?.length ?? 0;
-      if (hasRoads && adjEdges < minEdgeCount) continue;
-
-      const phase = sig.phases[sig.currentPhaseIndex];
-      const isGreen = phase.color === 'GREEN';
-      const isYellow = phase.color === 'YELLOW';
-      const color = isGreen ? '#00E676' : isYellow ? '#FFD600' : '#FF1744';
-      const pulseSize = isGreen ? 9 : 7;
-
-      const circle = L.circleMarker([node.lat, node.lng], {
-        radius: pulseSize, color, fillColor: color, fillOpacity: 0.9, weight: 3,
-        // Drivers tap roads (to set places or report blocks); signal details are for operators
-        interactive: !simpleViewRef.current,
-      }).addTo(layer);
-
-      // Click shows popup with signal details
-      circle.bindPopup(`
-        <div style="font-family:monospace;font-size:11px;color:#ccc;background:#111;padding:8px;min-width:160px;">
-          <div style="font-weight:bold;color:#fff;margin-bottom:4px;">${sig.id}</div>
-          <div>Phase: <span style="color:${color}">${phase.color}</span> → ${phase.group}</div>
-          <div>Timer: ${sig.timer.toFixed(1)}s / ${phase.duration.toFixed(0)}s</div>
-          <div>Cycle: ${sig.cycleLength.toFixed(0)}s</div>
-          <div>Congestion: ${(sig.congestionLevel * 100).toFixed(0)}%</div>
-          <div>Edges: ${adjEdges}</div>
-          ${sig.greenWaveDirection ? `<div>Green Wave: ${sig.greenWaveDirection}</div>` : ''}
-        </div>
-      `, { className: 'wf-popup' });
-    }
-  }, [signals, graph]);
-
-  // ── Update vehicles with rotation ────────────────────────────────────────
   useEffect(() => {
-    const layer = vehicleLayerRef.current; if (!layer) return;
-    const markers = vehicleMarkersRef.current;
-    const active = new Set(vehicles.keys());
+    const map = loadedMap();
+    if (map) setSourceData(map, SRC.vehicles, vehiclesData(vehicles, followVehicleId));
+  }, [vehicles, vehicleVersion, followVehicleId, loadCount]);
 
-    // Remove stale markers
-    for (const [id] of markers) {
-      if (!active.has(id)) { markers.get(id)?.remove(); markers.delete(id); }
-    }
-
-    for (const [, v] of vehicles) {
-      const icon = VEHICLE_ICONS[v.type] || '🚗';
-      const rotation = Math.round(v.bearing / 15) * 15;
-      const navGlow = v.isNavigated ? 'box-shadow:0 0 8px 3px #4488FF;' : '';
-      const iconKey = `${icon}_${rotation}_${v.color}_${v.isNavigated ? 'nav' : ''}`;
-      const existing = markers.get(v.id);
-
-      if (existing) {
-        existing.setLatLng([v.lat, v.lng]);
-        existing.setTooltipContent(`${v.type.toUpperCase()} · ${Math.round(v.speed)} km/h`);
-        // Only update icon if rotation/color changed
-        if ((existing as any)._lastIconKey !== iconKey) {
-          let cachedIcon = iconCacheRef.current.get(iconKey);
-          if (!cachedIcon) {
-            cachedIcon = L.divIcon({
-              className: '',
-              html: `<div style="font-size:16px;transform:rotate(${rotation}deg);filter:drop-shadow(0 1px 3px ${v.color});transform-origin:center;${navGlow}">${icon}</div>`,
-              iconSize: [20, 20], iconAnchor: [10, 10],
-            });
-            iconCacheRef.current.set(iconKey, cachedIcon);
-          }
-          existing.setIcon(cachedIcon);
-          (existing as any)._lastIconKey = iconKey;
-        }
-      } else {
-        let cachedIcon = iconCacheRef.current.get(iconKey);
-        if (!cachedIcon) {
-          cachedIcon = L.divIcon({
-            className: '',
-            html: `<div style="font-size:16px;transform:rotate(${rotation}deg);filter:drop-shadow(0 1px 3px ${v.color});transform-origin:center;${navGlow}">${icon}</div>`,
-            iconSize: [20, 20], iconAnchor: [10, 10],
-          });
-          iconCacheRef.current.set(iconKey, cachedIcon);
-        }
-        const tooltipText = `${v.type.toUpperCase()} · ${Math.round(v.speed)} km/h`;
-        const newMarker = L.marker([v.lat, v.lng], {
-          icon: cachedIcon,
-          zIndexOffset: v.type === 'emergency' ? 1000 : 0,
-          // In heavy traffic cars cover the roads; let drivers' taps reach the map
-          interactive: !simpleViewRef.current,
-        }).bindTooltip(tooltipText, {
-          direction: 'top', offset: [0, -2], className: 'wf-tooltip',
-        }).addTo(layer);
-        (newMarker as any)._lastIconKey = iconKey;
-        markers.set(v.id, newMarker);
-      }
-    }
-  }, [vehicles, vehicleVersion]);
-
-  // ── Congestion heatmap ────────────────────────────────────────────────────
   useEffect(() => {
-    const layer = heatmapLayerRef.current; if (!layer) return;
-    layer.clearLayers();
-    if (!showHeatmap) return;
-    for (const zone of congestionZones) {
-      const color = zone.level > 0.7 ? '#FF1744' : zone.level > 0.4 ? '#FF9100' : '#FFEB3B';
-      const r = Math.max(15, Math.min(50, zone.vehicles * 5));
-      L.circleMarker([zone.centerLat, zone.centerLng], {
-        radius: r, color, fillColor: color, fillOpacity: zone.level * 0.3,
-        weight: 1, opacity: 0.5,
-      }).addTo(layer);
-    }
-  }, [congestionZones, showHeatmap]);
+    const map = loadedMap();
+    if (map) setSourceData(map, SRC.heat, heatData(congestionZones, showHeatmap));
+  }, [congestionZones, showHeatmap, loadCount]);
 
-  // ── Route display ──────────────────────────────────────────────────────────
   useEffect(() => {
-    const layer = routeLayerRef.current;
-    if (!layer) return;
-    layer.clearLayers();
-    for (const alt of altRoutePolylines ?? []) {
-      if (alt.length > 1) L.polyline(alt, { color: '#8899AA', weight: 5, opacity: 0.5 }).addTo(layer);
-    }
-    if (routePolyline && routePolyline.length > 1) {
-      L.polyline(routePolyline, {
-        color: '#4488FF', weight: 6, opacity: 0.9,
-      }).addTo(layer);
-    }
-    if (reroutePolyline && reroutePolyline.length > 1) {
-      L.polyline(reroutePolyline, { color: '#00E676', weight: 6, opacity: 0.9, dashArray: '10, 8' }).addTo(layer);
-    }
-  }, [routePolyline, altRoutePolylines, reroutePolyline]);
+    const map = loadedMap();
+    if (!map) return;
+    setSourceData(map, SRC.alts, linesData(altRoutePolylines ?? []));
+    setSourceData(map, SRC.route, linesData([routePolyline]));
+    setSourceData(map, SRC.reroute, linesData([reroutePolyline]));
+  }, [routePolyline, altRoutePolylines, reroutePolyline, loadCount]);
 
-  // ── Crowd reports ──────────────────────────────────────────────────────────
   useEffect(() => {
-    const layer = blockLayerRef.current; if (!layer) return;
-    layer.clearLayers();
-    for (const r of reports) {
-      const confirmed = r.status === 'confirmed';
-      if (r.type === 'block') {
-        for (const id of r.edgeIds) {
-          const geom = graph.edges.get(id)?.geometry;
-          if (geom && geom.length > 1) {
-            L.polyline(geom.map(p => [p.lat, p.lng] as [number, number]), confirmed
-              ? { color: '#FF1744', weight: 7, opacity: 0.85, interactive: false }
-              : { color: '#FF9100', weight: 6, opacity: 0.7, dashArray: '6, 6', interactive: false }).addTo(layer);
-          }
-        }
-      } else {
-        L.circle([r.lat, r.lng], {
-          radius: r.radius, interactive: false,
-          color: r.type === 'rain' ? '#64B5F6' : '#2196F3', weight: 1, dashArray: confirmed ? undefined : '4, 4',
-          fillColor: r.type === 'rain' ? '#64B5F6' : '#2196F3', fillOpacity: (r.type === 'rain' ? 0.08 : 0.22) * (confirmed ? 1 : 0.6),
-        }).addTo(layer);
-      }
-      const badge = confirmed ? '' : '<span style="position:absolute;right:-6px;top:-6px;font-size:10px;background:#333;color:#fff;border-radius:6px;padding:0 3px">?</span>';
-      L.marker([r.lat, r.lng], {
-        icon: L.divIcon({
-          className: '',
-          html: `<div style="position:relative;font-size:22px;line-height:22px;opacity:${confirmed ? 1 : 0.65}">${REPORT_LABEL[r.type].icon}${badge}</div>`,
-          iconSize: [22, 22], iconAnchor: [11, 11],
-        }),
-        zIndexOffset: 2000,
-        interactive: false,
-      }).addTo(layer);
+    const map = loadedMap();
+    if (!map) return;
+    const { blocks, areas, icons } = reportsData(reports, graph);
+    setSourceData(map, SRC.blocks, blocks);
+    setSourceData(map, SRC.areas, areas);
+    setSourceData(map, SRC.reportIcons, icons);
+  }, [reports, graph, loadCount]);
+
+  // ── Follow camera ─────────────────────────────────────────────────────────
+  // A new trip starts in follow mode
+  useEffect(() => {
+    setFollowing(true);
+    followZoomPending.current = true;
+  }, [followVehicleId]);
+
+  useEffect(() => {
+    const map = loadedMap();
+    if (!map) return;
+    if (!followVehicleId) {
+      // Trip over: flatten the map and point north again
+      if (wasFollowing.current) map.easeTo({ pitch: 0, bearing: 0, padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: 800 });
+      wasFollowing.current = false;
+      return;
     }
-  }, [reports, graph]);
+    if (!following) return;
+    const v = vehicles.get(followVehicleId);
+    if (!v) return;
+    wasFollowing.current = true;
+    const zoom = followZoomPending.current ? Math.max(map.getZoom(), FOLLOW_ZOOM) : undefined;
+    followZoomPending.current = false;
+    // Leave out the part of the map hidden under the trip card, then put the car
+    // about two-thirds of the way down what's left so more road ahead is visible
+    const box = map.getContainer().getBoundingClientRect();
+    const cover = document.querySelector('[data-map-cover="bottom"]')?.getBoundingClientRect();
+    const covered = cover ? Math.min(Math.max(box.bottom - cover.top, 0), box.height * 0.6) : 0;
+    const visible = box.height - covered;
+    map.easeTo({
+      center: [v.lng, v.lat],
+      bearing: v.bearing,
+      pitch: FOLLOW_PITCH,
+      ...(zoom !== undefined ? { zoom } : {}),
+      padding: { top: visible * 0.3, bottom: covered, left: 0, right: 0 },
+      duration: 1000,
+      easing: t => t,
+    });
+  }, [vehicles, vehicleVersion, followVehicleId, following, loadCount]);
+
+  const recenter = useCallback(() => {
+    followZoomPending.current = true;
+    setFollowing(true);
+  }, []);
 
   // ── Context menu handlers ─────────────────────────────────────────────────
   const handleAddSignal = useCallback(() => {
@@ -433,21 +417,41 @@ export default function MapView({
     if (contextMenu?.nodeId) onSelectSource(contextMenu.nodeId);
   }, [contextMenu, onSelectSource]);
 
+  const handleSetDest = useCallback(() => {
+    if (contextMenu?.nodeId) onSelectDest(contextMenu.nodeId);
+  }, [contextMenu, onSelectDest]);
+
   // Reports the tapped point falls within (rain areas are large; blocks and waterlogging local)
   const nearbyReports = contextMenu
     ? reports.filter(r => distanceMetres(r, contextMenu) < Math.max(80, r.radius))
     : [];
 
-  const handleSetDest = useCallback(() => {
-    if (contextMenu?.nodeId) onSelectDest(contextMenu.nodeId);
-  }, [contextMenu, onSelectDest]);
-
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 
+      {mapError && (
+        <div style={{
+          position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          color: '#ccc', fontSize: 14, padding: 24, textAlign: 'center', background: '#1a1a2e',
+        }}>
+          The map needs WebGL, which this browser or device has turned off. Try an up-to-date Chrome, Edge, Safari or Firefox.
+        </div>
+      )}
+
+      {/* Back to following the car after the driver moved the map (top: the trip card covers the bottom) */}
+      {followVehicleId && !following && (
+        <button onClick={recenter} style={{
+          position: 'absolute', left: '50%', transform: 'translateX(-50%)',
+          top: 16, zIndex: 1003,
+          padding: '10px 18px', borderRadius: 22, border: 'none', cursor: 'pointer',
+          background: '#2F6BFF', color: '#fff', fontSize: 14, fontWeight: 600,
+          boxShadow: '0 4px 14px rgba(0,0,0,0.35)',
+        }}>◎ Re-center</button>
+      )}
+
       {/* Mini-map */}
-      {!simpleView && <div id="mini-map" style={{
+      {!simpleView && <div ref={miniRef} style={{
         position: 'absolute', bottom: 12, right: 12, zIndex: 1000,
         width: 160, height: 120, borderRadius: 8, overflow: 'hidden',
         border: '2px solid #333', boxShadow: '0 4px 16px rgba(0,0,0,0.6)',
@@ -515,7 +519,7 @@ export default function MapView({
           onSetDest={handleSetDest}
           onReport={type => {
             const map = mapRef.current;
-            const radius = map ? map.containerPointToLatLng([0, 0]).distanceTo(map.containerPointToLatLng([24, 0])) : 60;
+            const radius = map ? map.unproject([0, 0]).distanceTo(map.unproject([24, 0])) : 60;
             onReport?.(type, contextMenu.lat, contextMenu.lng, radius);
           }}
           nearbyReports={nearbyReports}
@@ -527,16 +531,15 @@ export default function MapView({
       )}
 
       <style>{`
-        .wf-tooltip {
-          background: rgba(0,0,0,0.8) !important;
-          border: 1px solid #444 !important;
-          color: #fff !important;
-          font-size: 11px !important;
+        .wf-tooltip .maplibregl-popup-content {
+          background: rgba(0,0,0,0.8); border: 1px solid #444; color: #fff;
+          font-size: 11px; padding: 3px 7px; border-radius: 4px; pointer-events: none;
         }
-        .wf-tooltip::before { display: none !important; }
-        .wf-popup .leaflet-popup-content-wrapper { background: #111 !important; color: #ccc !important; border-radius: 6px !important; border: 1px solid #333 !important; }
-        .wf-popup .leaflet-popup-tip { background: #111 !important; border: 1px solid #333 !important; }
-        .wf-popup .leaflet-popup-close-button { color: #666 !important; }
+        .wf-tooltip .maplibregl-popup-tip { display: none; }
+        .wf-popup .maplibregl-popup-content { background: #111; color: #ccc; border-radius: 6px; border: 1px solid #333; padding: 10px; }
+        .wf-popup.maplibregl-popup-anchor-bottom .maplibregl-popup-tip { border-top-color: #111; }
+        .wf-popup.maplibregl-popup-anchor-top .maplibregl-popup-tip { border-bottom-color: #111; }
+        .wf-popup .maplibregl-popup-close-button { color: #666; }
       `}</style>
     </div>
   );
