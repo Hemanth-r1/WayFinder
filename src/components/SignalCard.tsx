@@ -63,7 +63,8 @@ export default function SignalCard({ signal, updatedAt, onClose, compact }: Prop
                 <div style={{ color: '#eee', fontSize: 12, fontWeight: 600 }}>{r.title}</div>
                 {r.sub && <div style={{ color: '#888', fontSize: 11 }}>{r.sub}</div>}
                 <div style={{ color: '#666', fontSize: 10, marginTop: 1 }}>
-                  green {formatSeconds(t.green)} · red {formatSeconds(t.red)} each cycle
+                  green {formatSeconds(t.green)} · amber {formatSeconds(t.yellow)} · red {formatSeconds(t.red)} each cycle
+                  {t.allRed > 0 && <> (incl. {t.allRed} s all-red clearance)</>}
                 </div>
                 {t.light === 'RED' && t.changesIn >= ENGINE_OFF_SECONDS && (
                   <div style={{ color: '#FFD54F', fontSize: 11, marginTop: 2 }}>⏱ Switch off your engine — green in {formatSeconds(t.changesIn)}</div>
@@ -71,7 +72,7 @@ export default function SignalCard({ signal, updatedAt, onClose, compact }: Prop
               </div>
               <div style={{ textAlign: 'right', fontFamily: 'monospace' }}>
                 <div style={{ color: LIGHT[t.light], fontSize: 16, fontWeight: 700 }}>{t.changesIn}s</div>
-                <div style={{ color: '#666', fontSize: 9 }}>{t.light === 'RED' ? 'until green' : 'until red'}</div>
+                <div style={{ color: '#666', fontSize: 9 }}>{t.light === 'RED' ? 'until green' : t.light === 'GREEN' ? 'until amber' : 'until red'}</div>
               </div>
             </div>
           );

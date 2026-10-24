@@ -28,7 +28,6 @@ export interface Jam {
 
 /** Speed multiplier at the jam spot: 'stopped' leaves a crawl so the queue still moves a little. */
 const SEVERITY_SPEED: Record<JamSeverity, number> = { stopped: 0.04, slow: 0.25 };
-const SPACING = 6; // metres per vehicle per lane, bumper to bumper
 const MAX_JAMS = 20;
 
 const jams = new Map<string, Jam>();
@@ -155,15 +154,8 @@ export async function createJam(input: {
     const back = upstream(e, metres, index);
     const route = [...back, e, ...onward(e, index)].map(x => x.id);
     const ei = back.length;
-    for (let d = 3; d < metres; d += SPACING) {
-      // Walk back d metres from the spot
-      let k = ei, pos = at - d;
-      while (pos < 0 && k > 0) { k--; pos += index.edges.get(route[k])!.length; }
-      if (pos < 0) break;
-      for (let lane = 0; lane < Math.max(1, index.edges.get(route[k])!.lanes); lane++) {
-        if (engine.addRoutedVehicle(route, { startIndex: k, progress: pos, lane, queued: true })) placed++;
-      }
-    }
+    // Bumper to bumper by each vehicle's real length, back from the spot
+    placed += engine.addQueue(() => ({ route, endIndex: ei, endProgress: at }), metres, e.lanes).length;
   }
   const jam: Jam = {
     id: `jam${++counter}`, lat: input.lat, lng: input.lng, road: seg.edge.name || 'Unnamed road',

@@ -102,31 +102,17 @@ async function buildArms(junctionIds: string[]): Promise<ArmRoutes[]> {
  * Fills every approach with a standing queue `fillMetres` long (all lanes). Returns the
  * ids of the placed vehicles.
  */
-async function fillApproaches(arms: ArmRoutes[], fillMetres: number): Promise<string[]> {
+function fillApproaches(arms: ArmRoutes[], fillMetres: number): string[] {
   const engine = getSimulationEngine()!;
-  const { graph, signals } = await getGraph();
-  const index = getGraphIndex(graph, signals);
   const ids: string[] = [];
-  const SPACING = 6; // metres per vehicle per lane, bumper to bumper
   for (const arm of arms) {
-    for (let back = 3; back < fillMetres; back += SPACING) {
-      for (let lane = 0; lane < Math.max(1, arm.approach.lanes); lane++) {
-        const r = arm.routes[Math.floor(Math.random() * arm.routes.length)];
-        const ai = r.edgeIds.indexOf(arm.approach.id);
-        // Walk back along this route from the stop line
-        let k = ai, remaining = back;
-        while (k >= 0) {
-          const e = index.edges.get(r.edgeIds[k])!;
-          if (remaining <= e.length) break;
-          remaining -= e.length;
-          k--;
-        }
-        if (k < 0) continue;
-        const e = index.edges.get(r.edgeIds[k])!;
-        const id = engine.addRoutedVehicle(r.edgeIds, { startIndex: k, progress: e.length - remaining, lane, queued: true });
-        if (id) ids.push(id);
-      }
-    }
+    if (arm.routes.length === 0) continue;
+    // Bumper to bumper by each vehicle's real length, back from the stop line
+    ids.push(...engine.addQueue(() => {
+      const r = arm.routes[Math.floor(Math.random() * arm.routes.length)];
+      const ai = r.edgeIds.indexOf(arm.approach.id);
+      return { route: r.edgeIds, endIndex: ai, endProgress: arm.approach.length - 1 };
+    }, fillMetres, arm.approach.lanes));
   }
   return ids;
 }
@@ -284,9 +270,19 @@ export async function runSurge(mode: ScenarioMode, opts: SurgeOptions, minutes =
 }
 
 /** Live demo: fills the junction approaches in the running simulation (no measurement). */
-export async function surgeLive(junctionIds: string[], fillMetres = 600): Promise<number> {
+export interface SurgeArm { junctionId: string; road: string; vehicles: number }
+
+/** Live demo: fill every approach of these junctions; vehicles placed per approach. */
+export async function surgeLive(junctionIds: string[], fillMetres = 600): Promise<{ placed: number; arms: SurgeArm[] }> {
   const arms = await buildArms(junctionIds);
-  return (await fillApproaches(arms, fillMetres)).length;
+  const result: SurgeArm[] = [];
+  let placed = 0;
+  for (const arm of arms) {
+    const n = fillApproaches([arm], fillMetres).length;
+    placed += n;
+    result.push({ junctionId: arm.signalId, road: arm.approach.name || 'Unnamed road', vehicles: n });
+  }
+  return { placed, arms: result };
 }
 
 export type { TrafficSignal };

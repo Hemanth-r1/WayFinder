@@ -212,8 +212,13 @@ function largestScc(nodeIds: string[], edges: Iterable<RoadEdge>): Set<string> {
 
 /** Stop lines closer than this belong to one junction controller. */
 const CLUSTER_METRES = 60;
+/** Amber (s): 3 s on city roads, 4 s where traffic arrives fast (trunk roads, highways). */
 const YELLOW = 3;
-const ALL_RED = 2;
+const YELLOW_FAST = 4;
+/** All-red clearance (s): time to cross the junction box at ~25 km/h, 2–5 s. */
+function allRedSeconds(widthMetres: number): number {
+  return Math.max(2, Math.min(5, Math.round((widthMetres + 12) / 7)));
+}
 
 /** Bearing of the last stretch of an edge — the direction traffic arrives from. */
 function arrivalBearing(edge: RoadEdge): number {
@@ -254,7 +259,13 @@ export function buildSignals(
     const internal: RoadEdge[] = [];
     for (const id of cluster) {
       for (const e of inEdges.get(id) ?? []) {
-        if (members.has(e.from) || (e.length < CLUSTER_METRES * 1.2 && nearCluster(e.from))) internal.push(e);
+        // Inside the junction only when traffic on it has already passed this junction's
+        // lights: it starts at a stop line, or it is a short link fed only from stop lines.
+        // (A short stretch near the junction that outside traffic joins is an approach —
+        // e.g. the far carriageway of a divided road.)
+        const feeders = inEdges.get(e.from) ?? [];
+        const fedFromInside = feeders.length > 0 && feeders.every(f => members.has(f.from));
+        if (members.has(e.from) || (e.length < CLUSTER_METRES * 1.2 && nearCluster(e.from) && fedFromInside)) internal.push(e);
         else incoming.push(e);
       }
     }
@@ -279,25 +290,33 @@ export function buildSignals(
       .map(e => ROAD_RANK[e.roadType] ?? 1));
     const rankA = rankOf('A'), rankB = rankOf('B');
 
+    // Clearance: wider junctions (several stop lines) need longer all-red to empty
+    let width = 0;
+    for (const a of memberNodes) for (const b of memberNodes) width = Math.max(width, haversineMetres(a, b));
+    const ALL_RED = allRedSeconds(width);
+    const yellowFor = (rank: number) => (rank >= 5 ? YELLOW_FAST : YELLOW);
+
     // Bangalore cycles run long: ~2 min at arterial crossings, ~1 min on minor roads
     let phases: SignalPhase[];
     if (rankB === 0) {
       // Pedestrian crossing / one-sided stop line
       const green = Math.round(45 + 6 * rankA + rand() * 15);
+      const yA = yellowFor(rankA);
       phases = [
-        { group: 'A', color: 'GREEN', duration: green, yellowDuration: YELLOW },
-        { group: 'A', color: 'YELLOW', duration: YELLOW, yellowDuration: 0 },
+        { group: 'A', color: 'GREEN', duration: green, yellowDuration: yA },
+        { group: 'A', color: 'YELLOW', duration: yA, yellowDuration: 0 },
         { group: 'ALL', color: 'RED', duration: Math.round(18 + rand() * 8), yellowDuration: 0 },
       ];
     } else {
       const greenA = Math.round(22 + 9 * rankA + rand() * 10);
       const greenB = Math.round(16 + 7 * rankB + rand() * 8);
+      const yA = yellowFor(rankA), yB = yellowFor(rankB);
       phases = [
-        { group: 'A', color: 'GREEN', duration: greenA, yellowDuration: YELLOW },
-        { group: 'A', color: 'YELLOW', duration: YELLOW, yellowDuration: 0 },
+        { group: 'A', color: 'GREEN', duration: greenA, yellowDuration: yA },
+        { group: 'A', color: 'YELLOW', duration: yA, yellowDuration: 0 },
         { group: 'ALL', color: 'RED', duration: ALL_RED, yellowDuration: 0 },
-        { group: 'B', color: 'GREEN', duration: greenB, yellowDuration: YELLOW },
-        { group: 'B', color: 'YELLOW', duration: YELLOW, yellowDuration: 0 },
+        { group: 'B', color: 'GREEN', duration: greenB, yellowDuration: yB },
+        { group: 'B', color: 'YELLOW', duration: yB, yellowDuration: 0 },
         { group: 'ALL', color: 'RED', duration: ALL_RED, yellowDuration: 0 },
       ];
     }

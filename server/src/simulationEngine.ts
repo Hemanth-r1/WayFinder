@@ -115,10 +115,20 @@ const LANE_WIDTH = 3.2;
 const LIFETIME = { min: 300, max: 1200 };
 /** Background vehicles stuck (not at a red light) this long are removed. */
 const STUCK_SECONDS = 240;
+/** In a queue behind another vehicle, a vehicle may stand this many times longer (40 min). */
+const QUEUE_STUCK_FACTOR = 10;
 /** How often per-edge traffic levels are recomputed (s). */
 const TRAFFIC_INTERVAL = 2;
 /** Physics step: 5 Hz (traffic-simulation.de steps 0.1–0.25 s of simulated time per frame). */
 const TICK_MS = 200;
+/**
+ * Drivers need about a second to notice the vehicle ahead (or the light) and pull away.
+ * This is what makes a restart travel back through a queue at ~15–20 km/h, so a 1 km
+ * jam takes minutes, not seconds, to start moving at its tail.
+ */
+function reactionSeconds(k: { T: number }): number {
+  return (0.55 + 0.5 * k.T) * (0.75 + Math.random() * 0.5);
+}
 /** Give-way checks start this close to a junction (m). */
 const GIVE_WAY_METRES = 30;
 /** Seconds a driver waits to give way before going anyway. */
@@ -315,6 +325,8 @@ interface SimVehicle {
   approachWait: number;
   /** Took a wrong-way stretch already: from then on drives by the rules */
   reformed?: boolean;
+  /** Seconds left before a stopped driver reacts to the gap opening ahead */
+  reactLeft?: number;
 }
 
 const rankOf = (e: RoadEdge) => ROAD_RANK[e.roadType] ?? 1;
@@ -482,11 +494,11 @@ class SimulationEngine {
    * Scenarios: adds a vehicle that drives `route` (edge ids), starting `startIndex` edges
    * in at `progress` metres and stopped (v = 0) when `queued`. Returns its id.
    */
-  addRoutedVehicle(route: string[], opts: { startIndex?: number; progress?: number; lane?: number; queued?: boolean } = {}): string | null {
+  addRoutedVehicle(route: string[], opts: { startIndex?: number; progress?: number; lane?: number; queued?: boolean; kind?: VehicleKind } = {}): string | null {
     const startIndex = opts.startIndex ?? 0;
     const edge = this.index.edges.get(route[startIndex]);
     if (!edge) return null;
-    const kind = this.pickKind();
+    const kind = opts.kind ?? this.pickKind();
     this.vehicleCounter++;
     const lanes = Math.max(1, edge.lanes);
     const lane = Math.min(lanes - 1, opts.lane ?? this.pickLane(edge, kind));
@@ -912,6 +924,51 @@ class SimulationEngine {
     return Infinity;
   }
 
+  /**
+   * A standing queue, bumper to bumper as in a real jam: in every lane, vehicles packed
+   * back from the queue head by their own length plus a jam gap (s0), along the road
+   * each vehicle came by. `pick` gives each vehicle its route and where the queue head is
+   * on it (route index, metres along that edge). Returns the vehicle ids.
+   */
+  addQueue(pick: () => { route: string[]; endIndex: number; endProgress: number }, metres: number, lanes: number): string[] {
+    const ids: string[] = [];
+    // Space already taken per edge and lane (another queue may share this road)
+    const taken = new Map<string, [number, number][]>();
+    const take = (edgeId: string, lane: number, rear: number, front: number) => {
+      const key = edgeId + '|' + lane;
+      (taken.get(key) ?? taken.set(key, []).get(key)!).push([rear, front]);
+    };
+    for (const v of this.sim.values()) take(v.edge.id, v.lane, v.progress - v.kind.length, v.progress);
+    const blocker = (edgeId: string, lane: number, rear: number, front: number): number | null => {
+      let worst: number | null = null;
+      for (const [r, f] of taken.get(edgeId + '|' + lane) ?? []) {
+        if (r < front + 1 && f > rear - 1) worst = worst === null ? r : Math.min(worst, r);
+      }
+      return worst;
+    };
+    for (let lane = 0; lane < Math.max(1, lanes); lane++) {
+      let back = 0.5; // queue head → this vehicle's front bumper
+      while (back < metres) {
+        const kind = this.pickKind();
+        const r = pick();
+        let k = r.endIndex, pos = r.endProgress - back;
+        while (pos < 0 && k > 0) { k--; pos += this.index.edges.get(r.route[k])?.length ?? 0; }
+        if (pos < 0) break; // ran out of road
+        const e = this.index.edges.get(r.route[k]);
+        // Narrower road upstream: this lane doesn't exist there
+        if (e && lane < Math.max(1, e.lanes)) {
+          // Someone is already standing here: queue up behind them instead
+          const b = blocker(e.id, lane, pos - kind.length, pos);
+          if (b !== null) { back += Math.max(1, pos - b) + kind.s0; continue; }
+          const id = this.addRoutedVehicle(r.route, { startIndex: k, progress: pos, lane, queued: true, kind });
+          if (id) { ids.push(id); take(e.id, lane, pos - kind.length, pos); }
+        }
+        back += kind.length + kind.s0 * (0.8 + Math.random() * 0.4);
+      }
+    }
+    return ids;
+  }
+
   /** Front-most vehicle on an edge (any lane). */
   private frontOf(e: RoadEdge): SimVehicle | undefined {
     let best: SimVehicle | undefined;
@@ -1066,6 +1123,14 @@ class SimulationEngine {
     sv.violationTimer = Math.max(0, sv.violationTimer - dt);
     sv.pub.violation = sv.violationTimer > 0 || undefined;
     sv.acc = Math.min(accModel(k, sv.v, v0, lead.s, lead.vLead, lead.aLead), idm(k, sv.v, v0, stopGap, 0));
+    // Standing still: wait a reaction time after the way opens before pulling away
+    if (sv.v < 0.3 && sv.acc > 0) {
+      sv.reactLeft ??= reactionSeconds(k);
+      sv.reactLeft -= dt;
+      if (sv.reactLeft > 0) sv.acc = 0;
+    } else {
+      sv.reactLeft = undefined;
+    }
     if (sv.v > 1 && dt > 0) sv.acc += Math.sqrt(ACC_NOISE / dt) * (Math.random() - 0.5);
 
     // Ballistic update (no reversing): stop exactly when braking to zero within the step
@@ -1091,7 +1156,10 @@ class SimulationEngine {
 
     sv.pub.speed = Math.round(sv.v * 3.6 * 10) / 10;
     sv.ttl -= dt;
-    sv.stuck = sv.v < 0.3 && !sv.atRed && sv.stopAt === null ? sv.stuck + dt : 0;
+    // Waiting in a queue behind other vehicles is normal (jams last a long time); only a
+    // vehicle standing with open road ahead is stuck (a deadlock), removed after STUCK_SECONDS
+    const standing = sv.v < 0.3 && !sv.atRed && sv.stopAt === null;
+    sv.stuck = standing ? sv.stuck + (lead.s < 15 ? dt / QUEUE_STUCK_FACTOR : dt) : 0;
     if (sv.approach && sv.v < 1.5) sv.approachWait += dt;
 
     for (let hops = 0; sv.progress >= sv.edge.length && hops < 5; hops++) {

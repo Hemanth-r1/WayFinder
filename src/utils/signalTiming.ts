@@ -9,9 +9,12 @@ export interface GroupTiming {
   light: 'GREEN' | 'YELLOW' | 'RED';
   /** Seconds until this light changes */
   changesIn: number;
-  /** Length of this group's green and red in one cycle (s) */
+  /** Length of this group's green, amber and red in one cycle (s) */
   green: number;
+  yellow: number;
   red: number;
+  /** All-red clearance in each change (s), part of red: every direction stops while the junction empties */
+  allRed: number;
 }
 
 /** Timing for phase group `group`, `elapsed` seconds after the signal's last update. */
@@ -41,7 +44,9 @@ export function groupTiming(sig: TrafficSignal, group: string, elapsed = 0): Gro
     changesIn += next.duration;
     j = (j + 1) % phases.length;
   }
-  return { light, changesIn: Math.max(0, Math.round(changesIn)), green, red: Math.max(0, cycle - green - yellow) };
+  // Short all-red phases are clearance; long ones (pedestrian crossings) are not
+  const allRed = Math.max(0, ...phases.filter(q => q.group === 'ALL' && q.duration <= 6).map(q => q.duration));
+  return { light, changesIn: Math.max(0, Math.round(changesIn)), green, yellow, red: Math.max(0, cycle - green - yellow), allRed };
 }
 
 export function formatSeconds(s: number): string {

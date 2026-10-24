@@ -427,8 +427,21 @@ app.get('/api/counts.csv', requireUser, requireOperator, (req, res) => {
 app.post('/api/junctions/:id/surge', requireUser, requireController, async (req, res) => {
   try {
     const metres = Math.min(1000, Math.max(100, Number(req.body?.metres) || 600));
-    const placed = await surgeLive([String(req.params.id)], metres);
-    res.json({ placed, changes: [`Filled every approach of ${req.params.id} for ${metres} m (${placed} vehicles)`] });
+    const id = String(req.params.id);
+    // A big cross often has more than one signal (e.g. Gorguntepalaya: the cross itself and
+    // Outer Ring Road × Tumkur Road 330 m away): fill every signal within 400 m together
+    const all = listJunctions();
+    const me = all.find(j => j.id === id);
+    const ids = me ? all.filter(j => Math.hypot((j.lat - me.lat) * 111320, (j.lng - me.lng) * 111320 * Math.cos(me.lat * Math.PI / 180)) <= 400).map(j => j.id) : [id];
+    const { placed, arms } = await surgeLive(ids, metres);
+    const names = new Map(all.map(j => [j.id, j.name]));
+    res.json({
+      placed, arms,
+      changes: [
+        `Filled ${arms.length} approaches at ${ids.map(j => names.get(j) ?? j).join(' + ')} for ${metres} m (${placed} vehicles)`,
+        ...arms.map(a => `${a.road} → ${names.get(a.junctionId) ?? a.junctionId}: ${a.vehicles} vehicles`),
+      ],
+    });
   } catch (err) { sendControlError(res, err); }
 });
 
