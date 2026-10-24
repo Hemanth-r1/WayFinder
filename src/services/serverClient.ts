@@ -29,7 +29,9 @@ export interface ServerSignal {
   greenWaveDirection: string | null;
   congestionLevel: number;
   adaptiveTiming: boolean;
-  approaches: Array<{ edgeId: string; bearing: number; color: string; duration: number }>;
+  nodeIds?: string[];
+  axis?: number;
+  approaches?: Array<{ edgeId: string; bearing: number; group: string }>;
 }
 
 export interface ServerStats {
@@ -52,6 +54,8 @@ export interface ServerStats {
 export type WeatherCondition = 'clear' | 'rain' | 'heavy_rain';
 export type WeatherMode = 'live' | WeatherCondition;
 export type TrafficLevel = 'light' | 'normal' | 'heavy';
+/** 'auto' follows Bangalore's time of day */
+export type TrafficMode = 'auto' | TrafficLevel;
 export type DriveMode = 'gps' | 'simulated';
 
 export type ReportType = 'block' | 'waterlogging' | 'rain';
@@ -93,7 +97,11 @@ export interface Conditions {
     capacityFactor: number;
   };
   weatherMode: WeatherMode;
+  /** Effective level (follows the clock in 'auto' mode) */
   trafficLevel: TrafficLevel;
+  trafficMode?: TrafficMode;
+  /** Current traffic as a share of peak (0–1) */
+  demand?: number;
   reports: RoadReport[];
 }
 
@@ -187,10 +195,18 @@ class ServerClient {
   private shouldReconnect = false;
   private connectTimer: number | null = null;
   private pollTimer: number | null = null;
+  /** Map area on screen ([west, south, east, north]) and zoom; vehicles are sent only for it */
+  private view: { bbox: [number, number, number, number]; zoom: number } | null = null;
+  private pollCount = 0;
 
-  async fetchGraph(forceRefresh = false) {
-    const url = `${SERVER_URL}/api/graph${forceRefresh ? '?refresh=true' : ''}`;
-    const response = await fetch(url);
+  /** Tells the server which part of the map is visible. */
+  setViewport(bbox: [number, number, number, number], zoom: number): void {
+    this.view = { bbox, zoom };
+    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ type: 'viewport', bbox, zoom }));
+  }
+
+  async fetchGraph() {
+    const response = await fetch(`${SERVER_URL}/api/graph`);
     if (!response.ok) throw new Error(`Failed to fetch graph: ${response.statusText}`);
     return response.json();
   }
@@ -253,7 +269,7 @@ class ServerClient {
     return this.post('/api/conditions/weather', { mode }, 'Failed to set weather');
   }
 
-  async setTrafficLevel(level: TrafficLevel): Promise<Conditions> {
+  async setTrafficLevel(level: TrafficMode): Promise<Conditions> {
     return this.post('/api/conditions/traffic', { level }, 'Failed to set traffic level');
   }
 
@@ -324,6 +340,7 @@ class ServerClient {
       if (userId) {
         this.ws?.send(JSON.stringify({ type: 'setUserId', userId }));
       }
+      if (this.view) this.ws?.send(JSON.stringify({ type: 'viewport', ...this.view }));
     };
 
     this.ws.onmessage = (event) => {
@@ -374,7 +391,13 @@ class ServerClient {
     console.warn('[ServerClient] WebSocket unavailable — polling for live updates');
     const poll = async () => {
       try {
-        const response = await fetch(`${SERVER_URL}/api/state`);
+        // Road traffic levels change slowly: every other poll
+        const params = new URLSearchParams({ traffic: this.pollCount++ % 2 === 0 ? '1' : '0' });
+        if (this.view) {
+          params.set('bbox', this.view.bbox.map(v => v.toFixed(5)).join(','));
+          params.set('zoom', this.view.zoom.toFixed(1));
+        }
+        const response = await fetch(`${SERVER_URL}/api/state?${params}`);
         if (response.ok) this.notifyCallbacks({ type: 'update', data: await response.json() });
       } catch { /* server unreachable; keep trying */ }
     };

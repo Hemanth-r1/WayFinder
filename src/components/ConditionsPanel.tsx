@@ -1,11 +1,11 @@
 import type { CSSProperties } from 'react';
-import type { Conditions, WeatherMode, TrafficLevel } from '../services/serverClient';
+import type { Conditions, WeatherMode, TrafficMode } from '../services/serverClient';
 import { REPORT_LABEL } from '../utils/reports';
 
 interface Props {
   conditions: Conditions | null;
   onWeather: (mode: WeatherMode) => void;
-  onTraffic: (level: TrafficLevel) => void;
+  onTraffic: (level: TrafficMode) => void;
   onRemoveReport: (id: string) => void;
 }
 
@@ -19,7 +19,8 @@ const WEATHER_OPTIONS: { value: WeatherMode; label: string }[] = [
   { value: 'rain', label: '🌧 Rain' },
   { value: 'heavy_rain', label: '⛈ Heavy' },
 ];
-const TRAFFIC_OPTIONS: { value: TrafficLevel; label: string }[] = [
+const TRAFFIC_OPTIONS: { value: TrafficMode; label: string }[] = [
+  { value: 'auto', label: 'Auto' },
   { value: 'light', label: 'Light' },
   { value: 'normal', label: 'Normal' },
   { value: 'heavy', label: 'Heavy' },
@@ -40,8 +41,13 @@ export default function ConditionsPanel({ conditions, onWeather, onTraffic, onRe
       <div style={styles.label}>Weather {conditions.weatherMode === 'live' && liveNote && <span style={{ color: '#666' }}>· {liveNote}</span>}</div>
       <Segmented options={WEATHER_OPTIONS} value={conditions.weatherMode} onChange={onWeather} />
 
-      <div style={styles.label}>Simulated traffic</div>
-      <Segmented options={TRAFFIC_OPTIONS} value={conditions.trafficLevel} onChange={onTraffic} />
+      <div style={styles.label}>
+        Simulated traffic
+        {conditions.demand !== undefined && (
+          <span style={{ color: '#666' }}> · {Math.round(conditions.demand * 100)}% of peak{conditions.trafficMode === 'auto' ? ' (Bangalore time of day)' : ''}</span>
+        )}
+      </div>
+      <Segmented options={TRAFFIC_OPTIONS} value={conditions.trafficMode ?? conditions.trafficLevel} onChange={onTraffic} />
 
       <div style={styles.label}>Driver reports ({conditions.reports.length})</div>
       {conditions.reports.length === 0 && (

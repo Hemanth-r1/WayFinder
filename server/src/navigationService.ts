@@ -12,7 +12,7 @@ import { getWeather, type WeatherCondition } from './conditionsService.js';
 import {
   isEdgeBlocked, observeDriver, reportsOnEdges, hasVoted, type PublicReport,
 } from './reportsService.js';
-import { groupForBearing, approachState, waitOnArrival, type ApproachState } from './signalTiming.js';
+import { signalControl, approachState, waitOnArrival, type ApproachState } from './signalTiming.js';
 
 export interface NavigationRequest {
   userId: string;
@@ -381,9 +381,9 @@ function signalsAhead(index: GraphIndex, edgeIds: string[], fromIndex: number, f
     eta += legLength / (Math.max(5, edge.speedLimit) / 3.6);
     if (distance > SIGNAL_LOOKAHEAD_M) break;
 
-    const signal = index.signalByNode.get(edge.to);
-    if (!signal) continue;
-    const group = groupForBearing(edge.bearing);
+    const control = signalControl(index.signalByNode, edge);
+    if (!control) continue;
+    const { signal, group } = control;
     const wait = waitOnArrival(signal, group, eta);
     const node = index.nodes.get(edge.to)!;
     result.push({

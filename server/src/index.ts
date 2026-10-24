@@ -1,14 +1,14 @@
 import express from 'express';
 import { createServer } from 'http';
 import { initFirebase, getDb } from './firebaseClient.js';
-import { getGraph } from './graphService.js';
+import { getGraph, getClientGraph } from './graphService.js';
 import { computeCongestionZones, computeStats } from './congestionService.js';
 import { computeSLA } from './slaService.js';
 import { detectActiveCorridors } from './corridorService.js';
 import { activeNavigatorCount, getGraphIndex, nearestRoadSegment } from './pathfindingService.js';
 import {
   getConditions, setWeatherMode, setTrafficLevel, startWeatherPolling,
-  type WeatherMode, type TrafficLevel,
+  type WeatherMode, type TrafficMode,
 } from './conditionsService.js';
 import { initReports, createReport, vote, withdraw, type ReportType } from './reportsService.js';
 import {
@@ -19,7 +19,7 @@ import { removeUserVehicle, getUserVehiclePosition, markArrived } from './userVe
 import {
   startNavigation, getNavigationUpdate, planRoutes, acceptReroute, updatePosition, NavigationError,
 } from './navigationService.js';
-import { initializeWebSocket, handleWebSocketUpgrade } from './websocketService.js';
+import { initializeWebSocket, handleWebSocketUpgrade, buildUpdate, parseBBox } from './websocketService.js';
 import type { Firestore } from 'firebase-admin/firestore';
 
 const app = express();
@@ -52,11 +52,19 @@ app.get('/api/me', requireUser, (_req, res) => {
   res.json({ ...caller(res), auth: authMode() });
 });
 
+// Static once loaded: sent pre-compressed and cacheable for an hour
 app.get('/api/graph', async (req, res) => {
   try {
-    const forceRefresh = req.query.refresh === 'true';
-    const result = await getGraph(forceRefresh);
-    res.json(result);
+    const { json, gzip } = await getClientGraph();
+    res.set('Cache-Control', 'public, max-age=3600');
+    res.set('Vary', 'Accept-Encoding');
+    res.type('application/json');
+    if (/\bgzip\b/.test(String(req.headers['accept-encoding'] ?? ''))) {
+      res.set('Content-Encoding', 'gzip');
+      res.send(gzip);
+    } else {
+      res.send(json);
+    }
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -88,22 +96,21 @@ app.get('/api/signals', async (_req, res) => {
   }
 });
 
-// Same payload as a WebSocket 'update' message, for clients that can't hold a socket open
-app.get('/api/state', (_req, res) => {
-  const engine = getSimulationEngine();
-  if (!engine) {
-    return res.status(503).json({ error: 'Simulation engine not running' });
-  }
-  res.json({
-    vehicles: engine.getVehicles(), signals: engine.getSignals(), stats: engine.getStats(),
-    conditions: getConditions(),
-  });
+// Same payload as a WebSocket 'update' message, for clients that can't hold a socket open.
+// ?bbox=w,s,e,n&zoom=z limits vehicles to the viewer's map; &traffic=1 adds road traffic levels.
+app.get('/api/state', (req, res) => {
+  const data = buildUpdate(
+    { bbox: parseBBox(req.query.bbox), zoom: Number(req.query.zoom) || 0 },
+    req.query.traffic === '1',
+  );
+  if (!data) return res.status(503).json({ error: 'Simulation engine not running' });
+  res.json(data);
 });
 
 // ── Road conditions ──────────────────────────────────────────────────────────
 
 const WEATHER_MODES: WeatherMode[] = ['live', 'clear', 'rain', 'heavy_rain'];
-const TRAFFIC_LEVELS: TrafficLevel[] = ['light', 'normal', 'heavy'];
+const TRAFFIC_LEVELS: TrafficMode[] = ['auto', 'light', 'normal', 'heavy'];
 const REPORT_TYPES: ReportType[] = ['block', 'waterlogging', 'rain'];
 
 function sendError(res: express.Response, err: any) {

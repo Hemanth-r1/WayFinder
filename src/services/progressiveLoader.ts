@@ -1,27 +1,46 @@
 import { serverClient } from './serverClient.ts';
 import { dataCache } from './dataCache.ts';
-import type { RoadGraph, RoadEdge, RoadNode, TrafficSignal } from '../types';
+import type { RoadGraph, RoadEdge, RoadNode, TrafficSignal, RoadType, GeoPoint } from '../types';
 
-/** Graph as the server sends it: plain arrays, adjacency lists hold edge IDs. */
+/**
+ * Graph as the server sends it (format 2): nodes as [id, lat, lng]; edges as
+ * [id, from, to, name, roadType, speedLimit, lanes, length, bearing, geometry | null].
+ * A null geometry is the reverse direction of a two-way road: reuse the other one reversed.
+ */
 interface RawGraphData {
-  graph: { nodes: RoadNode[]; edges: RoadEdge[]; adjacency: [string, string[]][] };
+  format: 2;
+  nodes: [string, number, number][];
+  edges: [string, string, string, string, string, number, number, number, number, [number, number][] | null][];
   signals: TrafficSignal[];
+  source: string;
 }
 
-/** Builds the client RoadGraph; adjacency is resolved from edge IDs to edge objects. */
 function hydrate(raw: RawGraphData): { graph: RoadGraph; signals: Map<string, TrafficSignal> } {
-  const edges = new Map<string, RoadEdge>(
-    raw.graph.edges.map(e => [e.id, { ...e, congestionWeight: e.congestionWeight ?? 0, oneway: e.oneway ?? false }]),
+  const nodes = new Map<string, RoadNode>(
+    raw.nodes.map(([id, lat, lng]) => [id, { id, lat, lng, isIntersection: true }]),
   );
-  const adjacency = new Map<string, RoadEdge[]>(
-    raw.graph.adjacency.map(([nodeId, ids]) => [
-      nodeId,
-      ids.map(id => edges.get(id)).filter((e): e is RoadEdge => e !== undefined),
-    ]),
-  );
+  const shapes = new Map<string, GeoPoint[]>();
+  for (const e of raw.edges) if (e[9]) shapes.set(e[0], e[9].map(([lat, lng]) => ({ lat, lng })));
+
+  const edges = new Map<string, RoadEdge>();
+  const adjacency = new Map<string, RoadEdge[]>();
+  for (const [id, from, to, name, roadType, speedLimit, lanes, length, bearing] of raw.edges) {
+    const reverseId = `${to}-${from}`;
+    const geometry = shapes.get(id) ?? [...(shapes.get(reverseId) ?? [])].reverse();
+    const edge: RoadEdge = {
+      id, from, to, name, roadType: roadType as RoadType, speedLimit, lanes, length, bearing,
+      geometry: geometry.length >= 2 ? geometry : [nodes.get(from)!, nodes.get(to)!],
+      congestionWeight: 0,
+      oneway: false,
+    };
+    edges.set(id, edge);
+    (adjacency.get(from) ?? adjacency.set(from, []).get(from)!).push(edge);
+  }
+  for (const e of edges.values()) e.oneway = !edges.has(`${e.to}-${e.from}`);
+
   return {
-    graph: { nodes: new Map(raw.graph.nodes.map(n => [n.id, n])), edges, adjacency },
-    signals: new Map(raw.signals.map(s => [s.id, s])),
+    graph: { nodes, edges, adjacency },
+    signals: new Map(raw.signals.map(s => [s.id, { ...s, approaches: s.approaches ?? [] }])),
   };
 }
 
@@ -50,29 +69,24 @@ export class ProgressiveLoader {
 
   private notify(update: LoadUpdate): void {
     this.currentPhase = update.phase;
-    for (const callback of this.updateCallbacks) {
-      callback(update);
-    }
+    for (const callback of this.updateCallbacks) callback(update);
   }
 
-  async load(forceRefresh = false): Promise<void> {
-    // Phase 1: Map base layer (instant - OSM tiles load automatically)
-    this.notify({ phase: 'map', source: 'osm-tiles' });
+  /**
+   * Loads Bangalore's road network from the server (the browser's HTTP cache keeps it
+   * for an hour; it's too big for localStorage).
+   */
+  async load(): Promise<void> {
+    this.notify({ phase: 'map', source: 'tiles' });
+    dataCache.remove('graph'); // drop graphs cached by older versions (could be the demo grid)
 
-    // Phase 2: Try cache first (storage-first)
-    if (!forceRefresh) {
-      const cached = dataCache.get<RawGraphData>('graph');
-      if (cached?.graph?.nodes && cached.signals) {
-        await this.publish(hydrate(cached), 'cache');
-        return;
-      }
-    }
-
-    // Phase 3: Fetch from server
     try {
-      const serverData: RawGraphData = await serverClient.fetchGraph(forceRefresh);
-      dataCache.set('graph', { graph: serverData.graph, signals: serverData.signals });
-      await this.publish(hydrate(serverData), 'server');
+      const raw = await serverClient.fetchGraph() as RawGraphData;
+      if (raw.format !== 2) throw new Error('Unexpected graph format — reload after the server updates');
+      const { graph, signals } = hydrate(raw);
+      this.notify({ phase: 'roads', source: raw.source, graph, signals });
+      this.notify({ phase: 'signals', source: raw.source, signals });
+      this.notify({ phase: 'full', source: raw.source });
     } catch (err) {
       console.error('[ProgressiveLoader] Failed to load from server:', err);
       this.notify({
@@ -81,29 +95,6 @@ export class ProgressiveLoader {
         graph: { nodes: new Map(), edges: new Map(), adjacency: new Map() },
         signals: new Map(),
       });
-    }
-  }
-
-  private async publish(data: { graph: RoadGraph; signals: Map<string, TrafficSignal> }, source: string): Promise<void> {
-    const { graph, signals } = data;
-    this.notify({ phase: 'roads', source, graph, signals });
-    this.notify({ phase: 'signals', source, signals });
-    await this.loadVehiclesFromServer();
-    this.notify({ phase: 'full', source: source === 'cache' ? 'cache+server' : source });
-  }
-
-  private async loadVehiclesFromServer(): Promise<void> {
-    try {
-      const { vehicles } = await serverClient.fetchVehicles();
-      const vehicleMap = new Map(vehicles.map((v: any) => [v.id, v]));
-      
-      this.notify({
-        phase: 'vehicles',
-        source: 'server',
-        vehicles: vehicleMap,
-      });
-    } catch (err) {
-      console.error('[ProgressiveLoader] Failed to load vehicles:', err);
     }
   }
 

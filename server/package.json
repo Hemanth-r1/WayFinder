@@ -5,7 +5,8 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "tsx watch src/index.ts"
+    "dev": "tsx watch src/index.ts",
+    "build:osm": "tsx scripts/buildOsmSnapshot.ts"
   },
   "dependencies": {
     "express": "^4.21.0",

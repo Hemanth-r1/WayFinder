@@ -8,6 +8,10 @@ export interface RoadEdge {
   id: string; from: string; to: string;
   name: string; roadType: string; speedLimit: number; length: number;
   bearing: number; lanes: number; geometry: { lat: number; lng: number }[];
+  /** Capacity multiplier at known choke points (e.g. 0.5 near Silk Board); 1 when absent */
+  bottleneck?: number;
+  /** Position in the simulation's per-edge arrays (set by the engine) */
+  ix?: number;
 }
 
 export interface RoadGraph {
@@ -20,14 +24,27 @@ export interface SignalPhase {
   group: string; color: string; duration: number; yellowDuration: number;
 }
 
+export interface SignalApproach {
+  edgeId: string;
+  /** Arrival bearing (degrees) */
+  bearing: number;
+  /** Phase group serving this approach ('A' main road, 'B' cross road); 'FREE' = inside the junction, no stop */
+  group: string;
+}
+
 export interface TrafficSignal {
+  /** Representative node (drawn on the map) */
   id: string; nodeId: string;
+  /** Every stop-line node this controller runs (defaults to [nodeId]) */
+  nodeIds?: string[];
+  /** Bearing of the junction's main road; group 'A' runs along it */
+  axis?: number;
   phases: SignalPhase[];
   currentPhaseIndex: number; timer: number;
   cycleLength: number; offset: number;
   greenWaveDirection: string | null;
   congestionLevel: number; adaptiveTiming: boolean;
-  approaches: { edgeId: string; bearing: number; color: string; duration: number }[];
+  approaches: SignalApproach[];
 }
 
 export interface Vehicle {
@@ -52,6 +69,10 @@ export interface TrafficStats {
   simulatedVehicles?: number;
   /** Vehicles of navigating users (GPS-driven or simulated drive) */
   realVehicles?: number;
+  /** Vehicles waiting at a red light */
+  atSignal?: number;
+  /** Vehicles stopped in queues (not at a red light) */
+  queued?: number;
 }
 
 export interface RouteInfo {

@@ -8,6 +8,7 @@ import { getReports, type PublicReport } from './reportsService.js';
 export type WeatherCondition = 'clear' | 'rain' | 'heavy_rain';
 export type WeatherMode = 'live' | WeatherCondition;
 export type TrafficLevel = 'light' | 'normal' | 'heavy';
+export type TrafficMode = 'auto' | TrafficLevel;
 
 export interface WeatherState {
   condition: WeatherCondition;
@@ -25,7 +26,11 @@ export interface WeatherState {
 export interface ConditionsSnapshot {
   weather: WeatherState;
   weatherMode: WeatherMode;
+  /** Effective level (follows the clock in 'auto' mode) */
   trafficLevel: TrafficLevel;
+  trafficMode: TrafficMode;
+  /** Current traffic as a share of peak (0–1) */
+  demand: number;
   reports: PublicReport[];
 }
 
@@ -42,7 +47,8 @@ const BANGALORE = { lat: 12.9716, lng: 77.5946 };
 
 let weatherMode: WeatherMode = 'live';
 let liveWeather: WeatherState = makeWeather('clear', null, 'unavailable');
-let trafficLevel: TrafficLevel = 'normal';
+/** 'auto' follows Bangalore's daily rhythm; operators can pin a level. */
+let trafficMode: TrafficMode = 'auto';
 
 function makeWeather(condition: WeatherCondition, precipitation: number | null, source: WeatherState['source']): WeatherState {
   return { condition, precipitation, source, ...WEATHER_EFFECTS[condition], updatedAt: Date.now() };
@@ -80,14 +86,50 @@ export function setWeatherMode(mode: WeatherMode): void {
 
 // ── Traffic level ────────────────────────────────────────────────────────────
 
-export function getTrafficLevel(): TrafficLevel {
-  return trafficLevel;
+/**
+ * Share of peak-hour traffic on Bangalore roads by IST hour (0–23): morning peak
+ * 8:30–11, evening peak 17:30–21, quiet after midnight.
+ */
+const HOURLY_DEMAND = [
+  0.12, 0.08, 0.06, 0.06, 0.08, 0.15, 0.30, 0.55, 0.85, 1.00, 0.95, 0.78,
+  0.70, 0.70, 0.68, 0.72, 0.82, 0.95, 1.00, 1.00, 0.85, 0.62, 0.40, 0.22,
+];
+/** Manual settings as a share of peak traffic. */
+const LEVEL_DEMAND: Record<TrafficLevel, number> = { light: 0.35, normal: 0.65, heavy: 1 };
+
+/** Bangalore clock (IST, UTC+5:30). */
+function istNow(): { hour: number; minute: number; day: number } {
+  const d = new Date(Date.now() + 5.5 * 3600 * 1000);
+  return { hour: d.getUTCHours(), minute: d.getUTCMinutes(), day: d.getUTCDay() };
 }
 
-export function setTrafficLevel(level: TrafficLevel): void {
-  trafficLevel = level;
+/** Share of peak traffic expected right now from the time of day and weekday. */
+function clockDemand(): number {
+  const { hour, minute, day } = istNow();
+  const a = HOURLY_DEMAND[hour], b = HOURLY_DEMAND[(hour + 1) % 24];
+  const weekday = day === 0 ? 0.6 : day === 6 ? 0.78 : 1;
+  return (a + (b - a) * minute / 60) * weekday;
+}
+
+/** Current traffic as a share of peak (0–1). */
+export function getDemand(): number {
+  return trafficMode === 'auto' ? clockDemand() : LEVEL_DEMAND[trafficMode];
+}
+
+/** Light / normal / heavy, following the clock in 'auto' mode. */
+export function getTrafficLevel(): TrafficLevel {
+  if (trafficMode !== 'auto') return trafficMode;
+  const d = clockDemand();
+  return d >= 0.85 ? 'heavy' : d >= 0.45 ? 'normal' : 'light';
+}
+
+export function setTrafficLevel(level: TrafficMode): void {
+  trafficMode = level;
 }
 
 export function getConditions(): ConditionsSnapshot {
-  return { weather: getWeather(), weatherMode, trafficLevel, reports: getReports() };
+  return {
+    weather: getWeather(), weatherMode, trafficLevel: getTrafficLevel(), trafficMode,
+    demand: Math.round(getDemand() * 100) / 100, reports: getReports(),
+  };
 }

@@ -8,7 +8,7 @@
  * nearby route that is not yet taken, instead of everyone piling onto one road.
  */
 import type { RoadGraph, RoadEdge, RoadNode, TrafficSignal, RouteInfo } from './types.js';
-import { expectedSignalDelay } from './signalTiming.js';
+import { expectedSignalDelay, signalControl } from './signalTiming.js';
 import { getWeather } from './conditionsService.js';
 import { isEdgeBlocked, edgeTimeFactor } from './reportsService.js';
 
@@ -23,7 +23,7 @@ const USER_SPREAD = 0.03;
 /** BPR congestion curve: t = t0 · (1 + α (v/c)^β). */
 const BPR_ALPHA = 0.15;
 const BPR_BETA = 4;
-const MAX_CONGESTION_FACTOR = 4;
+const MAX_CONGESTION_FACTOR = 6;
 /** One vehicle per this many metres per lane is treated as capacity. */
 const METRES_PER_VEHICLE = 25;
 /** Seconds for a full 90° turn; 180° U-turns cost double plus a fixed penalty. */
@@ -74,7 +74,7 @@ export function getGraphIndex(graph: RoadGraph, signals: TrafficSignal[]): Graph
 
   const index: GraphIndex = {
     nodes, edges, outEdges,
-    signalByNode: new Map(signals.map(s => [s.nodeId, s])),
+    signalByNode: new Map(signals.flatMap(s => (s.nodeIds ?? [s.nodeId]).map(id => [id, s] as const))),
     edgeList: graph.edges,
     maxSpeedMs: maxSpeed / 3.6,
   };
@@ -156,7 +156,9 @@ export interface RoutingContext {
 
 /** Vehicles an edge holds before slowing sharply; reduced in rain. */
 export function edgeCapacity(edge: RoadEdge): number {
-  return Math.max(1, (edge.lanes || 1) * edge.length / METRES_PER_VEHICLE * getWeather().capacityFactor);
+  // Short junction segments share their queue with the roads around them: count at least 60 m
+  const length = Math.max(edge.length, 60);
+  return Math.max(1, (edge.lanes || 1) * length / METRES_PER_VEHICLE * getWeather().capacityFactor * (edge.bottleneck ?? 1));
 }
 
 export function congestionFactor(edge: RoadEdge, vehicles: number): number {
@@ -276,11 +278,11 @@ function aStar(
     const inEdge = via.get(current);
     for (const edge of index.outEdges.get(current) ?? []) {
       if (closed.has(edge.to) || isEdgeBlocked(edge.id)) continue;
-      const signal = index.signalByNode.get(edge.to);
+      const control = signalControl(index.signalByNode, edge);
       const cost =
         edgeTravelTime(edge, ctx) * userSpread(ctx.userId, edge.id) * (extraPenalty?.get(edge.id) ?? 1) +
         turnCost(inEdge, edge) +
-        (signal && edge.to !== destId ? expectedSignalDelay(signal) : 0);
+        (control && edge.to !== destId ? expectedSignalDelay(control.signal, control.group) : 0);
       const tentative = gCur + cost;
       if (tentative < (g.get(edge.to) ?? Infinity)) {
         g.set(edge.to, tentative);
@@ -310,10 +312,10 @@ export function describeRoute(index: GraphIndex, sourceId: string, edgeIds: stri
     path.push(edge.to);
     distance += edge.length;
     time += edgeTravelTime(edge, ctx) + turnCost(prev, edge);
-    const signal = index.signalByNode.get(edge.to);
-    if (signal && i < edgeIds.length - 1) {
+    const control = signalControl(index.signalByNode, edge);
+    if (control && i < edgeIds.length - 1) {
       signalCount++;
-      time += expectedSignalDelay(signal);
+      time += expectedSignalDelay(control.signal, control.group);
     }
     if (edge.name && roadNames[roadNames.length - 1] !== edge.name && !roadNames.includes(edge.name)) {
       roadNames.push(edge.name);

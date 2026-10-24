@@ -1,6 +1,6 @@
 /**
- * MapLibre sources, layers and icons for WayFinder's overlay
- * (roads, traffic, routes, reports) drawn on top of OpenFreeMap vector tiles.
+ * MapLibre sources, layers and icons for WayFinder's overlay (traffic, signals,
+ * vehicles, routes, reports) drawn on top of OpenFreeMap vector tiles.
  */
 import type { Map as MLMap, GeoJSONSource, ExpressionSpecification } from 'maplibre-gl';
 import type { FeatureCollection, Feature, Geometry } from 'geojson';
@@ -14,13 +14,9 @@ export const MAP_STYLES = {
   dark: 'https://tiles.openfreemap.org/styles/dark',
 } as const;
 
-const VEHICLE_ICONS: Record<string, string> = {
-  sedan: '🚗', suv: '🚙', hatchback: '🚗', truck: '🚚',
-  bus: '🚌', emergency: '🚨', bike: '🛵', auto: '🛺', van: '📦',
-};
-
 export const SRC = {
   roads: 'wf-roads',
+  traffic: 'wf-traffic',
   heat: 'wf-heat',
   alts: 'wf-alts',
   route: 'wf-route',
@@ -73,13 +69,72 @@ export function setSourceData(map: MLMap, id: string, data: FC): void {
 }
 
 // ── Icons ────────────────────────────────────────────────────────────────────
-// Emoji can't come from the style's font server, so they are drawn to a canvas
-// on demand. Icon ids: `wf-e:<css px>:<1 = "?" badge>:<emoji>` and `wf-puck`.
+// Drawn to a canvas on first use (the style's sprite has none of these).
+// Ids: `wf-veh:<type>:<colour>`, `wf-e:<css px>:<1 = "?" badge>:<emoji>`, `wf-puck`.
 
 const PIXEL_RATIO = 2;
 
+/** Top-down footprint per vehicle type in CSS px at icon-size 1 (exaggerated so it reads on a map). */
+const VEHICLE_SHAPE: Record<string, { len: number; wid: number }> = {
+  bike: { len: 8, wid: 3.5 },
+  auto: { len: 10, wid: 6.5 },
+  hatchback: { len: 13, wid: 6.5 },
+  sedan: { len: 15, wid: 7 },
+  suv: { len: 15.5, wid: 7.5 },
+  van: { len: 16, wid: 7.5 },
+  truck: { len: 24, wid: 8.5 },
+  bus: { len: 30, wid: 9 },
+  emergency: { len: 15, wid: 7 },
+};
+
+function vehicleIconId(type: string, color: string): string {
+  return `wf-veh:${type in VEHICLE_SHAPE ? type : 'sedan'}:${color}`;
+}
+
 function emojiIconId(emoji: string, size: number, badge = false): string {
   return `wf-e:${size}:${badge ? 1 : 0}:${emoji}`;
+}
+
+function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+/** Vehicle seen from above, front pointing north (rotated by its bearing on the map). */
+function drawVehicle(type: string, color: string): ImageData | null {
+  const { len, wid } = VEHICLE_SHAPE[type] ?? VEHICLE_SHAPE.sedan;
+  const pad = 1.5;
+  const w = Math.ceil((wid + pad * 2) * PIXEL_RATIO), h = Math.ceil((len + pad * 2) * PIXEL_RATIO);
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  ctx.scale(PIXEL_RATIO, PIXEL_RATIO);
+  const x = pad, y = pad;
+
+  if (type === 'bike') {
+    ctx.fillStyle = '#222';
+    roundRect(ctx, x + wid * 0.25, y, wid * 0.5, len, wid * 0.25); ctx.fill();
+    ctx.fillStyle = color; // rider
+    ctx.beginPath(); ctx.arc(x + wid / 2, y + len * 0.55, wid * 0.5, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = 0.6; ctx.stroke();
+  } else {
+    ctx.fillStyle = color;
+    roundRect(ctx, x, y, wid, len, Math.min(wid, len) * (type === 'auto' ? 0.45 : 0.25)); ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.55)'; ctx.lineWidth = 0.7; ctx.stroke();
+    // Windscreen near the front, and the roof
+    ctx.fillStyle = 'rgba(20,30,45,0.75)';
+    const glassY = y + len * (type === 'bus' || type === 'truck' ? 0.04 : 0.2);
+    roundRect(ctx, x + wid * 0.15, glassY, wid * 0.7, len * (type === 'bus' ? 0.08 : 0.16), 1); ctx.fill();
+    if (type === 'auto') { ctx.fillStyle = '#FDD835'; roundRect(ctx, x + wid * 0.15, y + len * 0.42, wid * 0.7, len * 0.45, 2); ctx.fill(); }
+    if (type === 'truck') { ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(x + 0.5, y + len * 0.3, wid - 1, 0.8); }
+  }
+  return ctx.getImageData(0, 0, w, h);
 }
 
 function drawEmoji(emoji: string, size: number, badge: boolean): ImageData | null {
@@ -133,6 +188,9 @@ export function addMissingImage(map: MLMap, id: string): void {
   let img: ImageData | null = null;
   if (id === 'wf-puck') {
     img = drawPuck();
+  } else if (id.startsWith('wf-veh:')) {
+    const [, type, color] = id.split(':');
+    img = drawVehicle(type, color);
   } else if (id.startsWith('wf-e:')) {
     const [, size, badge, ...rest] = id.split(':');
     img = drawEmoji(rest.join(':'), Number(size), badge === '1');
@@ -142,26 +200,35 @@ export function addMissingImage(map: MLMap, id: string): void {
 
 // ── Layers ───────────────────────────────────────────────────────────────────
 
-/** Signals thin out as you zoom in: all junctions below z14, 2+ roads to z16, then 3+. */
-const SIGNAL_OPACITY: ExpressionSpecification = [
-  'step', ['zoom'],
-  0.9,
-  14, ['case', ['>=', ['get', 'deg'], 2], 0.9, 0],
-  16, ['case', ['>=', ['get', 'deg'], 3], 0.9, 0],
-];
+/** Google-style traffic colours: free, slow, heavy, jammed. */
+export const TRAFFIC_COLORS = ['#34C759', '#FF9500', '#FF3B30', '#8E1B1B'];
+
+/** Vehicles grow with zoom, about to scale from z17. */
+const VEHICLE_SIZE: ExpressionSpecification = ['interpolate', ['exponential', 2], ['zoom'], 13, 0.3, 15, 0.55, 17, 1, 19, 2.4];
 
 export function addOverlayLayers(map: MLMap, opts: { showRoads: boolean }): void {
   for (const id of Object.values(SRC)) map.addSource(id, { type: 'geojson', data: EMPTY });
 
   const round = { 'line-join': 'round', 'line-cap': 'round' } as const;
 
+  // Operators: the simulated road network, faint, under everything
   map.addLayer({
     id: 'wf-roads', type: 'line', source: SRC.roads,
     layout: { ...round, visibility: opts.showRoads ? 'visible' : 'none' },
     paint: {
-      'line-color': ['match', ['get', 'cls'], 'primary', '#FF6D00', 'secondary', '#FF9100', '#FFAB40'],
-      'line-width': ['match', ['get', 'cls'], 'primary', 4, 'secondary', 3, 1.5],
-      'line-opacity': ['match', ['get', 'cls'], 'primary', 0.85, 'secondary', 0.65, 0.4],
+      'line-color': '#7C8DB5',
+      'line-width': ['interpolate', ['linear'], ['zoom'], 10, 0.5, 15, 1.5, 18, 3],
+      'line-opacity': 0.45,
+    },
+  });
+  // Live traffic, each direction on its own side of the road (India drives on the left)
+  map.addLayer({
+    id: 'wf-traffic', type: 'line', source: SRC.traffic, layout: round,
+    paint: {
+      'line-color': ['match', ['get', 'level'], 1, TRAFFIC_COLORS[1], 2, TRAFFIC_COLORS[2], 3, TRAFFIC_COLORS[3], TRAFFIC_COLORS[0]],
+      'line-width': ['interpolate', ['linear'], ['zoom'], 10, 1.2, 13, 2.5, 16, 4, 19, 7],
+      'line-offset': ['interpolate', ['linear'], ['zoom'], 12, 0, 15, ['*', -2, ['get', 'tw']], 19, ['*', -6, ['get', 'tw']]],
+      'line-opacity': ['interpolate', ['linear'], ['zoom'], 10, 0.75, 17, 0.55],
     },
   });
   map.addLayer({
@@ -207,25 +274,27 @@ export function addOverlayLayers(map: MLMap, opts: { showRoads: boolean }): void
     id: 'wf-blocks-unconfirmed', type: 'line', source: SRC.blocks, filter: ['==', ['get', 'confirmed'], false],
     paint: { 'line-color': '#FF9100', 'line-width': 6, 'line-opacity': 0.7, 'line-dasharray': [1, 1] },
   });
+  // Navigating users' vehicles get a blue halo
   map.addLayer({
-    id: LAYER.signals, type: 'circle', source: SRC.signals,
-    paint: {
-      'circle-radius': ['get', 'r'], 'circle-color': ['get', 'color'],
-      'circle-opacity': SIGNAL_OPACITY, 'circle-stroke-opacity': SIGNAL_OPACITY,
-      'circle-stroke-color': ['get', 'color'], 'circle-stroke-width': 2,
-    },
-  });
-  map.addLayer({
-    id: 'wf-vehicle-glow', type: 'circle', source: SRC.vehicles, filter: ['!', ['get', 'self']],
-    paint: {
-      'circle-radius': ['case', ['get', 'nav'], 12, 8],
-      'circle-color': ['case', ['get', 'nav'], '#4488FF', ['get', 'color']],
-      'circle-blur': 0.8, 'circle-opacity': 0.5,
-    },
+    id: 'wf-vehicle-nav', type: 'circle', source: SRC.vehicles,
+    filter: ['all', ['get', 'nav'], ['!', ['get', 'self']]],
+    paint: { 'circle-radius': 11, 'circle-color': '#4488FF', 'circle-blur': 0.8, 'circle-opacity': 0.55 },
   });
   map.addLayer({
     id: LAYER.vehicles, type: 'symbol', source: SRC.vehicles, filter: ['!', ['get', 'self']],
-    layout: { 'icon-image': ['get', 'icon'], 'icon-allow-overlap': true, 'icon-ignore-placement': true },
+    layout: {
+      'icon-image': ['get', 'icon'], 'icon-size': VEHICLE_SIZE,
+      'icon-rotate': ['get', 'bearing'], 'icon-rotation-alignment': 'map', 'icon-pitch-alignment': 'map',
+      'icon-allow-overlap': true, 'icon-ignore-placement': true,
+    },
+  });
+  map.addLayer({
+    id: LAYER.signals, type: 'circle', source: SRC.signals, minzoom: 12,
+    paint: {
+      'circle-radius': ['interpolate', ['linear'], ['zoom'], 12, 3, 15, 6, 18, 9],
+      'circle-color': ['get', 'color'],
+      'circle-stroke-color': '#111', 'circle-stroke-width': 1.5,
+    },
   });
   map.addLayer({
     id: 'wf-self', type: 'symbol', source: SRC.vehicles, filter: ['get', 'self'],
@@ -244,43 +313,61 @@ export function addOverlayLayers(map: MLMap, opts: { showRoads: boolean }): void
 
 // ── GeoJSON builders ─────────────────────────────────────────────────────────
 
+const MAJOR = new Set(['motorway', 'trunk', 'primary', 'secondary']);
+
 export function roadsData(graph: RoadGraph): FC {
   const drawn = new Set<string>();
   const features: Feature<Geometry, Props>[] = [];
   for (const edge of graph.edges.values()) {
-    const key = [edge.from, edge.to].sort().join('|');
+    const key = edge.from < edge.to ? `${edge.from}|${edge.to}` : `${edge.to}|${edge.from}`;
     if (drawn.has(key)) continue;
     drawn.add(key);
     if (!edge.geometry || edge.geometry.length < 2) continue;
-    const cls = edge.roadType === 'primary' || edge.roadType === 'motorway' || edge.roadType === 'trunk'
-      ? 'primary' : edge.roadType === 'secondary' ? 'secondary' : 'minor';
-    features.push(lineFeature(edge.geometry.map(p => [p.lat, p.lng]), { cls }));
+    features.push(lineFeature(edge.geometry.map(p => [p.lat, p.lng])));
   }
   return fc(features);
 }
 
+/**
+ * Traffic per direction: main roads always (green when flowing), smaller roads only
+ * when slow. `tw` = 1 on two-way roads so each direction is offset to its own side.
+ */
+export function trafficData(graph: RoadGraph, traffic: Map<string, number>): FC {
+  const features: Feature<Geometry, Props>[] = [];
+  for (const edge of graph.edges.values()) {
+    const level = traffic.get(edge.id) ?? 0;
+    if (level === 0 && !MAJOR.has(edge.roadType)) continue;
+    if (!edge.geometry || edge.geometry.length < 2) continue;
+    features.push(lineFeature(edge.geometry.map(p => [p.lat, p.lng]), { level, tw: edge.oneway ? 0 : 1 }));
+  }
+  // Slow roads on top of free-flowing ones
+  features.sort((a, b) => (a.properties.level as number) - (b.properties.level as number));
+  return fc(features);
+}
+
+/** Colour shown to the junction's main road (phase group 'A'; legacy graphs: 'NS'). */
+export function signalColor(sig: TrafficSignal): string {
+  const phase = sig.phases[sig.currentPhaseIndex];
+  const main = sig.phases.some(p => p.group === 'A') ? 'A' : 'NS';
+  if (!phase || phase.group !== main) return '#FF1744';
+  return phase.color === 'GREEN' ? '#00E676' : phase.color === 'YELLOW' ? '#FFD600' : '#FF1744';
+}
+
 export function signalsData(signals: Map<string, TrafficSignal>, graph: RoadGraph): FC {
-  const hasRoads = graph.edges.size > 0;
   const features: Feature<Geometry, Props>[] = [];
   for (const sig of signals.values()) {
     const node = graph.nodes.get(sig.nodeId);
     if (!node) continue;
-    const phase = sig.phases[sig.currentPhaseIndex];
-    const color = phase.color === 'GREEN' ? '#00E676' : phase.color === 'YELLOW' ? '#FFD600' : '#FF1744';
-    features.push(pointFeature(node.lat, node.lng, {
-      id: sig.id, color, r: phase.color === 'GREEN' ? 7 : 5.5,
-      // Without roads there's nothing to compare against, so show every signal
-      deg: hasRoads ? (graph.adjacency.get(sig.nodeId)?.length ?? 0) : 99,
-    }));
+    features.push(pointFeature(node.lat, node.lng, { id: sig.id, color: signalColor(sig) }));
   }
   return fc(features);
 }
 
-export function vehiclesData(vehicles: Map<string, Vehicle>, selfId: string | undefined): FC {
+export function vehiclesData(vehicles: Iterable<Vehicle>, selfId: string | undefined): FC {
   const features: Feature<Geometry, Props>[] = [];
-  for (const v of vehicles.values()) {
+  for (const v of vehicles) {
     features.push(pointFeature(v.lat, v.lng, {
-      id: v.id, icon: emojiIconId(VEHICLE_ICONS[v.type] ?? '🚗', 20), color: v.color,
+      id: v.id, icon: vehicleIconId(v.type, v.isNavigated ? '#4488FF' : v.color),
       nav: !!v.isNavigated, self: v.id === selfId, bearing: Number(v.bearing) || 0,
       label: `${v.type.toUpperCase()} · ${Math.round(v.speed)} km/h`,
     }));

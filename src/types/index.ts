@@ -2,7 +2,7 @@ export interface GeoPoint { lat: number; lng: number; }
 export type Direction = 'N' | 'S' | 'E' | 'W';
 export type SignalColor = 'RED' | 'YELLOW' | 'GREEN';
 export type VehicleType = 'sedan' | 'suv' | 'hatchback' | 'truck' | 'bus' | 'emergency' | 'bike' | 'auto' | 'van';
-export type RoadType = 'motorway' | 'trunk' | 'primary' | 'secondary' | 'tertiary' | 'residential';
+export type RoadType = 'motorway' | 'trunk' | 'primary' | 'secondary' | 'tertiary' | 'link' | 'residential';
 
 export interface RoadNode {
   id: string; lat: number; lng: number; isIntersection: boolean; trafficSignalId?: string;
@@ -27,9 +27,15 @@ export interface SignalApproach {
   duration: number;
 }
 
-export interface SignalPhase { group: 'NS' | 'EW'; color: SignalColor; duration: number; yellowDuration: number; }
+/** group: 'A' main road, 'B' cross road, 'ALL' all red (legacy 'NS' / 'EW') */
+export interface SignalPhase { group: string; color: SignalColor; duration: number; yellowDuration: number; }
 export interface TrafficSignal {
-  id: string; nodeId: string; phases: SignalPhase[]; currentPhaseIndex: number;
+  id: string; nodeId: string;
+  /** Every stop-line node of this junction controller */
+  nodeIds?: string[];
+  /** Bearing of the junction's main road (phase group 'A') */
+  axis?: number;
+  phases: SignalPhase[]; currentPhaseIndex: number;
   timer: number; cycleLength: number; offset: number;
   greenWaveDirection: Direction | null; congestionLevel: number; adaptiveTiming: boolean;
   /** Geometry-aware per-approach states (REQ-S1) */

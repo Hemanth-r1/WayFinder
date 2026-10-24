@@ -19,7 +19,7 @@ import type { RoadReport, ReportType, ReportVote } from '../services/serverClien
 import { distanceMetres } from '../utils/places';
 import {
   MAP_STYLES, SRC, LAYER, addOverlayLayers, addMissingImage, setSourceData,
-  roadsData, signalsData, vehiclesData, heatData, linesData, reportsData,
+  roadsData, trafficData, signalsData, vehiclesData, heatData, linesData, reportsData,
 } from './mapLayers';
 
 const MAP_CENTER: [number, number] = [12.9716, 77.5946];
@@ -69,12 +69,33 @@ interface MapViewProps {
   canRemoveReports?: boolean;
   /** The driver's own vehicle: drawn as a heading arrow and followed by the camera */
   followVehicleId?: string;
+  /** Traffic level per edge (1 slow … 3 jammed); edges not listed flow freely */
+  traffic?: Map<string, number>;
+  /** Visible area ([west, south, east, north]) and zoom, after the map stops moving */
+  onViewportChange?: (bbox: [number, number, number, number], zoom: number) => void;
 }
 
 interface ContextMenuState {
   lat: number; lng: number; nodeId: string | null;
   nodeDegree: number; roadNames: string[];
   screenX: number; screenY: number;
+}
+
+/** A vehicle moving from where it was drawn to its latest server position. */
+interface AnimVehicle {
+  v: Vehicle;
+  fromLat: number; fromLng: number; fromBearing: number;
+  t0: number; duration: number;
+}
+
+function interpolate(a: AnimVehicle, now: number): { lat: number; lng: number; bearing: number } {
+  const t = Math.min(1, Math.max(0, (now - a.t0) / a.duration));
+  const turn = ((a.v.bearing - a.fromBearing + 540) % 360) - 180;
+  return {
+    lat: a.fromLat + (a.v.lat - a.fromLat) * t,
+    lng: a.fromLng + (a.v.lng - a.fromLng) * t,
+    bearing: (a.fromBearing + turn * t + 360) % 360,
+  };
 }
 
 /** Start/end pin: a dot on the point with its label above. Taps pass through to the map. */
@@ -112,7 +133,7 @@ export default function MapView({
   onAddSignal, onSpawnVehicleAt, showHeatmap = true, routePolyline, altRoutePolylines, speed: _speed, onSpeedChange: _onSpeedChange,
   onStartNavigation, routeInfo, clearRoute, navigatedVehicle, simpleView = false, compact = false,
   reports = [], reroutePolyline, onReport, onVoteReport, onRemoveReport, canRemoveReports = false,
-  followVehicleId,
+  followVehicleId, traffic, onViewportChange,
 }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const miniRef = useRef<HTMLDivElement>(null);
@@ -140,6 +161,13 @@ export default function MapView({
   const simpleViewRef = useRef(simpleView);
   graphRef.current = graph;
   signalsRef.current = signals;
+  const onViewportChangeRef = useRef(onViewportChange);
+  onViewportChangeRef.current = onViewportChange;
+  const followRef = useRef(followVehicleId);
+  followRef.current = followVehicleId;
+  const animRef = useRef<{ vehicles: Map<string, AnimVehicle>; lastUpdate: number; interval: number }>(
+    { vehicles: new Map(), lastUpdate: 0, interval: 500 },
+  );
   simpleViewRef.current = simpleView;
 
   // ── Init map once ──────────────────────────────────────────────────────────
@@ -157,6 +185,8 @@ export default function MapView({
         zoom: 13,
         maxZoom: 19,
         attributionControl: { compact: true },
+        // Map position in the URL (#zoom/lat/lng): shareable views, kept on reload
+        hash: true,
       });
     } catch (err) {
       // No WebGL (very old browser or GPU blocked)
@@ -180,11 +210,7 @@ export default function MapView({
     map.on('click', (e: MapMouseEvent) => {
       // Operators: tapping a signal shows its timing instead of the menu
       if (!simpleViewRef.current && map.getLayer(LAYER.signals)) {
-        // Same thinning as the layer's opacity: hidden signals can't be tapped
-        const z = map.getZoom();
-        const minDeg = z < 14 ? 0 : z < 16 ? 2 : 3;
-        const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER.signals] })
-          .find(f => Number(f.properties?.deg ?? 0) >= minDeg);
+        const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER.signals] })[0];
         const sigId = hit?.properties?.id as string | undefined;
         const sig = sigId ? [...signalsRef.current.values()].find(s => s.id === sigId) : undefined;
         if (sig) {
@@ -231,12 +257,25 @@ export default function MapView({
     map.on('dragstart', pauseFollow);
     map.on('rotatestart', pauseFollow);
 
+    // Tell the server what's on screen (it sends vehicles only there)
+    let viewTimer: number | undefined;
+    const reportView = () => {
+      window.clearTimeout(viewTimer);
+      viewTimer = window.setTimeout(() => {
+        const b = map.getBounds();
+        onViewportChangeRef.current?.([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()], map.getZoom());
+      }, 200);
+    };
+    map.on('moveend', reportView);
+    map.on('load', reportView);
+
     // Keep the map sized to its box (phone bottom sheet, rotation)
     const resizeObserver = new ResizeObserver(() => map.resize());
     resizeObserver.observe(container);
 
     return () => {
       resizeObserver.disconnect();
+      window.clearTimeout(viewTimer);
       hoverPopup.remove();
       map.remove(); mapRef.current = null; loadedMapRef.current = null;
     };
@@ -271,6 +310,8 @@ export default function MapView({
     lastGraphVersion.current = graphVersion;
     setSourceData(map, SRC.roads, roadsData(graph));
 
+    // Show the whole network first, unless the URL already says where to look
+    if (/^#[\d.]+\/[\d.-]+\/[\d.-]+/.test(location.hash)) firstFitDone.current = true;
     if (graph.nodes.size > 0 && !firstFitDone.current) {
       const bounds = new maplibregl.LngLatBounds();
       for (const n of graph.nodes.values()) bounds.extend([n.lng, n.lat]);
@@ -331,10 +372,54 @@ export default function MapView({
     if (map) setSourceData(map, SRC.signals, signalsData(signals, graph));
   }, [signals, graph, loadCount]);
 
+  // Vehicles glide between server updates (sent every ~0.5 s) instead of jumping
+  useEffect(() => {
+    const anim = animRef.current;
+    const now = performance.now();
+    if (anim.lastUpdate > 0) {
+      const gap = now - anim.lastUpdate;
+      if (gap > 50 && gap < 3000) anim.interval = anim.interval * 0.7 + gap * 0.3;
+    }
+    anim.lastUpdate = now;
+    const next = new Map<string, AnimVehicle>();
+    for (const v of vehicles.values()) {
+      const prev = anim.vehicles.get(v.id);
+      const shown = prev ? interpolate(prev, now) : null;
+      // Short hops glide; long jumps (new road, GPS fix) snap
+      const near = shown && Math.abs(shown.lat - v.lat) < 0.0015 && Math.abs(shown.lng - v.lng) < 0.0015;
+      next.set(v.id, {
+        v,
+        fromLat: near ? shown.lat : v.lat, fromLng: near ? shown.lng : v.lng,
+        fromBearing: near ? shown.bearing : v.bearing,
+        t0: now, duration: anim.interval,
+      });
+    }
+    anim.vehicles = next;
+  }, [vehicles, vehicleVersion]);
+
+  useEffect(() => {
+    let raf = 0, last = 0;
+    const frame = (t: number) => {
+      raf = requestAnimationFrame(frame);
+      const map = loadedMap();
+      if (!map || t - last < 33) return; // ~30 fps
+      last = t;
+      const anim = animRef.current;
+      const shown: Vehicle[] = [];
+      for (const a of anim.vehicles.values()) {
+        const p = interpolate(a, t);
+        shown.push({ ...a.v, lat: p.lat, lng: p.lng, bearing: p.bearing });
+      }
+      setSourceData(map, SRC.vehicles, vehiclesData(shown, followRef.current));
+    };
+    raf = requestAnimationFrame(frame);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
   useEffect(() => {
     const map = loadedMap();
-    if (map) setSourceData(map, SRC.vehicles, vehiclesData(vehicles, followVehicleId));
-  }, [vehicles, vehicleVersion, followVehicleId, loadCount]);
+    if (map) setSourceData(map, SRC.traffic, trafficData(graph, traffic ?? new Map()));
+  }, [traffic, graph, loadCount]);
 
   useEffect(() => {
     const map = loadedMap();

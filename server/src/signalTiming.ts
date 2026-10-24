@@ -1,9 +1,10 @@
-import type { TrafficSignal } from './types.js';
+import type { TrafficSignal, RoadEdge } from './types.js';
 
-export type SignalGroup = 'NS' | 'EW';
+/** Phase group: 'A' (main road), 'B' (cross road); legacy graphs use 'NS' / 'EW'. */
+export type SignalGroup = string;
 export type ApproachState = 'RED' | 'YELLOW' | 'GREEN';
 
-/** Phase group that serves traffic travelling on the given bearing (same split as deriveApproaches). */
+/** Legacy grouping by compass direction, for approaches a controller doesn't list. */
 export function groupForBearing(bearing: number): SignalGroup {
   const b = ((bearing % 360) + 360) % 360;
   return (b >= 315 || b < 45) || (b >= 135 && b < 225) ? 'NS' : 'EW';
@@ -14,6 +15,27 @@ export function approachState(signal: TrafficSignal, group: SignalGroup): Approa
   const phase = signal.phases[signal.currentPhaseIndex];
   if (!phase || phase.group !== group) return 'RED';
   return phase.color === 'GREEN' ? 'GREEN' : phase.color === 'YELLOW' ? 'YELLOW' : 'RED';
+}
+
+/** Approach groups per edge, built once per controller list. */
+const groupCache = new WeakMap<TrafficSignal, Map<string, string>>();
+
+/**
+ * The controller and phase group that govern traffic driving to the end of `edge`,
+ * or null when the edge ends at no signal or runs inside a junction already passed.
+ */
+export function signalControl(
+  signalByNode: Map<string, TrafficSignal>, edge: RoadEdge,
+): { signal: TrafficSignal; group: SignalGroup } | null {
+  const signal = signalByNode.get(edge.to);
+  if (!signal) return null;
+  let groups = groupCache.get(signal);
+  if (!groups) {
+    groups = new Map(signal.approaches.map(a => [a.edgeId, a.group]));
+    groupCache.set(signal, groups);
+  }
+  const group = groups.get(edge.id) ?? groupForBearing(edge.bearing);
+  return group === 'FREE' ? null : { signal, group };
 }
 
 /**
@@ -43,7 +65,12 @@ export function waitOnArrival(signal: TrafficSignal, group: SignalGroup, arrival
   return Math.max(0, greenAt - arrivalIn);
 }
 
-/** Expected wait for a random arrival: red share r of cycle C gives r²·C/2; two-phase ≈ C/8. */
-export function expectedSignalDelay(signal: TrafficSignal): number {
-  return signal.cycleLength / 8;
+/** Expected wait for a random arrival on a group with red share r of cycle C: r²·C/2. */
+export function expectedSignalDelay(signal: TrafficSignal, group?: SignalGroup): number {
+  const C = signal.cycleLength || 1;
+  const green = signal.phases
+    .filter(p => p.color !== 'RED' && (group === undefined || p.group === group))
+    .reduce((s, p) => s + p.duration, 0);
+  const share = group === undefined ? 0.5 : Math.min(1, Math.max(0, 1 - green / C));
+  return share * share * C / 2;
 }

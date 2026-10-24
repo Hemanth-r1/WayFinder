@@ -9,6 +9,8 @@ RUN npm run build
 FROM node:20-alpine AS runner
 WORKDIR /app
 COPY --from=builder /app/dist/ ./dist/
+# Bangalore road network snapshot (read at startup; see npm run build:osm)
+COPY data/ ./data/
 COPY package*.json ./
 RUN npm ci --omit=dev
 EXPOSE 8080

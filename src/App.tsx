@@ -14,7 +14,7 @@ import { progressiveLoader, type LoadUpdate, type LoadPhase } from './services/p
 import { serverClient } from './services/serverClient';
 import type { RoadGraph, TrafficSignal, Vehicle } from './types';
 import type {
-  ServerStats, RouteOption, NavigationResponse, Conditions, WeatherMode, TrafficLevel, ReportType, ReportVote,
+  ServerStats, RouteOption, NavigationResponse, Conditions, WeatherMode, TrafficMode, ReportType, ReportVote,
 } from './services/serverClient';
 import { REPORT_LABEL } from './utils/reports';
 import ConditionsPanel from './components/ConditionsPanel';
@@ -49,6 +49,7 @@ function AppContent() {
   const [graph, setGraph] = useState<RoadGraph>({ nodes: new Map(), edges: new Map(), adjacency: new Map() });
   const [signals, setSignals] = useState<Map<string, TrafficSignal>>(new Map());
   const [vehicles, setVehicles] = useState<Map<string, Vehicle>>(new Map());
+  const [traffic, setTraffic] = useState<Map<string, number>>(new Map());
   const [stats, setStats] = useState<ServerStats>({
     totalVehicles: 0, avgSpeed: 0, avgDelay: 0, congestionHotspots: 0,
     greenWaveActive: false, signalCoordinationScore: 0, throughput: 0, maxCongestion: 0,
@@ -105,9 +106,23 @@ function AppContent() {
         if (data.data.vehicles) {
           setVehicles(new Map(data.data.vehicles.map((v: any) => [v.id, v])));
         }
-        if (data.data.signals) {
-          setSignals(new Map(data.data.signals.map((s: any) => [s.id, s])));
+        // Live phase per signal: [phase index, seconds into phase]
+        const states = data.data.signalStates as Record<string, [number, number]> | undefined;
+        if (states) {
+          setSignals(prev => {
+            if (prev.size === 0) return prev;
+            const next = new Map(prev);
+            for (const [id, [phaseIndex, timer]] of Object.entries(states)) {
+              const s = next.get(id);
+              if (s && (s.currentPhaseIndex !== phaseIndex || Math.abs(s.timer - timer) > 0.9)) {
+                next.set(id, { ...s, currentPhaseIndex: phaseIndex, timer });
+              }
+            }
+            return next;
+          });
         }
+        // Traffic per road: [edgeId, level 1–3]; roads not listed flow freely
+        if (data.data.traffic) setTraffic(new Map(data.data.traffic as [string, number][]));
         if (data.data.stats) {
           setStats(data.data.stats);
         }
@@ -311,7 +326,7 @@ function AppContent() {
   const handleWeather = useCallback((mode: WeatherMode) => {
     serverClient.setWeatherMode(mode).then(setConditions).catch(err => pushToast(err.message, 'error'));
   }, []);
-  const handleTraffic = useCallback((level: TrafficLevel) => {
+  const handleTraffic = useCallback((level: TrafficMode) => {
     serverClient.setTrafficLevel(level).then(setConditions).catch(err => pushToast(err.message, 'error'));
   }, []);
 
@@ -365,7 +380,7 @@ function AppContent() {
   // Refresh data
   const handleRefresh = useCallback(async () => {
     setLoading(true);
-    await progressiveLoader.load(true);
+    await progressiveLoader.load();
   }, []);
 
   // Start navigation
@@ -633,6 +648,8 @@ function AppContent() {
           onRemoveReport={handleRemoveReport}
           canRemoveReports={role !== 'user'}
           followVehicleId={simpleView && navigatedVehicle ? `user_${user.uid}` : undefined}
+          traffic={traffic}
+          onViewportChange={(bbox, zoom) => serverClient.setViewport(bbox, zoom)}
         />
       </div>
 
