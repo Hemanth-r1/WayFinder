@@ -42,6 +42,9 @@ export interface SignalArm {
   towards: string;
   fromJunction?: string;
   lanes: number;
+  /** Position of this approach's signal head */
+  lat: number;
+  lng: number;
 }
 
 export interface TrafficSignal {

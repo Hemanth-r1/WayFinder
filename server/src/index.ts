@@ -18,6 +18,7 @@ import {
   initJunctions, listJunctions, getJunction, holdGreen, applyPlan, resetJunction, controlLog, ControlError,
 } from './junctionService.js';
 import { recordMovement, startCounts, junctionMovements, countsCsv } from './countsService.js';
+import { surgeLive } from './scenarioService.js';
 import { initSimulationEngine, getSimulationEngine } from './simulationEngine.js';
 import { removeUserVehicle, getUserVehiclePosition, markArrived } from './userVehicleService.js';
 import {
@@ -391,6 +392,15 @@ app.get('/api/counts.csv', requireUser, requireOperator, (req, res) => {
   res.type('text/csv');
   res.set('Content-Disposition', `attachment; filename="wayfinder-junction-counts-${junction ?? 'all'}.csv"`);
   res.send(countsCsv(hours, junction));
+});
+
+/** Controllers (demo/training): fill a junction's approaches bumper-to-bumper in the live simulation. */
+app.post('/api/junctions/:id/surge', requireUser, requireController, async (req, res) => {
+  try {
+    const metres = Math.min(1000, Math.max(100, Number(req.body?.metres) || 600));
+    const placed = await surgeLive([String(req.params.id)], metres);
+    res.json({ placed, changes: [`Filled every approach of ${req.params.id} for ${metres} m (${placed} vehicles)`] });
+  } catch (err) { sendControlError(res, err); }
 });
 
 /** Who changed which signal, newest first. */

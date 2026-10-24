@@ -16,6 +16,7 @@ export const MAP_STYLES = {
 
 export const SRC = {
   roads: 'wf-roads',
+  trafficBase: 'wf-traffic-base',
   traffic: 'wf-traffic',
   heat: 'wf-heat',
   alts: 'wf-alts',
@@ -222,6 +223,16 @@ export function addOverlayLayers(map: MLMap, opts: { showRoads: boolean }): void
     },
   });
   // Live traffic, each direction on its own side of the road (India drives on the left)
+  // Main roads in green, drawn once; slow and jammed stretches are drawn over them
+  map.addLayer({
+    id: 'wf-traffic-base', type: 'line', source: SRC.trafficBase, layout: round,
+    paint: {
+      'line-color': TRAFFIC_COLORS[0],
+      'line-width': ['interpolate', ['linear'], ['zoom'], 10, 1.2, 13, 2.5, 16, 4, 19, 7],
+      'line-offset': ['interpolate', ['linear'], ['zoom'], 12, 0, 15, ['*', -2, ['get', 'tw']], 19, ['*', -6, ['get', 'tw']]],
+      'line-opacity': ['interpolate', ['linear'], ['zoom'], 10, 0.75, 17, 0.55],
+    },
+  });
   map.addLayer({
     id: 'wf-traffic', type: 'line', source: SRC.traffic, layout: round,
     paint: {
@@ -299,12 +310,20 @@ export function addOverlayLayers(map: MLMap, opts: { showRoads: boolean }): void
       'icon-allow-overlap': true, 'icon-ignore-placement': true,
     },
   });
+  // Zoomed out: one dot per junction (main road's light). Zoomed in: every signal head.
   map.addLayer({
     id: LAYER.signals, type: 'circle', source: SRC.signals, minzoom: 12,
     paint: {
-      'circle-radius': ['interpolate', ['linear'], ['zoom'], 12, 3, 15, 6, 18, 9],
+      // Zoom must be the outer expression in MapLibre; per-feature size inside it
+      'circle-radius': ['interpolate', ['linear'], ['zoom'],
+        12, ['case', ['get', 'head'], 2, 3],
+        15, ['case', ['get', 'head'], 4, 6],
+        16, ['case', ['get', 'head'], 5, 7],
+        19, ['case', ['get', 'head'], 9, 10]],
       'circle-color': ['get', 'color'],
-      'circle-stroke-color': '#111', 'circle-stroke-width': 1.5,
+      'circle-opacity': ['step', ['zoom'], ['case', ['get', 'head'], 0, 1], 16, ['case', ['get', 'head'], 1, 0]],
+      'circle-stroke-opacity': ['step', ['zoom'], ['case', ['get', 'head'], 0, 1], 16, ['case', ['get', 'head'], 1, 0]],
+      'circle-stroke-color': '#111', 'circle-stroke-width': ['case', ['get', 'head'], 2.5, 1.5],
     },
   });
   map.addLayer({
@@ -340,28 +359,41 @@ export function roadsData(graph: RoadGraph): FC {
 }
 
 /**
- * Traffic per direction: main roads always (green when flowing), smaller roads only
- * when slow. `tw` = 1 on two-way roads so each direction is offset to its own side.
+ * Main roads, each direction (`tw` = 1 on two-way roads so each direction sits on its
+ * own side). Built once per road network: this is the green "flowing" layer.
  */
-export function trafficData(graph: RoadGraph, traffic: Map<string, number>): FC {
+export function trafficBaseData(graph: RoadGraph): FC {
   const features: Feature<Geometry, Props>[] = [];
   for (const edge of graph.edges.values()) {
-    const level = traffic.get(edge.id) ?? 0;
-    if (level === 0 && !MAJOR.has(edge.roadType)) continue;
-    if (!edge.geometry || edge.geometry.length < 2) continue;
+    if (!MAJOR.has(edge.roadType) || !edge.geometry || edge.geometry.length < 2) continue;
+    features.push(lineFeature(edge.geometry.map(p => [p.lat, p.lng]), { tw: edge.oneway ? 0 : 1 }));
+  }
+  return fc(features);
+}
+
+/** Only the slow and jammed stretches (a few hundred), redrawn every few seconds. */
+export function trafficData(graph: RoadGraph, traffic: Map<string, number>): FC {
+  const features: Feature<Geometry, Props>[] = [];
+  for (const [id, level] of traffic) {
+    if (level <= 0) continue;
+    const edge = graph.edges.get(id);
+    if (!edge?.geometry || edge.geometry.length < 2) continue;
     features.push(lineFeature(edge.geometry.map(p => [p.lat, p.lng]), { level, tw: edge.oneway ? 0 : 1 }));
   }
-  // Slow roads on top of free-flowing ones
   features.sort((a, b) => (a.properties.level as number) - (b.properties.level as number));
   return fc(features);
 }
 
+/** Colour a phase group sees now. */
+function groupColor(sig: TrafficSignal, group: string): string {
+  const phase = sig.phases[sig.currentPhaseIndex];
+  if (!phase || phase.group !== group) return '#FF1744';
+  return phase.color === 'GREEN' ? '#00E676' : phase.color === 'YELLOW' ? '#FFD600' : '#FF1744';
+}
+
 /** Colour shown to the junction's main road (phase group 'A'; legacy graphs: 'NS'). */
 export function signalColor(sig: TrafficSignal): string {
-  const phase = sig.phases[sig.currentPhaseIndex];
-  const main = sig.phases.some(p => p.group === 'A') ? 'A' : 'NS';
-  if (!phase || phase.group !== main) return '#FF1744';
-  return phase.color === 'GREEN' ? '#00E676' : phase.color === 'YELLOW' ? '#FFD600' : '#FF1744';
+  return groupColor(sig, sig.phases.some(p => p.group === 'A') ? 'A' : 'NS');
 }
 
 export function signalsData(signals: Map<string, TrafficSignal>, graph: RoadGraph): FC {
@@ -369,7 +401,11 @@ export function signalsData(signals: Map<string, TrafficSignal>, graph: RoadGrap
   for (const sig of signals.values()) {
     const node = graph.nodes.get(sig.nodeId) ?? (sig.lat !== undefined && sig.lng !== undefined ? { lat: sig.lat, lng: sig.lng } : null);
     if (!node) continue;
-    features.push(pointFeature(node.lat, node.lng, { id: sig.id, color: signalColor(sig) }));
+    features.push(pointFeature(node.lat, node.lng, { id: sig.id, color: signalColor(sig), head: false }));
+    // One head per approach, in that approach's colour
+    for (const arm of sig.arms ?? []) {
+      features.push(pointFeature(arm.lat, arm.lng, { id: sig.id, color: groupColor(sig, arm.group), head: true }));
+    }
   }
   return fc(features);
 }

@@ -26,6 +26,8 @@ const LOST_PER_PHASE = 5;
 const MIN_CYCLE = 60;
 const MAX_CYCLE = 180;
 const MIN_GREEN = 15;
+/** Simulated vehicles each stand for this many real ones in arrival rates (simulationEngine DEMAND_SCALE). */
+const DEMAND_SCALE_FOR_QUEUES = 6;
 /** Largest cycle change one recommendation suggests (share of the current cycle). */
 const MAX_STEP = 0.3;
 /** Neighbour search: follow a road at most this far to the next junction (m). */
@@ -144,6 +146,9 @@ export function initJunctions(index: GraphIndex, signals: TrafficSignal[], place
       .filter(a => a.group !== 'FREE')
       .map(a => [a.edgeId, findFeeders(index.edges.get(a.edgeId), members, index, inEdges)])));
     mergesBySignal.set(j.id, findMerges(j.id, members, index, inEdges));
+    chainsBySignal.set(j.id, new Map(j.approaches
+      .filter(a => a.group !== 'FREE' && index.edges.has(a.edgeId))
+      .map(a => [a.edgeId, upstreamChain(index.edges.get(a.edgeId)!, members, index, inEdges)])));
   }
 }
 
@@ -221,6 +226,27 @@ function followRoad(
   return newRoad;
 }
 
+/**
+ * Signal head for an approach: 8 m before the stop line, at the left kerb (India drives
+ * on the left; a two-way road's lanes are on the left half).
+ */
+function signalHeadPosition(e: RoadEdge, twoWay: boolean): { lat: number; lng: number } {
+  const g = e.geometry;
+  const b = g[g.length - 1], a = g.length >= 2 ? g[g.length - 2] : b;
+  const cosLat = Math.cos(b.lat * Math.PI / 180);
+  const east = (b.lng - a.lng) * cosLat * 111320, north = (b.lat - a.lat) * 111320;
+  const len = Math.hypot(east, north) || 1;
+  const ue = east / len, un = north / len;
+  const back = Math.min(8, len * 0.8);
+  const left = twoWay ? e.lanes * 3.2 + 1.5 : e.lanes * 1.6 + 1.5;
+  // Left of travel direction (east, north) is (-north, east)
+  const de = -ue * back - un * left, dn = -un * back + ue * left;
+  return {
+    lat: Math.round((b.lat + dn / 111320) * 1e6) / 1e6,
+    lng: Math.round((b.lng + de / (111320 * cosLat)) * 1e6) / 1e6,
+  };
+}
+
 const COMPASS = ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west'];
 export function compass(bearing: number): string {
   return COMPASS[Math.round((((bearing % 360) + 360) % 360) / 45) % 8];
@@ -252,10 +278,11 @@ function describeArms(j: TrafficSignal, index: GraphIndex, inEdges: Map<string, 
     const up = ups.find(u => u.approachEdgeId === a.edgeId);
     const fromJunction = up ? `${net.signals.get(up.from)?.name ?? up.from} (${up.metres} m)`
       : (e && followRoad(e, index, inEdges, false, members)) || undefined;
+    const head = e ? signalHeadPosition(e, index.edges.has(`${e.to}-${e.from}`)) : index.nodes.get(j.nodeId)!;
     arms.push({
       edgeId: a.edgeId, group: a.group, road: e?.name || 'Unnamed road',
       from: compass(a.bearing + 180), heading: compass(a.bearing), towards,
-      fromJunction, lanes: e?.lanes ?? 1,
+      fromJunction, lanes: e?.lanes ?? 1, lat: head.lat, lng: head.lng,
     });
   }
   return arms;
@@ -285,6 +312,25 @@ export interface FeederRoad {
 }
 
 const exitsBySignal = new Map<string, JunctionExit[]>();
+/** Each approach's road upstream (edge ids, nearest first, ≤ 1.5 km): where its queue can reach */
+const chainsBySignal = new Map<string, Map<string, string[]>>();
+const CHAIN_METRES = 1500;
+
+function upstreamChain(approach: RoadEdge, members: Set<string>, index: GraphIndex, inEdges: Map<string, RoadEdge[]>): string[] {
+  const chain: string[] = [approach.id];
+  let edge: RoadEdge | undefined = approach;
+  let metres = approach.length;
+  while (edge && metres < CHAIN_METRES) {
+    if (index.signalByNode.get(edge.from) && !members.has(edge.from)) break; // previous junction
+    const cur: RoadEdge = edge;
+    const preds = (inEdges.get(cur.from) ?? []).filter(p => p.from !== cur.to && !members.has(p.from));
+    edge = preds.sort((p, q) => turn(p.bearing, cur.bearing) - turn(q.bearing, cur.bearing))[0];
+    if (!edge || turn(edge.bearing, cur.bearing) > 60 || chain.includes(edge.id)) break;
+    chain.push(edge.id);
+    metres += edge.length;
+  }
+  return chain;
+}
 const feedersBySignal = new Map<string, Map<string, FeederRoad[]>>();
 const mergesBySignal = new Map<string, FeederRoad[]>();
 
@@ -434,6 +480,8 @@ export interface ApproachView {
   from?: { id: string; name: string; metres: number };
   /** "from the south-east, towards Yeshwanthpur" */
   direction: string;
+  /** Physical (simulated) queue that discharges at the stop line */
+  queueAgents: number;
   /** Estimated wait for the last vehicle in the queue (s), and whether it breaks MAX_WAIT_S */
   waitSeconds: number;
   overLimit: boolean;
@@ -534,18 +582,34 @@ function analyse(s: TrafficSignal): JunctionDetail | null {
   if (!node) return null;
 
   const real = s.approaches.filter(a => a.group !== 'FREE');
-  const stats = engine.getApproachStats(real.map(a => a.edgeId));
+  const chains = chainsBySignal.get(s.id);
+  const stats = new Map<string, { queueVehicles: number; queueAgents: number; queueMetres: number; arrivalsPerHour: number }>();
+  for (const a of real) {
+    const chain = chains?.get(a.edgeId) ?? [a.edgeId];
+    const per = engine.getApproachStats(chain);
+    let qv = 0, qa = 0, qm = 0, arrivals = per.get(chain[0])?.arrivalsPerHour ?? 0;
+    for (const id of chain) {
+      const st = per.get(id);
+      const e = index.edges.get(id);
+      if (!st || !e) break;
+      qv += st.queueVehicles; qa += st.queueAgents; qm += st.queueMetres;
+      arrivals = st.arrivalsPerHour; // demand reaching the back of the queue
+      if (st.queueMetres < e.length * 0.8) break; // the queue ends on this stretch
+    }
+    stats.set(a.edgeId, { queueVehicles: qv, queueAgents: qa, queueMetres: Math.round(qm), arrivalsPerHour: arrivals });
+  }
   const ups = net.upstream.get(s.id) ?? [];
   const approaches: ApproachView[] = real.map(a => {
     const e = index.edges.get(a.edgeId)!;
-    const st = stats.get(a.edgeId) ?? { queueVehicles: 0, queueMetres: 0, arrivalsPerHour: 0 };
+    const st = stats.get(a.edgeId) ?? { queueVehicles: 0, queueAgents: 0, queueMetres: 0, arrivalsPerHour: 0 };
     const link = ups.find(l => l.approachEdgeId === a.edgeId);
     const arm = s.arms?.find(x => x.edgeId === a.edgeId);
     const lanes = e?.lanes ?? 1;
-    const wait = lastVehicleWait(s, a.group, st.queueVehicles, lanes);
+    const wait = lastVehicleWait(s, a.group, st.queueAgents, lanes);
     return {
       edgeId: a.edgeId, road: e?.name ?? '', group: a.group, bearing: a.bearing, lanes,
-      light: approachState(s, a.group), ...st,
+      light: approachState(s, a.group),
+      queueVehicles: st.queueVehicles, queueMetres: st.queueMetres, arrivalsPerHour: st.arrivalsPerHour, queueAgents: st.queueAgents,
       from: link ? { id: link.from, name: nameOf(link.from), metres: link.metres } : undefined,
       direction: arm ? `from the ${arm.from}${arm.fromJunction ? ` (${arm.fromJunction})` : ''}${arm.towards ? `, towards ${arm.towards}` : ''}` : '',
       waitSeconds: Math.round(wait), overLimit: wait > MAX_WAIT_S,
@@ -563,22 +627,37 @@ function analyse(s: TrafficSignal): JunctionDetail | null {
   }
   const Y = groups.reduce((t, g) => t + flowRatio[g], 0);
   const L = LOST_PER_PHASE * groups.length + (groups.length === 1 ? 18 : 0);
-  const webster = Y >= 0.9 ? MAX_CYCLE : Math.min(MAX_CYCLE, Math.max(MIN_CYCLE, (1.5 * L + 5) / (1 - Y)));
-  // Change timing step by step: at most ±30% of the current cycle per recommendation
-  const cycle = Math.round(Math.min(s.cycleLength * (1 + MAX_STEP), Math.max(s.cycleLength * (1 - MAX_STEP), webster)));
-  const recGreens: Record<string, number> = {};
+  // Green each group needs to clear its standing queue plus one cycle of arrivals
+  const need: Record<string, number> = {};
   for (const g of groups) {
-    recGreens[g] = Y > 0.01
-      ? Math.max(MIN_GREEN, Math.round((cycle - L) * flowRatio[g] / Y))
+    need[g] = Math.max(0, ...approaches.filter(a => a.group === g).map(a =>
+      (a.queueAgents + a.arrivalsPerHour / DEMAND_SCALE_FOR_QUEUES * s.cycleLength / 3600) / (Math.max(1, a.lanes) * DISCHARGE_PER_LANE_S)));
+  }
+  const needTotal = groups.reduce((t, g) => t + need[g], 0);
+  const saturated = Y >= 0.85 || needTotal + L > s.cycleLength * 0.9;
+  // Saturated: long cycles (less time lost to yellow/all-red), greens in proportion to
+  // queues. Otherwise Webster's optimum cycle with greens in proportion to flow.
+  const target = saturated
+    ? Math.min(MAX_CYCLE, Math.max(MIN_CYCLE, needTotal + L))
+    : Math.min(MAX_CYCLE, Math.max(MIN_CYCLE, (1.5 * L + 5) / (1 - Y)));
+  // Change timing step by step: at most ±30% of the current cycle per recommendation
+  const cycle = Math.round(Math.min(s.cycleLength * (1 + MAX_STEP), Math.max(s.cycleLength * (1 - MAX_STEP), target)));
+  const recGreens: Record<string, number> = {};
+  const weights = saturated ? need : flowRatio;
+  const weightTotal = groups.reduce((t, g) => t + weights[g], 0);
+  for (const g of groups) {
+    recGreens[g] = weightTotal > 0.01
+      ? Math.max(MIN_GREEN, Math.round((cycle - L) * weights[g] / weightTotal))
       : greensOf(s)[g];
   }
 
-  // Wait guard: give each group enough green to clear its queue within two cycles,
-  // so nobody waits past MAX_WAIT_S (as far as the cycle limit allows)
-  for (const g of groups) {
-    const worst = approaches.filter(a => a.group === g)
-      .reduce((m, a) => Math.max(m, a.queueVehicles / (2 * Math.max(1, a.lanes) * DISCHARGE_PER_LANE_S)), 0);
-    if (worst > recGreens[g]) recGreens[g] = Math.min(120, Math.round(worst));
+  // Wait guard (when not saturated): enough green to clear each queue within two cycles
+  if (!saturated) {
+    for (const g of groups) {
+      const worst = approaches.filter(a => a.group === g)
+        .reduce((m, a) => Math.max(m, a.queueAgents / (2 * Math.max(1, a.lanes) * DISCHARGE_PER_LANE_S)), 0);
+      if (worst > recGreens[g]) recGreens[g] = Math.min(120, Math.round(worst));
+    }
   }
 
   const greens = greensOf(s);
@@ -652,7 +731,17 @@ function analyse(s: TrafficSignal): JunctionDetail | null {
 }
 
 /** Every junction, worst first. */
+let listCache: { at: number; list: JunctionSummary[] } | null = null;
+const LIST_CACHE_MS = 8000;
+
 export function listJunctions(): JunctionSummary[] {
+  if (listCache && Date.now() - listCache.at < LIST_CACHE_MS) return listCache.list;
+  const list = computeJunctionList();
+  listCache = { at: Date.now(), list };
+  return list;
+}
+
+function computeJunctionList(): JunctionSummary[] {
   const engine = getSimulationEngine();
   if (!engine || !net) return [];
   const result: JunctionSummary[] = [];
@@ -719,23 +808,82 @@ export function holdGreen(id: string, group: string, seconds: number, coordinate
     }
   }
 
-  if (coordinate) {
-    const waved = new Set<string>();
-    for (const d of (net.downstream.get(id) ?? []).filter(l => l.fromGroup === group)) {
-      const hold = Math.min(WAVE_HOLD_MAX, secs);
-      if (!waved.has(d.to) && engine.holdSignal(d.to, d.toGroup, hold, `${by} (green wave from ${id})`, d.seconds)) {
-        waved.add(d.to);
-        changes.push(`${d.to} (${nameOf(d.to)}): group ${d.toGroup} green in ${d.seconds} s for ${hold} s — green wave`);
+  if (coordinate) changes.push(...coordinateNeighbours(id, group, secs, by));
+  record({ by, junction: id, action: 'hold', detail: changes.join(' | ') });
+  return changes;
+}
+
+/** Most neighbouring junctions one coordinated action may adjust, and how far away (m). */
+const MAX_COORDINATED = 5;
+const MAX_COORD_METRES = 3000;
+
+/**
+ * Coordinates up to MAX_COORDINATED junctions around a hold, nearest first:
+ * - downstream, along the released traffic: each opens its green as the platoon
+ *   arrives (cumulative travel time), passing the wave on junction to junction;
+ * - upstream, on the roads now stopped: each feeding junction shortens its green
+ *   towards the hold (60% for direct neighbours, 80% one junction further back), so
+ *   queues don't spill back into junctions behind.
+ */
+function coordinateNeighbours(id: string, group: string, secs: number, by: string): string[] {
+  const engine = getSimulationEngine();
+  if (!engine || !net) return [];
+  type Step = { kind: 'wave' | 'gate'; junction: string; group: string; metres: number; seconds: number; hop: number };
+  const candidates: Step[] = [];
+
+  // Downstream: follow the released group from junction to junction
+  const seenDown = new Set<string>([id]);
+  let frontier: { junction: string; group: string; metres: number; seconds: number; hop: number }[] = [{ junction: id, group, metres: 0, seconds: 0, hop: 0 }];
+  while (frontier.length > 0) {
+    const next: typeof frontier = [];
+    for (const f of frontier) {
+      for (const d of (net.downstream.get(f.junction) ?? []).filter(l => l.fromGroup === f.group)) {
+        if (seenDown.has(d.to)) continue;
+        const metres = f.metres + d.metres, seconds = f.seconds + d.seconds;
+        if (metres > MAX_COORD_METRES) continue;
+        seenDown.add(d.to);
+        const step = { junction: d.to, group: d.toGroup, metres, seconds, hop: f.hop + 1 };
+        candidates.push({ kind: 'wave', ...step });
+        next.push(step);
       }
     }
-    // A junction already opening a green wave isn't also gated
-    for (const u of (net.upstream.get(id) ?? []).filter(l => l.toGroup !== group && !waved.has(l.from))) {
-      if (engine.scaleSignalGreen(u.from, u.fromGroup, GATE_FACTOR, secs, `${by} (gating for ${id})`)) {
-        changes.push(`${u.from} (${nameOf(u.from)}): group ${u.fromGroup} green cut to ${Math.round(GATE_FACTOR * 100)}% for ${secs} s — holds traffic back`);
+    frontier = next;
+  }
+
+  // Upstream: roads stopped by the hold, then the junctions feeding those
+  const seenUp = new Set<string>([id]);
+  let upFrontier: { junction: string; groups: (g: string) => boolean; metres: number; hop: number }[] =
+    [{ junction: id, groups: g => g !== group, metres: 0, hop: 0 }];
+  while (upFrontier.length > 0) {
+    const next: typeof upFrontier = [];
+    for (const f of upFrontier) {
+      for (const u of (net.upstream.get(f.junction) ?? []).filter(l => f.groups(l.toGroup))) {
+        if (seenUp.has(u.from) || seenDown.has(u.from)) continue;
+        const metres = f.metres + u.metres;
+        if (metres > MAX_COORD_METRES) continue;
+        seenUp.add(u.from);
+        candidates.push({ kind: 'gate', junction: u.from, group: u.fromGroup, metres, seconds: 0, hop: f.hop + 1 });
+        const fed = u.fromGroup;
+        next.push({ junction: u.from, groups: g => g === fed, metres, hop: f.hop + 1 });
+      }
+    }
+    upFrontier = next;
+  }
+
+  const changes: string[] = [];
+  for (const c of candidates.sort((a, b) => a.metres - b.metres).slice(0, MAX_COORDINATED)) {
+    if (c.kind === 'wave') {
+      const hold = Math.min(WAVE_HOLD_MAX, secs);
+      if (engine.holdSignal(c.junction, c.group, hold, `${by} (green wave from ${id})`, c.seconds)) {
+        changes.push(`${c.junction} (${nameOf(c.junction)}): group ${c.group} green in ${c.seconds} s for ${hold} s — green wave (${c.metres} m downstream)`);
+      }
+    } else {
+      const factor = c.hop === 1 ? GATE_FACTOR : 0.8;
+      if (engine.scaleSignalGreen(c.junction, c.group, factor, secs, `${by} (gating for ${id})`)) {
+        changes.push(`${c.junction} (${nameOf(c.junction)}): group ${c.group} green cut to ${Math.round(factor * 100)}% for ${secs} s — holds traffic back (${c.metres} m upstream)`);
       }
     }
   }
-  record({ by, junction: id, action: 'hold', detail: changes.join(' | ') });
   return changes;
 }
 

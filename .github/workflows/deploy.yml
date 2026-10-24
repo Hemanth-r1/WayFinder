@@ -41,7 +41,7 @@ jobs:
           region: ${{ env.REGION }}
           source: server/
           env_vars: >
-            GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }}
+            GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }},FIRESTORE_DATABASE=wayfinder
           # The city simulation lives in memory and runs all the time: exactly one
           # instance, CPU always on, room for the full Bangalore road network.
           flags: >-
@@ -63,6 +63,7 @@ jobs:
           VITE_FIREBASE_STORAGE_BUCKET: ${{ env.PROJECT_ID }}.firebasestorage.app
           VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_SENDER_ID }}
           VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
+          VITE_FIRESTORE_DATABASE: wayfinder
 
       - uses: FirebaseExtended/action-hosting-deploy@v0
         with:
@@ -70,3 +71,5 @@ jobs:
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           channelId: live
           projectId: ${{ env.PROJECT_ID }}
+          # Only WayFinder's own Hosting site (see .firebaserc), never other sites in the project
+          target: wayfinder

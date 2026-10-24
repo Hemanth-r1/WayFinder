@@ -55,6 +55,9 @@ export interface SignalArm {
   /** Previous junction on this road, if within 1.5 km */
   fromJunction?: string;
   lanes: number;
+  /** Where this approach's signal head stands: at the stop line, on the kerb side */
+  lat: number;
+  lng: number;
 }
 
 export interface TrafficSignal {

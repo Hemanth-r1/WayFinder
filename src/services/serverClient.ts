@@ -413,6 +413,11 @@ class ServerClient {
     return this.post(`/api/junctions/${encodeURIComponent(id)}/plan`, body, 'Failed to set timing');
   }
 
+  /** Demo/training: fill a junction's approaches bumper-to-bumper in the simulation. */
+  async surgeJunction(id: string, metres = 600): Promise<{ changes: string[] }> {
+    return this.post(`/api/junctions/${encodeURIComponent(id)}/surge`, { metres }, 'Failed to create jam');
+  }
+
   async resetJunction(id: string): Promise<{ changes: string[] }> {
     return this.post(`/api/junctions/${encodeURIComponent(id)}/reset`, {}, 'Failed to reset signal');
   }

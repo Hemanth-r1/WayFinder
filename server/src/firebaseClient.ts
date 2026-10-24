@@ -2,6 +2,8 @@ import { initializeApp, getApps, cert } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 
 let db: any = null;
+/** Named Firestore database for WayFinder (other apps keep the "(default)" one). */
+export const FIRESTORE_DATABASE = process.env.FIRESTORE_DATABASE || 'wayfinder';
 
 export function initFirebase(): void {
   if (getApps().length > 0) return;
@@ -21,8 +23,9 @@ export function initFirebase(): void {
         ? { credential: cert(JSON.parse(serviceAccount)) }
         : { projectId }
     );
-    db = getFirestore(app);
-    console.log('[Firebase] Initialized successfully');
+    // WayFinder keeps its data in its own named database, apart from other apps in the project
+    db = getFirestore(app, FIRESTORE_DATABASE);
+    console.log(`[Firebase] Initialized (Firestore database "${FIRESTORE_DATABASE}")`);
   } catch (err) {
     console.error('[Firebase] Initialization failed:', err);
   }

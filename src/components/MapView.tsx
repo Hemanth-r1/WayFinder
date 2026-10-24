@@ -20,7 +20,7 @@ import { distanceMetres } from '../utils/places';
 import SignalCard from './SignalCard';
 import {
   MAP_STYLES, SRC, LAYER, addOverlayLayers, addMissingImage, setSourceData,
-  roadsData, trafficData, signalsData, vehiclesData, heatData, linesData, reportsData,
+  roadsData, trafficData, trafficBaseData, signalsData, vehiclesData, heatData, linesData, reportsData,
 } from './mapLayers';
 
 const MAP_CENTER: [number, number] = [12.9716, 77.5946];
@@ -312,6 +312,7 @@ export default function MapView({
     if (!map || graphVersion === lastGraphVersion.current) return;
     lastGraphVersion.current = graphVersion;
     setSourceData(map, SRC.roads, roadsData(graph));
+    setSourceData(map, SRC.trafficBase, trafficBaseData(graph));
 
     // Show the whole network first, unless the URL already says where to look
     if (/^#[\d.]+\/[\d.-]+\/[\d.-]+/.test(location.hash)) firstFitDone.current = true;
@@ -406,7 +407,7 @@ export default function MapView({
     const frame = (t: number) => {
       raf = requestAnimationFrame(frame);
       const map = loadedMap();
-      if (!map || t - last < 33) return; // ~30 fps
+      if (!map || t - last < 50 || document.hidden) return; // ~20 fps, paused in background tabs
       last = t;
       const anim = animRef.current;
       const shown: Vehicle[] = [];

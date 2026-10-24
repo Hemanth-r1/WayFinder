@@ -49,7 +49,15 @@ const binStart = (t: number) => Math.floor(t / BIN_MS) * BIN_MS;
 let current: Bin = { start: binStart(Date.now()), junctions: new Map() };
 const history: Bin[] = [];
 
+const movementListeners = new Set<(m: MovementEvent) => void>();
+/** Scenarios listen to junction passages (e.g. to time how fast a queue clears). */
+export function onMovement(fn: (m: MovementEvent) => void): () => void {
+  movementListeners.add(fn);
+  return () => movementListeners.delete(fn);
+}
+
 export function recordMovement(m: MovementEvent): void {
+  for (const fn of movementListeners) fn(m);
   rollover(m.at);
   let j = current.junctions.get(m.signalId);
   if (!j) { j = new Map(); current.junctions.set(m.signalId, j); }

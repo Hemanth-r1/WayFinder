@@ -63,6 +63,7 @@ export interface SignalControlState {
 /** One vehicle passing through a signalised junction: where it came from and left by. */
 export interface MovementEvent {
   signalId: string;
+  vehicleId: string;
   /** Approach edge it arrived on, and exit edge it left by */
   fromEdge: string;
   toEdge: string;
@@ -79,6 +80,8 @@ export interface MovementEvent {
 export interface ApproachStats {
   /** Stopped vehicles in real-vehicle equivalents */
   queueVehicles: number;
+  /** Stopped vehicles as simulated (physical queue: what discharges at the stop line) */
+  queueAgents: number;
   /** Metres from the stop line back to the last stopped vehicle */
   queueMetres: number;
   /** Arrivals in real vehicles per hour (smoothed) */
@@ -115,6 +118,13 @@ const STUCK_SECONDS = 240;
 const TRAFFIC_INTERVAL = 2;
 /** Physics step: 5 Hz (traffic-simulation.de steps 0.1–0.25 s of simulated time per frame). */
 const TICK_MS = 200;
+/** Road load can slow drivers to at most 1/this of free-flow speed (the drawn queue does the rest). */
+const MAX_LOAD_SLOWDOWN = 2;
+/** Stretches shorter than this (junction boxes, stop-line links) aren't slowed by load. */
+const JUNCTION_STRETCH_M = 80;
+const lane_ = (sv: { lane: number }) => sv.lane;
+/** Vehicles moved per slice of a step before yielding to waiting requests. */
+const VEHICLES_PER_SLICE = 2500;
 /** Seconds over which road load is averaged. */
 const LOAD_SMOOTHING_S = 30;
 
@@ -354,6 +364,9 @@ class SimulationEngine {
   private vehicleCounter = 0;
   private updateCallbacks: Set<(state: SimState) => void> = new Set();
   private arrivalHandler: ((userId: string) => void) | null = null;
+  /** Scenarios: background spawns only inside this box, and a fixed vehicle count */
+  private spawnArea: BBox | null = null;
+  private targetOverride: number | null = null;
   private movementHandler: ((m: MovementEvent) => void) | null = null;
   /** Stop-line nodes of each junction controller */
   private clusterOf = new Map<string, Set<string>>();
@@ -430,6 +443,64 @@ class SimulationEngine {
     this.arrivalHandler = handler;
   }
 
+  /** Scenarios: limit background spawning to a box and/or fix the background count (null = normal). */
+  setSpawnArea(bbox: BBox | null, target: number | null = null): void {
+    this.spawnArea = bbox;
+    this.targetOverride = target;
+  }
+
+  /**
+   * Scenarios: adds a vehicle that drives `route` (edge ids), starting `startIndex` edges
+   * in at `progress` metres and stopped (v = 0) when `queued`. Returns its id.
+   */
+  addRoutedVehicle(route: string[], opts: { startIndex?: number; progress?: number; lane?: number; queued?: boolean } = {}): string | null {
+    const startIndex = opts.startIndex ?? 0;
+    const edge = this.index.edges.get(route[startIndex]);
+    if (!edge) return null;
+    const kind = this.pickKind();
+    this.vehicleCounter++;
+    const lanes = Math.max(1, edge.lanes);
+    const lane = Math.min(lanes - 1, opts.lane ?? this.pickLane(edge, kind));
+    const sv: SimVehicle = {
+      pub: {
+        id: `v${this.vehicleCounter}`, lat: 0, lng: 0, speed: 0, bearing: edge.bearing,
+        type: kind.type, color: kind.color, isNavigated: false,
+      },
+      kind, edge, progress: Math.min(edge.length, opts.progress ?? 0), lane, latPos: lane,
+      lcTimer: Math.random() * LANE_CHANGE_INTERVAL, idx: -1, seg: 1,
+      v: opts.queued ? 0 : this.cruiseSpeed({ edge, speedFactor: kind.speedFactor } as SimVehicle) * 0.6, acc: 0,
+      speedFactor: kind.speedFactor * (0.9 + Math.random() * 0.2),
+      next: null, ttl: Infinity, stuck: 0, atRed: false,
+      route, routeIndex: startIndex,
+      violator: Math.random() < kind.redJump, weave: (Math.random() - 0.5) * kind.weave,
+      odo: 0, nextStopAt: Infinity, stopAt: null, dwellLeft: 0, violationTimer: 0, approachWait: 0,
+    };
+    sv.next = this.chooseNext(sv);
+    // Already on a junction approach: count it as such for movement counts and waits
+    const sigTo = this.index.signalByNode.get(edge.to);
+    if (sigTo && !this.clusterOf.get(sigTo.id)?.has(edge.from)) sv.approach = { signalId: sigTo.id, edgeId: edge.id };
+    this.placeVehicle(sv);
+    this.sim.set(sv.pub.id, sv);
+    this.state.vehicles.set(sv.pub.id, sv.pub);
+    return sv.pub.id;
+  }
+
+  /** Scenarios: the route a vehicle is on, where it is on it, and its speed (null if gone). */
+  vehicleRoute(id: string): { route: string[]; routeIndex: number; progress: number; v: number } | null {
+    const sv = this.sim.get(id);
+    return sv?.route ? { route: sv.route, routeIndex: sv.routeIndex, progress: sv.progress, v: sv.v } : null;
+  }
+
+  /** Scenarios: sends a routed vehicle a new route that starts with the edge it is on. */
+  rerouteVehicle(id: string, edgeIds: string[]): boolean {
+    const sv = this.sim.get(id);
+    if (!sv || edgeIds[0] !== sv.edge.id) return false;
+    sv.route = edgeIds;
+    sv.routeIndex = 0;
+    sv.next = this.chooseNext(sv);
+    return true;
+  }
+
   /** Called for every vehicle that passes through a signalised junction. */
   setMovementHandler(handler: (m: MovementEvent) => void): void {
     this.movementHandler = handler;
@@ -444,7 +515,7 @@ class SimulationEngine {
     const sigFrom = this.index.signalByNode.get(next.from);
     if (sigFrom && sv.approach?.signalId === sigFrom.id && !this.clusterOf.get(sigFrom.id)?.has(next.to)) {
       this.movementHandler?.({
-        signalId: sigFrom.id, fromEdge: sv.approach.edgeId, toEdge: next.id, vehicleType: sv.kind.type,
+        signalId: sigFrom.id, vehicleId: sv.pub.id, fromEdge: sv.approach.edgeId, toEdge: next.id, vehicleType: sv.kind.type,
         source: sv.gps ? 'gps' : sv.userId ? 'user' : 'sim',
         scale: sv.userId ? 1 : DEMAND_SCALE, waitSeconds: Math.round(sv.approachWait), at: Date.now(),
       });
@@ -457,7 +528,7 @@ class SimulationEngine {
     }
   }
 
-  private runLoop(): void {
+  private async runLoop(): Promise<void> {
     if (!this.state.running) return;
     const now = Date.now();
     const dt = Math.min((now - this.state.lastUpdate) / 1000, 0.4);
@@ -465,7 +536,7 @@ class SimulationEngine {
     this.state.simTime += dt;
 
     const t0 = performance.now();
-    this.update(dt);
+    await this.update(dt);
     this.spawnBuckets.clear();
     this.tickStats.ms += performance.now() - t0; this.tickStats.n++;
     if (now - this.tickStats.at > 60_000) {
@@ -476,7 +547,7 @@ class SimulationEngine {
     this.timer = setTimeout(() => this.runLoop(), TICK_MS);
   }
 
-  private update(dt: number): void {
+  async update(dt: number): Promise<void> {
     this.tick++;
     this.weatherSpeed = getWeather().speedFactor;
     this.spawnVehicles(dt);
@@ -522,7 +593,10 @@ class SimulationEngine {
       rearmost[ix] = rear;
     }
 
+    let n = 0;
     for (const [id, sv] of this.sim) {
+      // Let waiting requests run between slices: the server shares this thread
+      if (++n % VEHICLES_PER_SLICE === 0) await new Promise(r => setImmediate(r));
       if (sv.gps) continue; // real drivers move with their GPS updates
       sv.lcTimer -= dt;
       if (sv.lcTimer <= 0) {
@@ -568,7 +642,7 @@ class SimulationEngine {
   }
 
   private targetCount(): number {
-    return Math.round(PEAK_VEHICLES * getDemand());
+    return this.targetOverride ?? Math.round(PEAK_VEHICLES * getDemand());
   }
 
   private spawnVehicles(dt: number): void {
@@ -599,6 +673,15 @@ class SimulationEngine {
 
   /** Busy-road-weighted edge, or (for corridor vehicles) one on a real user's route. */
   private pickSpawnEdge(kind: VehicleKind, corridor: boolean): RoadEdge | null {
+    if (this.spawnArea) {
+      const [w, s, e, n] = this.spawnArea;
+      for (let tries = 0; tries < 30; tries++) {
+        const edge = this.pickWeighted(this.spawnEdges, this.spawnCum);
+        const p = edge?.geometry[0];
+        if (edge && p && p.lng >= w && p.lng <= e && p.lat >= s && p.lat <= n && rankOf(edge) >= kind.minRank && !isEdgeBlocked(edge.id)) return edge;
+      }
+      return null;
+    }
     if (corridor) {
       const ids = activeRouteEdgeIds();
       for (let tries = 0; tries < 5 && ids.length > 0; tries++) {
@@ -686,8 +769,12 @@ class SimulationEngine {
     const edge = sv.edge;
     const ix = edge.ix!;
     if (this.v0Tick[ix] !== this.tick) {
-      this.v0Val[ix] = (edge.speedLimit / 3.6) * this.weatherSpeed * edgeSpeedFactor(edge.id) /
-        congestionFactor(edge, this.occupancy.get(edge.id) ?? 0);
+      // The road's load slows drivers for the traffic we don't draw, but only so far:
+      // the simulated queue itself already holds them back, and leaving a stop line
+      // (short junction stretches) they pull away at normal speed.
+      const slow = edge.length < JUNCTION_STRETCH_M ? 1
+        : Math.min(MAX_LOAD_SLOWDOWN, congestionFactor(edge, this.occupancy.get(edge.id) ?? 0));
+      this.v0Val[ix] = (edge.speedLimit / 3.6) * this.weatherSpeed * edgeSpeedFactor(edge.id) / slow;
       this.v0Tick[ix] = this.tick;
     }
     return this.v0Val[ix] * sv.speedFactor;
@@ -717,7 +804,11 @@ class SimulationEngine {
       aLead = ahead.acc;
       hardLimit = ahead.progress - ahead.kind.length - 0.5;
     } else if (sv.next) {
-      const rear = this.rearmost[sv.next.ix!];
+      // The last vehicle in the lane we'll enter on the next road (not every lane)
+      const nextLanes = this.lanesByEdge[sv.next.ix!];
+      const lane = Math.min(lane_(sv), Math.max(1, sv.next.lanes) - 1);
+      const laneList = nextLanes?.[lane];
+      const rear = laneList && laneList.length > 0 ? laneList[laneList.length - 1] : (sv.next.lanes <= 1 ? this.rearmost[sv.next.ix!] : undefined);
       if (rear && rear !== sv) {
         s = edge.length - sv.progress + rear.progress - rear.kind.length;
         vLead = rear.v;
@@ -1127,18 +1218,20 @@ class SimulationEngine {
     for (const id of edgeIds) {
       const edge = this.index.edges.get(id);
       if (!edge || edge.ix === undefined) continue;
-      let queuePcu = 0, back = edge.length;
+      let queuePcu = 0, agents = 0, back = edge.length;
       for (const list of this.lanesByEdge[edge.ix] ?? []) {
         if (!list) continue;
         // Front-first: count the stopped vehicles from the stop line backwards
         for (const sv of list) {
           if (sv.v > 1.5) break;
           queuePcu += sv.kind.pcu;
+          agents++;
           back = Math.min(back, sv.progress - sv.kind.length);
         }
       }
       result.set(id, {
         queueVehicles: Math.round(queuePcu * DEMAND_SCALE),
+        queueAgents: agents,
         queueMetres: Math.round(Math.max(0, edge.length - back)),
         arrivalsPerHour: Math.round(this.arrivalRate[edge.ix]),
       });

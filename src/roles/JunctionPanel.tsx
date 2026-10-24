@@ -252,6 +252,10 @@ export default function JunctionPanel({ canControl, selectedId, onSelect, onFocu
                 <button disabled={busy} onClick={() => act(() => serverClient.resetJunction(detail.id))} style={{ ...styles.button, background: '#333' }}>
                   Reset
                 </button>
+                <button disabled={busy} onClick={() => act(() => serverClient.surgeJunction(detail.id))} style={{ ...styles.button, background: '#6A1B9A' }}
+                  title="Demo / training: fills every approach bumper-to-bumper for 600 m">
+                  Fill to 100% (demo)
+                </button>
               </div>
               {changes.length > 0 && (
                 <div style={{ marginTop: 8, fontSize: 11, color: '#81C784' }}>

@@ -24,7 +24,8 @@ if (isConfigured && getApps().length === 0) {
   try {
     app = initializeApp(firebaseConfig);
     auth = getAuth(app);
-    db = getFirestore(app);
+    // WayFinder's own named database, apart from other apps in the project
+    db = getFirestore(app, import.meta.env.VITE_FIRESTORE_DATABASE || 'wayfinder');
     storage = getStorage(app);
 
     const useEmulator = import.meta.env.VITE_FIREBASE_EMULATOR === 'true';
