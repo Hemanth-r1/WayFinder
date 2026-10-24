@@ -102,6 +102,27 @@ export function requireController(_req: Request, res: Response, next: NextFuncti
   next();
 }
 
+/**
+ * Server-set pacing for calls every driver makes repeatedly (GPS fixes, navigation
+ * updates): the response says how long to wait before the next call (`X-Next-Ms`).
+ * Below `budgetPerSec` calls per second clients keep `baseMs`; above it the wait grows
+ * in proportion, so total load stays near the budget however many drivers there are.
+ */
+export function pace(baseMs: number, budgetPerSec: number) {
+  let windowStart = Date.now(), count = 0, rate = 0;
+  return (_req: Request, res: Response, next: NextFunction) => {
+    const now = Date.now();
+    if (now - windowStart >= 1000) {
+      rate = count * 1000 / (now - windowStart);
+      windowStart = now; count = 0;
+    }
+    count++;
+    const wait = Math.min(120_000, Math.round(baseMs * Math.max(1, rate / budgetPerSec)));
+    res.setHeader('X-Next-Ms', String(wait));
+    next();
+  };
+}
+
 /** At most `max` calls per caller per window (in memory, per server instance). */
 export function rateLimit(name: string, max: number, windowMs: number) {
   const hits = new Map<string, number[]>();

@@ -1,6 +1,6 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { getSimulationEngine, type BBox } from './simulationEngine.js';
-import { getConditions } from './conditionsService.js';
+import { updateJson } from './liveSnapshot.js';
 
 /** What a client is looking at; vehicles are sent only for this area. */
 export interface Viewport {
@@ -17,13 +17,10 @@ interface WSClient {
 
 const wss = new WebSocketServer({ noServer: true });
 const clients = new Map<WebSocket, WSClient>();
-/** Simulation ticks at ~20 Hz; clients animate between these frames. */
+/** Clients animate between these frames. */
 const BROADCAST_INTERVAL_MS = 500;
 /** City-wide traffic colours change slowly. */
 const TRAFFIC_INTERVAL_MS = 3000;
-/** Below this zoom vehicles are dots too small to matter; the traffic layer shows the city. */
-const VEHICLE_MIN_ZOOM = 13.5;
-const MAX_VEHICLES_PER_UPDATE = 2500;
 let lastBroadcast = 0;
 
 /** Parses "w,s,e,n" into a bbox (or null). */
@@ -32,32 +29,9 @@ export function parseBBox(raw: unknown): BBox | null {
   return parts.length === 4 && parts.every(Number.isFinite) ? [parts[0], parts[1], parts[2], parts[3]] : null;
 }
 
-/**
- * Live update for one viewer: vehicles in view, each
- * signal's current phase, stats, conditions, and — when asked — traffic per road.
- */
-export function buildUpdate(view: Viewport, includeTraffic: boolean): Record<string, unknown> | null {
-  const engine = getSimulationEngine();
-  if (!engine) return null;
-
-  const showVehicles = view.bbox !== null && view.zoom >= VEHICLE_MIN_ZOOM;
-  // Only what's on screen; real drivers' cars carry no identity (see userVehicleKey)
-  const vehicles = showVehicles ? engine.getVehiclesIn(padBBox(view.bbox!), MAX_VEHICLES_PER_UPDATE) : [];
-
-  const signalStates: Record<string, [number, number]> = {};
-  for (const s of engine.getSignals()) signalStates[s.id] = [s.currentPhaseIndex, Math.round(s.timer * 10) / 10];
-
-  const data: Record<string, unknown> = {
-    vehicles, signalStates, stats: engine.getStats(), conditions: getConditions(), at: Date.now(),
-  };
-  if (includeTraffic) data.traffic = [...engine.getTraffic()].filter(([, level]) => level > 0);
-  return data;
-}
-
-/** Bbox grown by 20% on each side so vehicles entering the screen are already there. */
-function padBBox([w, s, e, n]: BBox): BBox {
-  const dx = (e - w) * 0.2, dy = (n - s) * 0.2;
-  return [w - dx, s - dy, e + dx, n + dy];
+/** Live update for one viewer as JSON (built from the shared snapshot, see liveSnapshot.ts). */
+export function buildUpdate(view: Viewport, includeTraffic: boolean): string | null {
+  return updateJson(view.bbox, view.zoom, includeTraffic);
 }
 
 export function handleWebSocketUpgrade(request: any, socket: any, head: any) {
@@ -112,7 +86,7 @@ function sendTo(client: WSClient, type: 'initial' | 'update', forceTraffic = fal
     return;
   }
   if (includeTraffic) client.lastTraffic = now;
-  client.ws.send(JSON.stringify({ type, data }));
+  client.ws.send(`{"type":"${type}","data":${data}}`);
 }
 
 function broadcast() {

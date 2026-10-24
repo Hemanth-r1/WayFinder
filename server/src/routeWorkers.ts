@@ -26,8 +26,11 @@ let graphRef: RoadGraph | null = null;
 let signalsRef: TrafficSignal[] = [];
 let nodeIdx = new Map<string, number>();
 let edgeIdx = new Map<string, number>();
-const workers: { w: Worker; pending: number }[] = [];
+interface Slot { w: Worker; pending: Set<number> }
+const workers: Slot[] = [];
 const waiting = new Map<number, { resolve: (r: RouteReply) => void; timer: NodeJS.Timeout }>();
+let workerUrl: URL;
+let workerExecArgv: string[] = [];
 let nextId = 1;
 let touched: number[] = [];
 let signalEdges: { e: number; signal: TrafficSignal; group: string }[] = [];
@@ -77,25 +80,32 @@ export function initRouteWorkers(graph: RoadGraph, signals: TrafficSignal[]): vo
   // Workers: every core but the one the simulation runs on (at least one)
   const size = Math.max(1, Math.min(8, availableParallelism() - 1));
   const isTs = import.meta.url.endsWith('.ts');
-  for (let k = 0; k < size; k++) {
-    const w = new Worker(new URL(isTs ? './routeWorker.ts' : './routeWorker.js', import.meta.url), {
-      workerData: { graph: g },
-      execArgv: isTs ? ['--import', 'tsx'] : [],
-    });
-    const slot = { w, pending: 0 };
-    w.on('message', (reply: RouteReply) => {
-      slot.pending--;
-      const job = waiting.get(reply.id);
-      if (!job) return;
-      clearTimeout(job.timer);
-      waiting.delete(reply.id);
-      job.resolve(reply);
-    });
-    w.on('error', (err: Error) => console.error('[Routes] Worker failed:', err.message));
-    w.unref();
-    workers.push(slot);
-  }
+  workerUrl = new URL(isTs ? './routeWorker.ts' : './routeWorker.js', import.meta.url);
+  workerExecArgv = isTs ? ['--import', 'tsx'] : [];
+  for (let k = 0; k < size; k++) workers.push(startWorker());
   console.log(`[Routes] ${size} route worker${size === 1 ? '' : 's'} (${availableParallelism()} CPU cores)`);
+}
+
+function finish(id: number, reply: RouteReply): void {
+  const job = waiting.get(id);
+  if (!job) return;
+  clearTimeout(job.timer);
+  waiting.delete(id);
+  job.resolve(reply);
+}
+
+/** One worker; if it dies, its searches fall back to the main thread and a new worker takes its place. */
+function startWorker(): Slot {
+  const slot: Slot = { w: new Worker(workerUrl, { workerData: { graph: G }, execArgv: workerExecArgv }), pending: new Set() };
+  slot.w.on('message', (reply: RouteReply) => { slot.pending.delete(reply.id); finish(reply.id, reply); });
+  slot.w.on('error', (err: Error) => console.error('[Routes] Worker failed:', err.message));
+  slot.w.on('exit', code => {
+    for (const id of slot.pending) finish(id, { id, routes: [], error: `worker exited (${code})` });
+    const i = workers.indexOf(slot);
+    if (i >= 0) workers[i] = startWorker();
+  });
+  slot.w.unref();
+  return slot;
 }
 
 /** Copies the live cost inputs into shared memory (only roads whose costs changed). */
@@ -138,6 +148,11 @@ function refreshLiveCosts(): void {
   for (const s of signalEdges) g.eSignal[s.e] = expectedSignalDelay(s.signal, s.group);
 }
 
+/** Searches waiting or running on the workers, per worker. */
+export function routeQueuePerWorker(): number {
+  return workers.length ? waiting.size / workers.length : 0;
+}
+
 function userHash(userId: string | undefined): number {
   if (!userId) return 0;
   let h = 2166136261;
@@ -154,16 +169,16 @@ export async function findRouteOptionsAsync(
 ): Promise<RouteInfo[]> {
   const graph = graphRef;
   const src = nodeIdx.get(sourceId), dst = nodeIdx.get(destId);
-  const slot = workers.length ? workers.reduce((a, b) => (b.pending < a.pending ? b : a)) : null;
+  const slot = workers.length ? workers.reduce((a, b) => (b.pending.size < a.pending.size ? b : a)) : null;
   if (!graph || !slot || src === undefined || dst === undefined) {
     return graph ? findRouteOptions(graph, signalsRef, sourceId, destId, ctx, maxOptions) : [];
   }
   const own = ctx.userId ? userRouteEdgeIds(ctx.userId).map(id => edgeIdx.get(id)).filter((i): i is number => i !== undefined) : [];
   const req: RouteRequest = { id: nextId++, src, dst, userHash: userHash(ctx.userId), own, maxOptions };
   const reply = await new Promise<RouteReply>(resolve => {
-    const timer = setTimeout(() => { waiting.delete(req.id); resolve({ id: req.id, routes: [], error: 'timeout' }); }, TIMEOUT_MS);
+    const timer = setTimeout(() => { slot.pending.delete(req.id); waiting.delete(req.id); resolve({ id: req.id, routes: [], error: 'timeout' }); }, TIMEOUT_MS);
     waiting.set(req.id, { resolve, timer });
-    slot.pending++;
+    slot.pending.add(req.id);
     slot.w.postMessage(req);
   });
   if (reply.error) {

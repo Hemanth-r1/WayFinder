@@ -11,7 +11,7 @@ import {
 import { createJam, listJams, removeJam } from './jamService.js';
 import { initReports, createReport, vote, withdraw, SEGMENT_TYPES, type ReportType } from './reportsService.js';
 import {
-  requireUser, requireSelf, requireOperator, requireController, rateLimit, caller, authMode,
+  requireUser, requireSelf, pace, requireOperator, requireController, rateLimit, caller, authMode,
 } from './auth.js';
 import {
   initJunctions, listJunctions, getJunction, holdGreen, applyPlan, resetJunction, controlLog, ControlError,
@@ -24,7 +24,9 @@ import {
   startNavigation, getNavigationUpdate, planRoutes, acceptReroute, updatePosition, NavigationError,
 } from './navigationService.js';
 import { initializeWebSocket, handleWebSocketUpgrade, buildUpdate, parseBBox } from './websocketService.js';
-import { initRouteWorkers } from './routeWorkers.js';
+import { initRouteWorkers, routeQueuePerWorker } from './routeWorkers.js';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
+import { commonJson, trafficJson, cellJson } from './liveSnapshot.js';
 
 const app = express();
 app.use(express.json());
@@ -35,6 +37,7 @@ app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', CORS_ORIGIN);
   res.header('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Demo-User, X-Demo-Role');
+  res.header('Access-Control-Expose-Headers', 'X-Next-Ms');
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
@@ -90,7 +93,24 @@ app.get('/api/state', (req, res) => {
     req.query.traffic === '1',
   );
   if (!data) return res.status(503).json({ error: 'Simulation engine not running' });
-  res.json(data);
+  res.type('json').send(data);
+});
+
+// Live map for many viewers: the same for everyone, so Firebase Hosting's CDN serves it
+// (s-maxage) and the server builds each piece once per second however many people watch
+function sendLive(res: express.Response, json: string | null, cdnSeconds: number) {
+  if (!json) return res.status(503).json({ error: 'Simulation engine not running' });
+  res.set('Cache-Control', `public, max-age=0, s-maxage=${cdnSeconds}`).type('json').send(json);
+}
+/** Signal phases, stats and conditions */
+app.get('/api/live/common', (_req, res) => sendLive(res, commonJson(), 1));
+/** Road traffic levels [[edgeId, level], …] */
+app.get('/api/live/traffic', (_req, res) => sendLive(res, trafficJson(), 3));
+/** Vehicles in one ~2 km cell (x = floor(lng / 0.02), y = floor(lat / 0.02)) */
+app.get('/api/live/cell/:x/:y', (req, res) => {
+  const x = Number(req.params.x), y = Number(req.params.y);
+  if (!Number.isInteger(x) || !Number.isInteger(y)) return res.status(400).json({ error: 'cell x and y must be integers' });
+  sendLive(res, cellJson(x, y), 1);
 });
 
 // ── Road conditions ──────────────────────────────────────────────────────────
@@ -270,7 +290,10 @@ app.get('/api/user/:userId/position', requireUser, requireSelf, async (req, res)
   }
 });
 
-app.get('/api/user/:userId/navigation', requireUser, requireSelf, async (req, res) => {
+/** Calls per second one server takes for each of these before asking phones to slow down */
+const PACE_BUDGET = Number(process.env.PACE_BUDGET_PER_SEC) || 1500;
+
+app.get('/api/user/:userId/navigation', requireUser, requireSelf, pace(2000, PACE_BUDGET), async (req, res) => {
   try {
     const userId = String(req.params.userId);
     const { graph, signals } = await getGraph();
@@ -285,7 +308,8 @@ app.get('/api/user/:userId/navigation', requireUser, requireSelf, async (req, re
 });
 
 // GPS fix from a navigating phone: { lat, lng, speed? (km/h) }
-app.post('/api/user/:userId/position', requireUser, requireSelf, async (req, res) => {
+// Phones send at most one fix per 2 s (300 per 10 min)
+app.post('/api/user/:userId/position', requireUser, requireSelf, rateLimit('GPS updates', 400, 10 * 60 * 1000), pace(2000, PACE_BUDGET), async (req, res) => {
   try {
     const { lat, lng, speed } = req.body;
     if (typeof lat !== 'number' || typeof lng !== 'number') {
@@ -408,7 +432,20 @@ app.get('/api/control/log', requireUser, requireOperator, (_req, res) => {
   res.json({ log: controlLog() });
 });
 
+// Load shedding: when the server falls behind, phones plan routes themselves (the app has
+// the road network and live traffic colours), so routing capacity grows with the users
+const loopDelay = monitorEventLoopDelay({ resolution: 20 });
+loopDelay.enable();
+let busy = false;
+setInterval(() => {
+  busy = loopDelay.percentile(99) / 1e6 > 150 || routeQueuePerWorker() > 4;
+  loopDelay.reset();
+}, 1000).unref();
+
 app.post('/api/route', requireUser, rateLimit('route requests', 20, 10 * 60 * 1000), async (req, res) => {
+  if (busy) {
+    return res.status(503).set('Retry-After', '5').json({ error: 'Server busy — planning on your phone', planOnDevice: true });
+  }
   try {
     const { sourceId, destId } = req.body;
     // The caller's own route doesn't count as load on itself

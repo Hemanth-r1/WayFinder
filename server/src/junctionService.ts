@@ -698,12 +698,14 @@ function analyse(s: TrafficSignal): JunctionDetail | null {
     }
   }
 
+  // Queues may need more green than the cycle had: report the cycle the greens add up to
+  const finalCycle = Math.round(groups.reduce((t, g) => t + recGreens[g], 0) + L);
   const greens = greensOf(s);
   const changes = groups
     .filter(g => Math.abs((recGreens[g] ?? 0) - (greens[g] ?? 0)) >= 5)
     .map(g => `${groupLabel(s, g, approaches)} ${recGreens[g]} s green (now ${greens[g]} s)`);
   const summary = changes.length
-    ? `Suggested cycle ${cycle} s: ${changes.join('; ')}.`
+    ? `Suggested cycle ${finalCycle} s: ${changes.join('; ')}.`
     : 'Current timing fits the traffic.';
 
   // Advice for neighbours: spillback towards upstream junctions, green waves downstream
@@ -754,7 +756,7 @@ function analyse(s: TrafficSignal): JunctionDetail | null {
     phases: s.phases.map(p => ({ group: p.group, color: p.color, duration: p.duration })),
     greens, approaches,
     recommendation: {
-      cycle, greens: recGreens,
+      cycle: finalCycle, greens: recGreens,
       flowRatio: Object.fromEntries(Object.entries(flowRatio).map(([g, v]) => [g, Math.round(v * 100) / 100])),
       saturation: Math.round(Y * 100) / 100, summary,
     },

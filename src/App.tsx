@@ -155,6 +155,8 @@ function AppContent() {
 
   const graphRef = useRef(graph);
   graphRef.current = graph;
+  const trafficRef = useRef(traffic);
+  trafficRef.current = traffic;
   const signalsRef = useRef(signals);
   signalsRef.current = signals;
 
@@ -179,11 +181,14 @@ function AppContent() {
         if (controller.signal.aborted) return;
         // Server unreachable or failing (offline, proxy 5xx): plan on the device with the saved road network
         {
-          const local = offlineRoute(graphRef.current, signalsRef.current, selectedSource, selectedDest);
+          const busy = err instanceof Error && /busy/i.test(err.message);
+          const local = offlineRoute(graphRef.current, signalsRef.current, selectedSource, selectedDest, trafficRef.current);
           if (local) {
             setRouteOptions([local]);
             setSelectedRouteIndex(0);
-            setRouteError('Offline route — typical speeds, no live traffic or road reports');
+            setRouteError(busy
+              ? 'Planned on your phone (server busy) — with live traffic, without road reports'
+              : 'Offline route — typical speeds, no live traffic or road reports');
             return;
           }
         }
@@ -228,17 +233,24 @@ function AppContent() {
     }
   }, [user, setSource, setDest]);
 
+  // Navigation updates at the pace the server asks for (2 s normally, longer when it is busy)
   useEffect(() => {
     if (!navigatedVehicle) return;
-    const interval = setInterval(refreshNavigation, 2000);
-    return () => clearInterval(interval);
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const loop = async () => {
+      await refreshNavigation();
+      if (alive) timer = setTimeout(loop, serverClient.pace('navigation'));
+    };
+    timer = setTimeout(loop, serverClient.pace('navigation'));
+    return () => { alive = false; clearTimeout(timer); };
   }, [navigatedVehicle, refreshNavigation]);
 
   // Real drivers: stream the phone's GPS so their vehicle, live speeds and rerouting use it
   const driveMode = navigation?.mode;
   useEffect(() => {
     if (!user || driveMode !== 'gps' || !navigator.geolocation) return;
-    // Send the newest fix at most every 2 s; a fix arriving in between is sent late, never dropped
+    // Send the newest fix at most every 2 s (or as slowly as the server asks); a fix arriving in between is sent late, never dropped
     let latest: GeolocationPosition | null = null;
     let lastSent = 0;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -261,7 +273,7 @@ function AppContent() {
     const watchId = navigator.geolocation.watchPosition(
       pos => {
         latest = pos;
-        if (!timer) timer = setTimeout(send, Math.max(0, 2000 - (Date.now() - lastSent)));
+        if (!timer) timer = setTimeout(send, Math.max(0, serverClient.pace('gps') - (Date.now() - lastSent)));
       },
       err => {
         // Timeouts just mean no new fix yet (e.g. standing still); only a denial needs the driver

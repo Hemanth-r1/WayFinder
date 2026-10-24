@@ -5,7 +5,38 @@ const WS_URL = SERVER_URL
   : `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`;
 /** Hosting rewrites don't carry WebSockets; if no socket opens within this time, poll instead. */
 const WS_CONNECT_TIMEOUT_MS = 4000;
-const POLL_INTERVAL_MS = 1500;
+/** Matches the CDN cache time of /api/live/* (1 s) */
+const POLL_INTERVAL_MS = 1000;
+/** Same grid as the server's liveSnapshot.ts */
+const CELL_DEG = 0.02;
+const VEHICLE_MIN_ZOOM = 13.5;
+/** More cells than this (zoomed far out): no vehicles, the traffic colours show the city */
+const MAX_CELLS = 25;
+/** Colour per vehicle type (the server's KINDS) */
+const TYPE_COLOR: Record<string, string> = {
+  bike: '#FFB300', hatchback: '#42A5F5', sedan: '#1E88E5', suv: '#26A69A', xuv: '#00897B', auto: '#8BC34A',
+  bus: '#EF5350', van: '#7E57C2', tempo: '#5C6BC0', minitruck: '#A1887F', truck: '#8D6E63', lorry: '#6D4C41',
+  tipper: '#F9A825', trailer: '#546E7A',
+};
+
+/** Live vehicles arrive as [id, lat, lng, km/h, bearing, type, flag] (flag 1 wrong way, 2 ran a red). */
+function decodeVehicles(raw: unknown[]): ServerVehicle[] {
+  return raw.map(v => {
+    if (!Array.isArray(v)) return v as ServerVehicle;
+    const [id, lat, lng, speed, bearing, type, flag] = v as [string, number, number, number, number, string, number];
+    return {
+      id, lat, lng, speed, bearing, type, color: TYPE_COLOR[type] ?? '#1E88E5', isNavigated: false,
+      wrongWay: flag === 1 || undefined, violation: flag === 2 || undefined,
+    };
+  });
+}
+
+function decodeMessage(msg: any): any {
+  if ((msg?.type === 'update' || msg?.type === 'initial') && Array.isArray(msg.data?.vehicles)) {
+    msg.data.vehicles = decodeVehicles(msg.data.vehicles);
+  }
+  return msg;
+}
 
 export interface ServerVehicle {
   id: string;
@@ -16,6 +47,8 @@ export interface ServerVehicle {
   type: string;
   color: string;
   isNavigated: boolean;
+  wrongWay?: boolean;
+  violation?: boolean;
 }
 
 export interface ServerSignal {
@@ -312,7 +345,18 @@ class ServerClient {
 
   private async send(path: string, init: RequestInit = {}): Promise<Response> {
     const headers = { ...(await this.identity()), ...(init.headers as Record<string, string> | undefined) };
-    return fetch(`${SERVER_URL}${path}`, { ...init, headers });
+    const res = await fetch(`${SERVER_URL}${path}`, { ...init, headers });
+    // The server paces repeated calls when it is busy (X-Next-Ms)
+    const next = Number(res.headers.get('X-Next-Ms'));
+    if (next > 0) this.paceMs[path.endsWith('/position') ? 'gps' : path.endsWith('/navigation') ? 'navigation' : 'other'] = next;
+    return res;
+  }
+
+  private paceMs: Record<'gps' | 'navigation' | 'other', number> = { gps: 2000, navigation: 2000, other: 2000 };
+
+  /** How long to wait before the next GPS fix or navigation update, as the server asked. */
+  pace(kind: 'gps' | 'navigation'): number {
+    return this.paceMs[kind];
   }
   private shouldReconnect = false;
   private connectTimer: number | null = null;
@@ -529,8 +573,7 @@ class ServerClient {
 
     this.ws.onmessage = (event) => {
       try {
-        const data = JSON.parse(event.data);
-        this.notifyCallbacks(data);
+        this.notifyCallbacks(decodeMessage(JSON.parse(event.data)));
       } catch (err) {
         console.error('[ServerClient] Failed to parse WebSocket message:', err);
       }
@@ -573,16 +616,32 @@ class ServerClient {
   private startPolling(): void {
     if (this.pollTimer) return;
     console.warn('[ServerClient] WebSocket unavailable — polling for live updates');
+    // Everyone asks for the same cached pieces (/api/live/*), so the CDN answers most polls
+    const getJson = async (path: string) => {
+      const res = await fetch(`${SERVER_URL}${path}`);
+      return res.ok ? res.json() : null;
+    };
     const poll = async () => {
       try {
-        // Road traffic levels change slowly: every other poll
-        const params = new URLSearchParams({ traffic: this.pollCount++ % 2 === 0 ? '1' : '0' });
-        if (this.view) {
-          params.set('bbox', this.view.bbox.map(v => v.toFixed(5)).join(','));
-          params.set('zoom', this.view.zoom.toFixed(1));
+        const withTraffic = this.pollCount++ % 3 === 0; // road traffic changes slowly
+        const cells: string[] = [];
+        if (this.view && this.view.zoom >= VEHICLE_MIN_ZOOM) {
+          const [w, so, e, n] = this.view.bbox;
+          const dx = (e - w) * 0.2, dy = (n - so) * 0.2;
+          const x0 = Math.floor((w - dx) / CELL_DEG), x1 = Math.floor((e + dx) / CELL_DEG);
+          const y0 = Math.floor((so - dy) / CELL_DEG), y1 = Math.floor((n + dy) / CELL_DEG);
+          if ((x1 - x0 + 1) * (y1 - y0 + 1) <= MAX_CELLS) {
+            for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) cells.push(`/api/live/cell/${x}/${y}`);
+          }
         }
-        const response = await fetch(`${SERVER_URL}/api/state?${params}`);
-        if (response.ok) this.notifyCallbacks({ type: 'update', data: await response.json() });
+        const [common, traffic, ...vehicleLists] = await Promise.all([
+          getJson('/api/live/common'),
+          withTraffic ? getJson('/api/live/traffic') : Promise.resolve(null),
+          ...cells.map(getJson),
+        ]);
+        if (!common) return;
+        const data = { ...common, vehicles: decodeVehicles(vehicleLists.flatMap(l => l ?? [])), ...(traffic ? { traffic } : {}) };
+        this.notifyCallbacks({ type: 'update', data });
       } catch { /* server unreachable; keep trying */ }
     };
     poll();

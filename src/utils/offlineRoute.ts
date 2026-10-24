@@ -1,7 +1,8 @@
 /**
- * Route planning on the device, used when the WayFinder server can't be reached.
- * Uses the downloaded road network with free-flow speeds and typical signal waits —
- * no live traffic, crowd reports or route spreading (those need the server).
+ * Route planning on the device, used when the WayFinder server can't be reached or is
+ * busy. Uses the downloaded road network with free-flow speeds, typical signal waits and,
+ * when known, the live traffic colours (slow roads cost more) — no crowd reports or
+ * route spreading (those need the server).
  */
 import type { RoadGraph, RoadEdge, TrafficSignal } from '../types';
 import type { RouteOption } from '../services/serverClient';
@@ -9,6 +10,8 @@ import type { RouteOption } from '../services/serverClient';
 /** Average wait at a signal for a random arrival (s), roughly a quarter cycle. */
 const SIGNAL_WAIT = 25;
 const TURN_SECONDS_PER_90 = 3;
+/** Travel-time multiplier per live traffic level (1 slow, 2 jammed, 3 standstill) */
+const TRAFFIC_SLOWDOWN = [1, 1.6, 2.6, 4];
 
 function haversine(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
   const dLat = (b.lat - a.lat) * Math.PI / 180;
@@ -45,6 +48,7 @@ class Heap {
 /** Fastest route by free-flow time, or null when unreachable. */
 export function offlineRoute(
   graph: RoadGraph, signals: Map<string, TrafficSignal>, sourceId: string, destId: string,
+  traffic?: Map<string, number>,
 ): RouteOption | null {
   const dest = graph.nodes.get(destId);
   if (!dest || !graph.nodes.has(sourceId)) return null;
@@ -68,7 +72,7 @@ export function offlineRoute(
     for (const e of graph.adjacency.get(cur) ?? []) {
       if (done.has(e.to)) continue;
       const turn = inEdge ? Math.abs(((e.bearing - inEdge.bearing + 540) % 360) - 180) : 0;
-      const cost = e.length / (Math.max(5, e.speedLimit) / 3.6)
+      const cost = e.length / (Math.max(5, e.speedLimit) / 3.6) * TRAFFIC_SLOWDOWN[traffic?.get(e.id) ?? 0]
         + (turn / 90) * TURN_SECONDS_PER_90 + (turn > 170 ? 30 : 0)
         + (signalNodes.has(e.to) && e.to !== destId ? SIGNAL_WAIT : 0);
       const t = g.get(cur)! + cost;

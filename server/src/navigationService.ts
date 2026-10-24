@@ -102,6 +102,8 @@ const REROUTE_CHECK_MS = 15000;
 const MIN_REROUTE_SAVING_S = 60;
 /** ...and this share of the remaining time. */
 const MIN_REROUTE_SAVING_SHARE = 0.1;
+/** At most one automatic reroute per driver this often. */
+const AUTO_REROUTE_GAP_MS = 20_000;
 /** Consecutive off-route GPS fixes before rerouting (filters GPS jitter). */
 const OFF_ROUTE_FIXES = 2;
 /** Ask drivers about reports this far ahead along their route. */
@@ -375,6 +377,9 @@ export async function updatePosition(
   }
 
   if (++session.offRouteFixes < OFF_ROUTE_FIXES) return { onRoute: false, arrived: false, rerouted: false };
+  // One automatic reroute per AUTO_REROUTE_GAP_MS: route searches are the expensive part
+  if (Date.now() - (session.lastAutoReroute ?? 0) < AUTO_REROUTE_GAP_MS) return { onRoute: false, arrived: false, rerouted: false };
+  session.lastAutoReroute = Date.now();
 
   // Off the route: plan again from the road nearest the driver
   const index = getGraphIndex(graph, signals);
