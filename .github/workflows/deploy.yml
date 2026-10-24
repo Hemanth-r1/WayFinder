@@ -7,7 +7,8 @@ on:
     branches: [main]
 
 env:
-  REGION: us-central1
+  # Mumbai: next to the users and the wayfinder Firestore database (asia-south1)
+  REGION: asia-south1
   SERVICE: wayfinder-server
   PROJECT_ID: project-7d0d26b8-5887-43f6-804
 
@@ -41,12 +42,12 @@ jobs:
           region: ${{ env.REGION }}
           source: server/
           env_vars: >
-            GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }},FIRESTORE_DATABASE=wayfinder
+            GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }},FIRESTORE_DATABASE=wayfinder,NODE_ENV=production
           # The city simulation lives in memory and runs all the time: exactly one
           # instance, CPU always on, room for the full Bangalore road network.
           flags: >-
             --memory=2Gi --cpu=2 --min-instances=1 --max-instances=1
-            --no-cpu-throttling --timeout=3600
+            --no-cpu-throttling --timeout=3600 --concurrency=1000
 
       - name: Show server URL
         if: github.ref == 'refs/heads/main'

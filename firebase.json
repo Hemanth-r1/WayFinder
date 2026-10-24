@@ -48,7 +48,7 @@
         "source": "/api/**",
         "run": {
           "serviceId": "wayfinder-server",
-          "region": "us-central1"
+          "region": "asia-south1"
         }
       },
       {

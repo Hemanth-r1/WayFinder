@@ -11,7 +11,7 @@ its **own named database `wayfinder`** and deploys rules and indexes only there.
 | Piece | Where |
 |---|---|
 | Web app | Hosting site `project-7d0d26b8-5887-43f6-804` (target `wayfinder` in `.firebaserc`) |
-| API | Cloud Run `wayfinder-server` (us-central1), 1 instance, 2 GiB, CPU always on; Hosting rewrites `/api/**` to it |
+| API | Cloud Run `wayfinder-server` (asia-south1, Mumbai), 1 instance, 2 GiB, CPU always on; Hosting rewrites `/api/**` to it |
 | Data | Firestore database `wayfinder` (asia-south1); rules `firestore.rules`, indexes `firestore.indexes.wayfinder.json` |
 | Sign-in | Firebase Auth — shared by every app in the project |
 
