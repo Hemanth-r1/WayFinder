@@ -1,5 +1,5 @@
 import type { CSSProperties } from 'react';
-import type { Conditions, WeatherMode, TrafficMode } from '../services/serverClient';
+import type { Conditions, WeatherMode, TrafficMode, Behaviour, Jam } from '../services/serverClient';
 import { REPORT_LABEL } from '../utils/reports';
 
 interface Props {
@@ -7,7 +7,18 @@ interface Props {
   onWeather: (mode: WeatherMode) => void;
   onTraffic: (level: TrafficMode) => void;
   onRemoveReport: (id: string) => void;
+  onBehaviour: (change: Partial<Behaviour>) => void;
+  jams: Jam[];
+  /** Controllers can remove jams */
+  onRemoveJam?: (id: string) => void;
 }
+
+const BEHAVIOURS: { key: keyof Behaviour; label: string; hint: string }[] = [
+  { key: 'wrongWay', label: 'Wrong-way riders', hint: 'a few bikes/autos take short stretches against one-ways, then drive normally' },
+  { key: 'redJumping', label: 'Red-light jumping', hint: 'some drivers go in the first seconds of red' },
+  { key: 'laneWeaving', label: 'Lane weaving', hint: 'two-wheelers straddle lanes and creep past the stop line' },
+];
+const ON_OFF: { value: 'on' | 'off'; label: string }[] = [{ value: 'on', label: 'On' }, { value: 'off', label: 'Off' }];
 
 const CONFIRMED_BY: Record<string, string> = {
   people: 'confirmed by drivers', operator: 'confirmed by operator', gps: 'confirmed by GPS (traffic stuck)',
@@ -27,7 +38,7 @@ const TRAFFIC_OPTIONS: { value: TrafficMode; label: string }[] = [
 ];
 
 /** Operator controls for weather and simulated traffic, and review of crowd reports. */
-export default function ConditionsPanel({ conditions, onWeather, onTraffic, onRemoveReport }: Props) {
+export default function ConditionsPanel({ conditions, onWeather, onTraffic, onRemoveReport, onBehaviour, jams, onRemoveJam }: Props) {
   if (!conditions) return null;
   const { weather } = conditions;
   const liveNote = weather.source === 'unavailable'
@@ -48,6 +59,35 @@ export default function ConditionsPanel({ conditions, onWeather, onTraffic, onRe
         )}
       </div>
       <Segmented options={TRAFFIC_OPTIONS} value={conditions.trafficMode ?? conditions.trafficLevel} onChange={onTraffic} />
+
+      {conditions.behaviour && <>
+        <div style={styles.label}>Driver behaviour <span style={{ color: '#666' }}>· everyone else follows the road rules</span></div>
+        {BEHAVIOURS.map(b => (
+          <div key={b.key} style={{ display: 'flex', alignItems: 'center', gap: 8 }} title={b.hint}>
+            <div style={{ flex: 1, fontSize: 11, color: '#bbb', marginBottom: 10 }}>{b.label}</div>
+            <div style={{ width: 96 }}>
+              <Segmented options={ON_OFF} value={conditions.behaviour![b.key] ? 'on' : 'off'}
+                onChange={v => onBehaviour({ [b.key]: v === 'on' })} />
+            </div>
+          </div>
+        ))}
+      </>}
+
+      <div style={styles.label}>Test jams ({jams.length}) <span style={{ color: '#666' }}>· right-click a road → Jam this road</span></div>
+      {jams.map(j => (
+        <div key={j.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0', borderBottom: '1px solid #1a1a2e' }}>
+          <span>{j.severity === 'stopped' ? '🛑' : '🐢'}</span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 12, color: '#ddd' }}>{j.road}</div>
+            <div style={{ fontSize: 10, color: '#777' }}>
+              {j.severity === 'stopped' ? 'standstill' : 'slow'} · {j.metres} m queue · {j.vehicles} vehicles
+              {' · '}until {new Date(j.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            </div>
+          </div>
+          {onRemoveJam && <button onClick={() => onRemoveJam(j.id)} style={styles.small}>Remove</button>}
+        </div>
+      ))}
+      <div style={{ height: 10 }} />
 
       <div style={styles.label}>Driver reports ({conditions.reports.length})</div>
       {conditions.reports.length === 0 && (

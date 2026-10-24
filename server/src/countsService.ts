@@ -23,7 +23,8 @@ const COUNTS_DIR = process.env.COUNTS_DIR;
 
 /** Average people per vehicle on Bangalore roads (rough planning figures). */
 const OCCUPANCY: Record<string, number> = {
-  bike: 1.3, hatchback: 1.8, sedan: 1.8, suv: 2.2, auto: 1.8, bus: 35, truck: 1.5, van: 2, emergency: 2,
+  bike: 1.3, hatchback: 1.8, sedan: 1.8, suv: 2.2, xuv: 2.4, auto: 1.8, bus: 35, van: 2, tempo: 1.5,
+  minitruck: 1.5, truck: 1.5, lorry: 1.8, tipper: 1.5, trailer: 1.5, emergency: 2,
 };
 
 type Source = MovementEvent['source'];
@@ -153,10 +154,12 @@ export function junctionMovements(junctionId: string, hours = 1): { hours: numbe
   return { hours: Math.round(covered * 100) / 100, rows };
 }
 
+const VEHICLE_COLUMNS = ['bike', 'auto', 'hatchback', 'sedan', 'suv', 'xuv', 'van', 'tempo', 'minitruck', 'bus', 'truck', 'lorry', 'tipper', 'trailer'];
+
 const CSV_COLUMNS = [
   'bin_start_ist', 'junction_id', 'from_road', 'from_direction', 'to_road', 'to_direction', 'turn',
   'est_vehicles', 'est_persons', 'real_gps_vehicles', 'avg_wait_s',
-  'bike', 'auto', 'hatchback', 'sedan', 'suv', 'van', 'bus', 'truck',
+  ...VEHICLE_COLUMNS,
 ];
 
 function csvCell(v: unknown): string {
@@ -177,7 +180,7 @@ export function countsCsv(hours = 24, junctionId?: string): string {
       lines.push([
         istTime(b.start), r.junctionId, r.fromRoad, r.fromDir, r.toRoad, r.toDir, r.turn,
         Math.round(r.vehicles), Math.round(r.persons), r.realVehicles, Math.round(r.avgWaitSeconds),
-        ...['bike', 'auto', 'hatchback', 'sedan', 'suv', 'van', 'bus', 'truck'].map(t => Math.round(r.byType[t] ?? 0)),
+        ...VEHICLE_COLUMNS.map(t => Math.round(r.byType[t] ?? 0)),
       ].map(csvCell).join(','));
     }
   }

@@ -226,25 +226,47 @@ function followRoad(
   return newRoad;
 }
 
-/**
- * Signal head for an approach: 8 m before the stop line, at the left kerb (India drives
- * on the left; a two-way road's lanes are on the left half).
- */
-function signalHeadPosition(e: RoadEdge, twoWay: boolean): { lat: number; lng: number } {
-  const g = e.geometry;
-  const b = g[g.length - 1], a = g.length >= 2 ? g[g.length - 2] : b;
+/** Offset a point by metres east/north. */
+function offset(lat: number, lng: number, de: number, dn: number): { lat: number; lng: number } {
+  const cosLat = Math.cos(lat * Math.PI / 180);
+  return {
+    lat: Math.round((lat + dn / 111320) * 1e6) / 1e6,
+    lng: Math.round((lng + de / (111320 * cosLat)) * 1e6) / 1e6,
+  };
+}
+
+/** Unit vector (east, north) of the segment a → b. */
+function unit(a: { lat: number; lng: number }, b: { lat: number; lng: number }): [number, number] {
   const cosLat = Math.cos(b.lat * Math.PI / 180);
   const east = (b.lng - a.lng) * cosLat * 111320, north = (b.lat - a.lat) * 111320;
   const len = Math.hypot(east, north) || 1;
-  const ue = east / len, un = north / len;
-  const back = Math.min(8, len * 0.8);
-  const left = twoWay ? e.lanes * 3.2 + 1.5 : e.lanes * 1.6 + 1.5;
-  // Left of travel direction (east, north) is (-north, east)
-  const de = -ue * back - un * left, dn = -un * back + ue * left;
-  return {
-    lat: Math.round((b.lat + dn / 111320) * 1e6) / 1e6,
-    lng: Math.round((b.lng + de / (111320 * cosLat)) * 1e6) / 1e6,
-  };
+  return [east / len, north / len];
+}
+
+/**
+ * Signal head for an approach, where drivers look for it: on the far side of the
+ * junction, across from the stop line — at the left kerb of the road straight ahead,
+ * a few metres in, facing the waiting traffic (India drives on the left, so a two-way
+ * road's lanes are on its left half). Without a straight exit, 12 m past the stop line.
+ */
+function signalHeadPosition(e: RoadEdge, straight: RoadEdge | undefined, index: GraphIndex, crossHalf: number): { lat: number; lng: number } {
+  const g = e.geometry;
+  const line = g[g.length - 1], prev = g.length >= 2 ? g[g.length - 2] : line;
+  const [ue, un] = unit(prev, line);
+  if (straight && straight.geometry.length >= 2 && turn(departureBearing(straight), e.bearing) < 50) {
+    const sg = straight.geometry;
+    const [xe, xn] = unit(sg[0], sg[1]);
+    const twoWay = index.edges.has(`${straight.to}-${straight.from}`);
+    const left = (twoWay ? straight.lanes * 3.2 : straight.lanes * 1.6) + 1.5;
+    // Where the exit starts at the stop line itself (one-node junction), go past the cross road
+    const along = Math.min(straight.from === e.to ? Math.max(6, crossHalf + 3) : 6, straight.length * 0.5);
+    // Left of travel (east, north) is (-north, east)
+    return offset(sg[0].lat, sg[0].lng, xe * along - xn * left, xn * along + xe * left);
+  }
+  const twoWay = index.edges.has(`${e.to}-${e.from}`);
+  const left = (twoWay ? e.lanes * 3.2 : e.lanes * 1.6) + 1.5;
+  const past = Math.max(12, crossHalf + 4);
+  return offset(line.lat, line.lng, ue * past - un * left, un * past + ue * left);
 }
 
 const COMPASS = ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west'];
@@ -278,7 +300,11 @@ function describeArms(j: TrafficSignal, index: GraphIndex, inEdges: Map<string, 
     const up = ups.find(u => u.approachEdgeId === a.edgeId);
     const fromJunction = up ? `${net.signals.get(up.from)?.name ?? up.from} (${up.metres} m)`
       : (e && followRoad(e, index, inEdges, false, members)) || undefined;
-    const head = e ? signalHeadPosition(e, index.edges.has(`${e.to}-${e.from}`)) : index.nodes.get(j.nodeId)!;
+    // Half the width of the road crossing this approach (3.2 m lanes, per direction)
+    const crossHalf = Math.max(0, ...j.approaches
+      .filter(o => o.group !== 'FREE' && turn(o.bearing, a.bearing) > 45 && turn(o.bearing, a.bearing) < 135)
+      .map(o => (index.edges.get(o.edgeId)?.lanes ?? 1) * 3.2));
+    const head = e ? signalHeadPosition(e, straight, index, crossHalf) : index.nodes.get(j.nodeId)!;
     arms.push({
       edgeId: a.edgeId, group: a.group, road: e?.name || 'Unnamed road',
       from: compass(a.bearing + 180), heading: compass(a.bearing), towards,
@@ -340,7 +366,7 @@ function kindOf(e: RoadEdge): FeederRoad['kind'] {
 
 /** Feeders worth showing: flyovers, ramps and anything bigger than a residential lane. */
 function significant(e: RoadEdge): boolean {
-  return !!e.elevated || !['residential', 'living_street'].includes(e.roadType);
+  return !!e.elevated || !['residential', 'living_street', 'service'].includes(e.roadType);
 }
 
 function describeExits(j: TrafficSignal, members: Set<string>, index: GraphIndex, inEdges: Map<string, RoadEdge[]>): JunctionExit[] {

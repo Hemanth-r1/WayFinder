@@ -15,7 +15,8 @@ import {
   getGraphIndex, congestionFactor, edgeCapacity, activeRouteEdgeIds, recordObservedSpeed, type GraphIndex,
 } from './pathfindingService.js';
 import { signalControl, approachState } from './signalTiming.js';
-import { getWeather, getDemand } from './conditionsService.js';
+import { getWeather, getDemand, getBehaviour, type Behaviour } from './conditionsService.js';
+import { jamSpeedFactor } from './jamService.js';
 import { isEdgeBlocked, edgeSpeedFactor } from './reportsService.js';
 
 export interface SimState {
@@ -118,6 +119,10 @@ const STUCK_SECONDS = 240;
 const TRAFFIC_INTERVAL = 2;
 /** Physics step: 5 Hz (traffic-simulation.de steps 0.1–0.25 s of simulated time per frame). */
 const TICK_MS = 200;
+/** Give-way checks start this close to a junction (m). */
+const GIVE_WAY_METRES = 30;
+/** Seconds a driver waits to give way before going anyway. */
+const YIELD_PATIENCE = 10;
 /** Road load can slow drivers to at most 1/this of free-flow speed (the drawn queue does the rest). */
 const MAX_LOAD_SLOWDOWN = 2;
 /** Stretches shorter than this (junction boxes, stop-line links) aren't slowed by load. */
@@ -170,18 +175,34 @@ interface VehicleKind {
   dwell?: [number, number];
   /** Sideways drift within the lane, in lanes (two-wheelers straddle lanes) */
   weave: number;
+  /** Top speed of this vehicle type (km/h); a driver never goes faster, whatever the road allows */
+  maxKmh: number;
+  /** Heavy goods vehicle: kept off city roads in the IST peak hours */
+  heavy?: boolean;
+}
+
+/** IST hours when heavy goods vehicles stay off city roads (7–11, 16–21). */
+function heavyBanned(): boolean {
+  const h = new Date(Date.now() + 5.5 * 3600 * 1000).getUTCHours();
+  return (h >= 7 && h < 11) || (h >= 16 && h < 21);
 }
 
 /** Bangalore traffic mix (two-wheelers dominate). */
 const KINDS: VehicleKind[] = [
-  { type: 'bike', color: '#FFB300', share: 0.46, length: 2, pcu: 0.5, speedFactor: 1.0, T: 0.8, s0: 1, a: 2.0, b: 3.0, politeness: 0, lcThreshold: 0.1, keepLeft: 0, minRank: 0, redJump: 0.12, wrongWay: 0.04, weave: 0.7 },
-  { type: 'hatchback', color: '#42A5F5', share: 0.14, length: 3.8, pcu: 1, speedFactor: 0.95, T: 1.2, s0: 2, a: 1.5, b: 2.5, politeness: 0.2, lcThreshold: 0.2, keepLeft: 0.05, minRank: 0, redJump: 0.03, wrongWay: 0.002, weave: 0.1 },
-  { type: 'sedan', color: '#1E88E5', share: 0.09, length: 4.5, pcu: 1, speedFactor: 0.95, T: 1.2, s0: 2, a: 1.5, b: 2.5, politeness: 0.2, lcThreshold: 0.2, keepLeft: 0.05, minRank: 0, redJump: 0.03, wrongWay: 0.002, weave: 0.1 },
-  { type: 'suv', color: '#26A69A', share: 0.07, length: 4.8, pcu: 1.2, speedFactor: 0.95, T: 1.3, s0: 2, a: 1.4, b: 2.5, politeness: 0.2, lcThreshold: 0.2, keepLeft: 0.05, minRank: 0, redJump: 0.03, wrongWay: 0.002, weave: 0.1 },
-  { type: 'auto', color: '#8BC34A', share: 0.12, length: 2.8, pcu: 0.8, speedFactor: 0.75, T: 1.0, s0: 1.2, a: 1.2, b: 2.5, politeness: 0.1, lcThreshold: 0.15, keepLeft: 0.15, minRank: 0, redJump: 0.08, wrongWay: 0.02, stopEvery: 2500, dwell: [5, 15], weave: 0.3 },
-  { type: 'bus', color: '#EF5350', share: 0.05, length: 12, pcu: 3, speedFactor: 0.75, T: 1.6, s0: 2.5, a: 0.8, b: 2.0, politeness: 0.3, lcThreshold: 0.3, keepLeft: 0.3, minRank: 3, redJump: 0.02, wrongWay: 0, stopEvery: 700, dwell: [15, 35], weave: 0.05 },
-  { type: 'truck', color: '#8D6E63', share: 0.02, length: 9, pcu: 2.5, speedFactor: 0.7, T: 1.8, s0: 2.5, a: 0.7, b: 2.0, politeness: 0.3, lcThreshold: 0.3, keepLeft: 0.3, minRank: 4, redJump: 0.01, wrongWay: 0, weave: 0.05 },
-  { type: 'van', color: '#7E57C2', share: 0.05, length: 5, pcu: 1.4, speedFactor: 0.85, T: 1.3, s0: 2, a: 1.2, b: 2.5, politeness: 0.2, lcThreshold: 0.2, keepLeft: 0.1, minRank: 0, redJump: 0.04, wrongWay: 0.005, weave: 0.1 },
+  { type: 'bike', color: '#FFB300', share: 0.44, maxKmh: 60, length: 2, pcu: 0.5, speedFactor: 1.0, T: 0.8, s0: 1, a: 2.0, b: 3.0, politeness: 0, lcThreshold: 0.1, keepLeft: 0, minRank: 0, redJump: 0.12, wrongWay: 0.04, weave: 0.7 },
+  { type: 'hatchback', color: '#42A5F5', share: 0.12, maxKmh: 70, length: 3.8, pcu: 1, speedFactor: 0.95, T: 1.2, s0: 2, a: 1.5, b: 2.5, politeness: 0.2, lcThreshold: 0.2, keepLeft: 0.05, minRank: 0, redJump: 0.03, wrongWay: 0.002, weave: 0.1 },
+  { type: 'sedan', color: '#1E88E5', share: 0.08, maxKmh: 80, length: 4.5, pcu: 1, speedFactor: 0.95, T: 1.2, s0: 2, a: 1.5, b: 2.5, politeness: 0.2, lcThreshold: 0.2, keepLeft: 0.05, minRank: 0, redJump: 0.03, wrongWay: 0.002, weave: 0.1 },
+  { type: 'suv', color: '#26A69A', share: 0.05, maxKmh: 80, length: 4.4, pcu: 1.1, speedFactor: 0.95, T: 1.3, s0: 2, a: 1.4, b: 2.5, politeness: 0.2, lcThreshold: 0.2, keepLeft: 0.05, minRank: 0, redJump: 0.03, wrongWay: 0.002, weave: 0.1 },
+  { type: 'xuv', color: '#00897B', share: 0.04, maxKmh: 80, length: 4.9, pcu: 1.3, speedFactor: 0.97, T: 1.3, s0: 2, a: 1.5, b: 2.5, politeness: 0.15, lcThreshold: 0.2, keepLeft: 0.05, minRank: 0, redJump: 0.03, wrongWay: 0.002, weave: 0.1 },
+  { type: 'auto', color: '#8BC34A', share: 0.11, maxKmh: 40, length: 2.8, pcu: 0.8, speedFactor: 0.75, T: 1.0, s0: 1.2, a: 1.2, b: 2.5, politeness: 0.1, lcThreshold: 0.15, keepLeft: 0.15, minRank: 0, redJump: 0.08, wrongWay: 0.02, stopEvery: 2500, dwell: [5, 15], weave: 0.3 },
+  { type: 'bus', color: '#EF5350', share: 0.05, maxKmh: 50, length: 12, pcu: 3, speedFactor: 0.75, T: 1.6, s0: 2.5, a: 0.8, b: 2.0, politeness: 0.3, lcThreshold: 0.3, keepLeft: 0.3, minRank: 3, redJump: 0.02, wrongWay: 0, stopEvery: 700, dwell: [15, 35], weave: 0.05 },
+  { type: 'van', color: '#7E57C2', share: 0.03, maxKmh: 60, length: 5, pcu: 1.4, speedFactor: 0.85, T: 1.3, s0: 2, a: 1.2, b: 2.5, politeness: 0.2, lcThreshold: 0.2, keepLeft: 0.1, minRank: 0, redJump: 0.04, wrongWay: 0.005, weave: 0.1 },
+  { type: 'tempo', color: '#5C6BC0', share: 0.02, maxKmh: 60, length: 4.6, pcu: 1.4, speedFactor: 0.8, T: 1.4, s0: 2, a: 1.0, b: 2.3, politeness: 0.2, lcThreshold: 0.25, keepLeft: 0.2, minRank: 0, redJump: 0.04, wrongWay: 0.005, weave: 0.05 },
+  { type: 'minitruck', color: '#A1887F', share: 0.02, maxKmh: 50, length: 5.5, pcu: 1.5, speedFactor: 0.75, T: 1.5, s0: 2.2, a: 0.9, b: 2.2, politeness: 0.25, lcThreshold: 0.25, keepLeft: 0.25, minRank: 0, redJump: 0.03, wrongWay: 0.002, weave: 0.05 },
+  { type: 'truck', color: '#8D6E63', share: 0.01, maxKmh: 45, length: 8, pcu: 2.5, speedFactor: 0.7, T: 1.8, s0: 2.5, a: 0.7, b: 2.0, politeness: 0.3, lcThreshold: 0.3, keepLeft: 0.3, minRank: 3, redJump: 0.01, wrongWay: 0, weave: 0.05, heavy: true },
+  { type: 'lorry', color: '#6D4C41', share: 0.015, maxKmh: 40, length: 10, pcu: 3, speedFactor: 0.65, T: 1.9, s0: 2.5, a: 0.6, b: 1.8, politeness: 0.3, lcThreshold: 0.3, keepLeft: 0.35, minRank: 4, redJump: 0.01, wrongWay: 0, weave: 0.03, heavy: true },
+  { type: 'tipper', color: '#F9A825', share: 0.01, maxKmh: 40, length: 8.5, pcu: 3, speedFactor: 0.65, T: 1.8, s0: 2.5, a: 0.6, b: 1.8, politeness: 0.2, lcThreshold: 0.3, keepLeft: 0.35, minRank: 3, redJump: 0.02, wrongWay: 0, weave: 0.03, heavy: true },
+  { type: 'trailer', color: '#546E7A', share: 0.005, maxKmh: 35, length: 16, pcu: 4.5, speedFactor: 0.6, T: 2.2, s0: 3, a: 0.45, b: 1.5, politeness: 0.4, lcThreshold: 0.4, keepLeft: 0.4, minRank: 5, redJump: 0, wrongWay: 0, weave: 0.02, heavy: true },
 ];
 
 /**
@@ -233,7 +254,7 @@ function accModel(k: VehicleKind, v: number, v0: number, s: number, vLead: numbe
 const USER_KIND: VehicleKind = { ...KINDS[2], type: 'sedan', color: '#4488FF' };
 
 const ROAD_RANK: Record<string, number> = {
-  motorway: 5, trunk: 5, primary: 4, secondary: 3, tertiary: 2, link: 1, unclassified: 1, residential: 0, living_street: 0,
+  motorway: 5, trunk: 5, primary: 4, secondary: 3, tertiary: 2, link: 1, unclassified: 1, residential: 0, living_street: 0, service: 0,
 };
 /** Traffic concentrates on arterials: spawn and turn weight per road rank. */
 const RANK_WEIGHT = [0.25, 1, 1.5, 3, 5, 6];
@@ -287,9 +308,13 @@ interface SimVehicle {
   dwellLeft: number;
   /** Seconds the 'ran a red' flag stays on */
   violationTimer: number;
+  /** Seconds spent giving way at the current junction (patience runs out after a while) */
+  yieldWait: number;
   /** Junction approach being driven (for movement counts), and seconds spent waiting on it */
   approach?: { signalId: string; edgeId: string };
   approachWait: number;
+  /** Took a wrong-way stretch already: from then on drives by the rules */
+  reformed?: boolean;
 }
 
 const rankOf = (e: RoadEdge) => ROAD_RANK[e.roadType] ?? 1;
@@ -333,6 +358,8 @@ class SimulationEngine {
   private rearmost: (SimVehicle | undefined)[] = [];
   /** Edge indexes filled in the lane tables this step */
   private usedEdges: number[] = [];
+  /** Edges arriving at each node (give-way checks) */
+  private inByNode = new Map<string, RoadEdge[]>();
   /** Desired speed per edge before the vehicle's own factor, cached for one step */
   private v0Val: Float64Array;
   private v0Tick: Int32Array;
@@ -352,6 +379,7 @@ class SimulationEngine {
   private redJumpTimes: number[] = [];
   /** Weather speed factor, read once per step */
   private weatherSpeed = 1;
+  private behaviour: Behaviour = getBehaviour();
   private tick = 0;
   private positionsTick = -1;
   /** 10 m slots spawned into since the last tick (byLane doesn't know them yet) */
@@ -405,6 +433,7 @@ class SimulationEngine {
     this.rearmost = new Array(cix);
     for (const s of signals) this.basePhases.set(s.id, s.phases.map(p => p.duration));
     for (const s of signals) this.clusterOf.set(s.id, new Set(s.nodeIds ?? [s.nodeId]));
+    for (const e of graph.edges) (this.inByNode.get(e.to) ?? this.inByNode.set(e.to, []).get(e.to)!).push(e);
     let acc = 0, accMajor = 0;
     for (const e of graph.edges) {
       const w = e.length * (RANK_WEIGHT[rankOf(e)] ?? 1) * e.lanes * coreWeight(e);
@@ -468,12 +497,12 @@ class SimulationEngine {
       },
       kind, edge, progress: Math.min(edge.length, opts.progress ?? 0), lane, latPos: lane,
       lcTimer: Math.random() * LANE_CHANGE_INTERVAL, idx: -1, seg: 1,
-      v: opts.queued ? 0 : this.cruiseSpeed({ edge, speedFactor: kind.speedFactor } as SimVehicle) * 0.6, acc: 0,
+      v: opts.queued ? 0 : this.cruiseSpeed({ edge, kind, speedFactor: kind.speedFactor } as SimVehicle) * 0.6, acc: 0,
       speedFactor: kind.speedFactor * (0.9 + Math.random() * 0.2),
       next: null, ttl: Infinity, stuck: 0, atRed: false,
       route, routeIndex: startIndex,
       violator: Math.random() < kind.redJump, weave: (Math.random() - 0.5) * kind.weave,
-      odo: 0, nextStopAt: Infinity, stopAt: null, dwellLeft: 0, violationTimer: 0, approachWait: 0,
+      odo: 0, nextStopAt: Infinity, stopAt: null, dwellLeft: 0, violationTimer: 0, approachWait: 0, yieldWait: 0,
     };
     sv.next = this.chooseNext(sv);
     // Already on a junction approach: count it as such for movement counts and waits
@@ -550,6 +579,7 @@ class SimulationEngine {
   async update(dt: number): Promise<void> {
     this.tick++;
     this.weatherSpeed = getWeather().speedFactor;
+    this.behaviour = getBehaviour();
     this.spawnVehicles(dt);
     this.updateSignals(dt);
     // Road load changes slowly (30 s smoothing): once a second is enough
@@ -666,9 +696,13 @@ class SimulationEngine {
   }
 
   private pickKind(): VehicleKind {
-    const r = Math.random();
-    const i = this.kindCum.findIndex(c => r <= c);
-    return KINDS[i < 0 ? 0 : i];
+    const banned = heavyBanned();
+    for (let tries = 0; ; tries++) {
+      const r = Math.random() * this.kindCum[this.kindCum.length - 1];
+      const i = this.kindCum.findIndex(c => r <= c);
+      const kind = KINDS[i < 0 ? 0 : i];
+      if (!kind.heavy || !banned || tries > 4) return kind;
+    }
   }
 
   /** Busy-road-weighted edge, or (for corridor vehicles) one on a real user's route. */
@@ -738,7 +772,7 @@ class SimulationEngine {
       weave: (Math.random() - 0.5) * kind.weave,
       odo: 0,
       nextStopAt: kind.stopEvery ? Math.random() * kind.stopEvery : Infinity,
-      stopAt: null, dwellLeft: 0, violationTimer: 0, approachWait: 0,
+      stopAt: null, dwellLeft: 0, violationTimer: 0, approachWait: 0, yieldWait: 0,
     };
     sv.v = this.cruiseSpeed(sv) * (0.4 + Math.random() * 0.4);
     sv.next = this.chooseNext(sv);
@@ -751,7 +785,7 @@ class SimulationEngine {
   private pickLane(edge: RoadEdge, kind: VehicleKind): number {
     const lanes = Math.max(1, edge.lanes);
     if (lanes === 1) return 0;
-    if (kind.type === 'bus' || kind.type === 'truck') return 0;
+    if (kind.type === 'bus' || kind.heavy || kind.type === 'minitruck' || kind.type === 'tempo') return 0;
     if (kind.type === 'auto') return Math.random() < 0.6 ? 0 : 1;
     return Math.floor(Math.random() * lanes);
   }
@@ -774,10 +808,11 @@ class SimulationEngine {
       // (short junction stretches) they pull away at normal speed.
       const slow = edge.length < JUNCTION_STRETCH_M ? 1
         : Math.min(MAX_LOAD_SLOWDOWN, congestionFactor(edge, this.occupancy.get(edge.id) ?? 0));
-      this.v0Val[ix] = (edge.speedLimit / 3.6) * this.weatherSpeed * edgeSpeedFactor(edge.id) / slow;
+      this.v0Val[ix] = (edge.speedLimit / 3.6) * this.weatherSpeed * edgeSpeedFactor(edge.id) * jamSpeedFactor(edge.id) / slow;
       this.v0Tick[ix] = this.tick;
     }
-    return this.v0Val[ix] * sv.speedFactor;
+    // Road speed for this driver, capped at what the vehicle itself can (or may) do
+    return Math.min(this.v0Val[ix] * sv.speedFactor, (sv.kind.maxKmh / 3.6) * Math.min(1, sv.speedFactor / 0.9));
   }
 
   /**
@@ -798,7 +833,13 @@ class SimulationEngine {
         ahead = i > 0 ? list[i - 1] : undefined;
       }
     }
-    if (ahead) {
+    if (ahead && ahead.edge !== edge) {
+      // The vehicle ahead has just moved onto the next road this step
+      s = edge.length - sv.progress + ahead.progress - ahead.kind.length;
+      vLead = ahead.v;
+      aLead = ahead.acc;
+      hardLimit = edge.length + ahead.progress - ahead.kind.length - 0.5;
+    } else if (ahead) {
       s = ahead.progress - ahead.kind.length - sv.progress;
       vLead = ahead.v;
       aLead = ahead.acc;
@@ -809,7 +850,7 @@ class SimulationEngine {
       const lane = Math.min(lane_(sv), Math.max(1, sv.next.lanes) - 1);
       const laneList = nextLanes?.[lane];
       const rear = laneList && laneList.length > 0 ? laneList[laneList.length - 1] : (sv.next.lanes <= 1 ? this.rearmost[sv.next.ix!] : undefined);
-      if (rear && rear !== sv) {
+      if (rear && rear !== sv && rear.edge === sv.next) {
         s = edge.length - sv.progress + rear.progress - rear.kind.length;
         vLead = rear.v;
         aLead = rear.acc;
@@ -839,14 +880,23 @@ class SimulationEngine {
     const isLastEdge = sv.route !== undefined && sv.routeIndex >= sv.route.length - 1;
     // Wrong-way riders don't stop for lights meant for the other direction
     const control = isLastEdge || this.contraBase.has(edge.id) ? null : signalControl(this.index.signalByNode, edge);
-    if (!control) return Infinity;
+    if (!control) {
+      // Unsignalled junction: give way as the road rules say
+      if (!isLastEdge && sv.next && toLine < GIVE_WAY_METRES && this.mustGiveWay(sv, null)) return Math.max(0, toLine);
+      sv.yieldWait = 0;
+      return Infinity;
+    }
     const state = approachState(control.signal, control.group);
+    // Green, turning right: wait for a gap in the oncoming traffic
+    if (state === 'GREEN' && sv.next && toLine < GIVE_WAY_METRES && this.mustGiveWay(sv, control.group)) {
+      return Math.max(0, toLine);
+    }
     // Go through yellow only when too close to stop comfortably
     const canStop = toLine > (sv.v * sv.v) / (2 * sv.kind.b);
     if (state === 'RED' || (state === 'YELLOW' && canStop)) {
       if (toLine < -0.5) return Infinity; // already over the line
       // Red-light jumpers go if the red is only seconds old and they're close and moving
-      if (sv.violator && state === 'RED' && toLine < 25 && sv.v > 2) {
+      if (sv.violator && this.behaviour.redJumping && state === 'RED' && toLine < 25 && sv.v > 2) {
         const phase = control.signal.phases[control.signal.currentPhaseIndex];
         if (phase.group === 'ALL' || control.signal.timer < 4) {
           if (sv.violationTimer <= 0) this.redJumpTimes.push(Date.now());
@@ -856,9 +906,64 @@ class SimulationEngine {
       }
       sv.atRed = toLine < 80;
       // Two-wheelers creep right up to the junction
-      return Math.max(0, sv.kind.type === 'bike' ? toLine + 0.8 : toLine);
+      // Two-wheelers creep over the line only when lane discipline is switched off
+      return Math.max(0, sv.kind.type === 'bike' && this.behaviour.laneWeaving ? toLine + 0.8 : toLine);
     }
     return Infinity;
+  }
+
+  /** Front-most vehicle on an edge (any lane). */
+  private frontOf(e: RoadEdge): SimVehicle | undefined {
+    let best: SimVehicle | undefined;
+    for (const list of this.lanesByEdge[e.ix!] ?? []) {
+      const f = list?.[0];
+      if (f && f.edge === e && (!best || f.progress > best.progress)) best = f;
+    }
+    return best;
+  }
+
+  /**
+   * Road rules at a junction (India drives on the left):
+   * - at a green signal, a right turn waits for oncoming traffic of the same green;
+   * - without a signal, a smaller road gives way to a bigger one, traffic from the right
+   *   has priority on equal roads, and right turns give way to oncoming traffic.
+   * After YIELD_PATIENCE seconds of waiting a driver goes anyway, as people do, so
+   * junctions never lock up.
+   */
+  private mustGiveWay(sv: SimVehicle, signalGroup: string | null): boolean {
+    const edge = sv.edge, next = sv.next!;
+    if (sv.yieldWait > YIELD_PATIENCE) return false;
+    const myTurn = ((next.bearing - edge.bearing + 540) % 360) - 180; // + right, − left
+    const turningRight = myTurn > 35;
+    const myRank = rankOf(edge);
+    const myEta = (edge.length - sv.progress) / Math.max(1, sv.v);
+    for (const o of this.inByNode.get(edge.to) ?? []) {
+      if (o === edge || o.from === next.to || this.contraBase.has(o.id)) continue;
+      const f = this.frontOf(o);
+      if (!f || f.v < 0.5) continue;
+      const theirDist = o.length - f.progress;
+      if (theirDist > GIVE_WAY_METRES) continue;
+      const rel = ((o.bearing - edge.bearing + 540) % 360) - 180; // their heading relative to mine
+      const oncoming = Math.abs(rel) > 135;
+      if (signalGroup !== null) {
+        // Signal: only oncoming traffic released by the same green matters, and only for right turns
+        if (!turningRight || !oncoming) continue;
+        const g = signalControl(this.index.signalByNode, o);
+        if (!g || g.group !== signalGroup) continue;
+        sv.yieldWait += 0.2;
+        return true;
+      }
+      const oRank = rankOf(o);
+      let yieldTo = false;
+      if (oRank > myRank) yieldTo = true;                              // bigger road
+      else if (oRank === myRank) {
+        if (oncoming) yieldTo = turningRight;                          // right turn across oncoming
+        else yieldTo = rel < -45 && rel > -135;                        // they come from my right
+        if (yieldTo && theirDist / Math.max(1, f.v) > myEta + 4) yieldTo = false; // they're far off
+      }
+      if (yieldTo) { sv.yieldWait += 0.2; return true; }
+    }
+    return false;
   }
 
   /**
@@ -997,6 +1102,16 @@ class SimulationEngine {
         return false;
       }
       sv.progress = Math.min(overflow, next.length);
+      sv.yieldWait = 0;
+      // Join the next road's lane table now, so vehicles moving later this step see it
+      // (two vehicles can't take the same spot at a merge)
+      let lanesArr = this.lanesByEdge[next.ix!];
+      if (!lanesArr) { lanesArr = []; this.lanesByEdge[next.ix!] = lanesArr; this.usedEdges.push(next.ix!); }
+      const list = (lanesArr[sv.lane] ??= []);
+      list.push(sv);
+      sv.idx = list.length - 1;
+      const rear = this.rearmost[next.ix!];
+      if (!rear || rear.edge !== next || sv.progress < rear.progress) this.rearmost[next.ix!] = sv;
     }
 
     if (!sv.userId && (sv.ttl <= 0 || sv.stuck > STUCK_SECONDS)) return false;
@@ -1024,7 +1139,7 @@ class SimulationEngine {
     this.trackMovement(sv, next);
     const wrong = this.contraBase.has(next.id);
     sv.pub.wrongWay = wrong || undefined;
-    if (wrong) { sv.lane = 0; sv.latPos = 0; }
+    if (wrong) { sv.lane = 0; sv.latPos = 0; sv.reformed = true; }
     sv.next = this.chooseNext(sv);
     return next;
   }
@@ -1040,7 +1155,7 @@ class SimulationEngine {
     }
     const edge = sv.edge;
     // Now and then a rider takes a short stretch the wrong way down a one-way
-    if (sv.kind.wrongWay > 0 && !this.contraBase.has(edge.id) && Math.random() < sv.kind.wrongWay) {
+    if (this.behaviour.wrongWay && !sv.reformed && sv.kind.wrongWay > 0 && !this.contraBase.has(edge.id) && Math.random() < sv.kind.wrongWay) {
       const shortcuts = (this.contraFrom.get(edge.to) ?? []).filter(c => c.to !== edge.from && c.length < 400);
       if (shortcuts.length > 0) return shortcuts[Math.floor(Math.random() * shortcuts.length)];
     }
@@ -1112,7 +1227,7 @@ class SimulationEngine {
 
     // Lateral offset to the left of travel: two-way roads use the left half, one-ways centre their lanes
     const lanes = Math.max(1, sv.edge.lanes);
-    const lat0 = Math.min(lanes - 0.6, Math.max(-0.4, sv.latPos + sv.weave));
+    const lat0 = Math.min(lanes - 0.6, Math.max(-0.4, sv.latPos + (this.behaviour.laneWeaving ? sv.weave : 0)));
     const left = this.twoWay.has(sv.edge.id)
       ? (lanes - 0.5 - lat0) * LANE_WIDTH
       : ((lanes - 1) / 2 - lat0) * LANE_WIDTH;
@@ -1300,7 +1415,7 @@ class SimulationEngine {
       userId,
       route,
       routeIndex: 0,
-      violator: false, weave: 0, odo: 0, nextStopAt: Infinity, stopAt: null, dwellLeft: 0, violationTimer: 0, approachWait: 0,
+      violator: false, weave: 0, odo: 0, nextStopAt: Infinity, stopAt: null, dwellLeft: 0, violationTimer: 0, approachWait: 0, yieldWait: 0,
     };
     sv.next = this.chooseNext(sv);
     this.placeVehicle(sv);

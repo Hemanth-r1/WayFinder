@@ -183,7 +183,30 @@ export interface ReportPrompt {
   confirmations: number;
 }
 
+/** Simulation driver behaviour switches */
+export interface Behaviour {
+  redJumping: boolean;
+  laneWeaving: boolean;
+  wrongWay: boolean;
+}
+
+export type JamSeverity = 'stopped' | 'slow';
+
+/** An intentional jam placed by an operator in the simulation */
+export interface Jam {
+  id: string;
+  lat: number;
+  lng: number;
+  road: string;
+  severity: JamSeverity;
+  metres: number;
+  vehicles: number;
+  createdAt: number;
+  expiresAt: number;
+}
+
 export interface Conditions {
+  behaviour?: Behaviour;
   weather: {
     condition: WeatherCondition;
     precipitation: number | null;
@@ -368,6 +391,27 @@ class ServerClient {
 
   async setTrafficLevel(level: TrafficMode): Promise<Conditions> {
     return this.post('/api/conditions/traffic', { level }, 'Failed to set traffic level');
+  }
+
+  async setBehaviour(change: Partial<Behaviour>): Promise<Conditions> {
+    return this.post('/api/conditions/behaviour', change, 'Failed to change driver behaviour');
+  }
+
+  async listJams(): Promise<Jam[]> {
+    const response = await this.send('/api/jams');
+    if (!response.ok) throw new Error(await errorMessage(response, 'Failed to load jams'));
+    return (await response.json()).jams;
+  }
+
+  /** Jams the road nearest (lat, lng) in the simulation: a queue `metres` long behind the spot. */
+  async createJam(lat: number, lng: number, severity: JamSeverity, metres = 400, minutes = 20): Promise<{ jam: Jam; jams: Jam[] }> {
+    return this.post('/api/jams', { lat, lng, severity, metres, minutes }, 'Failed to create jam');
+  }
+
+  async removeJam(id: string): Promise<Jam[]> {
+    const response = await this.send(`/api/jams/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (!response.ok) throw new Error(await errorMessage(response, 'Failed to remove jam'));
+    return (await response.json()).jams;
   }
 
   /** Blocks the road nearest (lat, lng) in both directions. */

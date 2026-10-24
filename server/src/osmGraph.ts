@@ -50,17 +50,19 @@ export interface CompactOsm {
 /** Importance: used for signal timing, spawning and turn choice. */
 export const ROAD_RANK: Record<string, number> = {
   motorway: 5, trunk: 5, primary: 4, secondary: 3, tertiary: 2, link: 1,
-  unclassified: 1, residential: 0, living_street: 0,
+  unclassified: 1, residential: 0, living_street: 0, service: 0,
 };
 /** Typical free-flow speeds on Bangalore roads (km/h) with side friction (pedestrians, stopping autos and buses, U-turns), below legal limits. */
 const FREE_FLOW_KMH: Record<string, number> = {
   motorway: 65, trunk: 45, primary: 35, secondary: 30, tertiary: 25, link: 22,
   unclassified: 22, residential: 18, living_street: 10,
+  /** Service and frontage roads beside flyovers, tech parks, markets */
+  service: 20,
 };
 /** Lanes per direction when OSM has no lanes tag. */
 const DEFAULT_LANES: Record<string, number> = {
   motorway: 3, trunk: 3, primary: 2, secondary: 2, tertiary: 1, link: 1,
-  unclassified: 1, residential: 1, living_street: 1,
+  unclassified: 1, residential: 1, living_street: 1, service: 1,
 };
 
 /** OSM highway tag → WayFinder road type, or null for roads we don't model. */

@@ -9,7 +9,9 @@ import { activeNavigatorCount, getGraphIndex, nearestRoadSegment } from './pathf
 import {
   getConditions, setWeatherMode, setTrafficLevel, startWeatherPolling,
   type WeatherMode, type TrafficMode,
+  setBehaviour,
 } from './conditionsService.js';
+import { createJam, listJams, removeJam } from './jamService.js';
 import { initReports, createReport, vote, withdraw, SEGMENT_TYPES, type ReportType } from './reportsService.js';
 import {
   requireUser, optionalUser, requireSelf, requireOperator, requireController, rateLimit, caller, authMode,
@@ -147,6 +149,33 @@ app.post('/api/conditions/traffic', requireUser, requireOperator, (req, res) => 
   }
   setTrafficLevel(level);
   res.json(getConditions());
+});
+
+/** Driver behaviour switches: { redJumping?, laneWeaving?, wrongWay? } (booleans). */
+app.post('/api/conditions/behaviour', requireUser, requireOperator, (req, res) => {
+  setBehaviour(req.body ?? {});
+  res.json(getConditions());
+});
+
+// ── Intentional jams (design / training) ─────────────────────────────────────
+
+app.get('/api/jams', requireUser, requireOperator, (_req, res) => {
+  res.json({ jams: listJams() });
+});
+
+/** { lat, lng, metres?, minutes?, severity?: 'stopped' | 'slow' } — jams the nearest road. */
+app.post('/api/jams', requireUser, requireController, async (req, res) => {
+  const { lat, lng, metres, minutes, severity } = req.body ?? {};
+  if (typeof lat !== 'number' || typeof lng !== 'number') return res.status(400).json({ error: 'lat and lng are required' });
+  try {
+    const jam = await createJam({ lat, lng, metres: Number(metres) || undefined, minutes: Number(minutes) || undefined, severity, createdBy: caller(res).uid });
+    res.json({ jam, jams: listJams() });
+  } catch (err: any) { res.status(400).json({ error: err.message }); }
+});
+
+app.delete('/api/jams/:id', requireUser, requireController, (req, res) => {
+  removeJam(String(req.params.id));
+  res.json({ jams: listJams() });
 });
 
 // ── Crowd reports: road blocks, waterlogging, local rain ───────────────────────

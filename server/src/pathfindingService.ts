@@ -30,11 +30,11 @@ const METRES_PER_VEHICLE = 25;
 const TURN_SECONDS_PER_90 = 3;
 const U_TURN_PENALTY = 30;
 /**
- * Residential lanes and living streets are used only this close to the start or end
+ * Residential lanes, living streets and service roads are used only this close to the start or end
  * (like navigation apps: main roads in between). Keeps routes sane and searches fast.
  */
 const LOCAL_STREET_METRES = 1500;
-const LOCAL_TYPES = new Set(['residential', 'living_street']);
+const LOCAL_TYPES = new Set(['residential', 'living_street', 'service']);
 
 /** Alternatives: accept routes up to this multiple of the best ETA... */
 const MAX_ALT_STRETCH = 1.3;

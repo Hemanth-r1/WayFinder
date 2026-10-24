@@ -28,6 +28,8 @@ export interface MapContextMenuProps {
   /** Operators can remove any report outright */
   canRemove: boolean;
   onRemove: (id: string) => void;
+  /** Controllers: jam the road here in the simulation */
+  onJam?: (severity: 'stopped' | 'slow') => void;
   /** Driver view: hide coordinates, node info and vehicle spawning */
   simple: boolean;
 }
@@ -37,7 +39,13 @@ const VEHICLE_TYPES: { type: VehicleType; icon: string; label: string }[] = [
   { type: 'suv',       icon: '🚙', label: 'SUV' },
   { type: 'hatchback', icon: '🚗', label: 'Hatchback' },
   { type: 'bus',       icon: '🚌', label: 'Bus' },
+  { type: 'xuv',       icon: '🚙', label: 'XUV' },
+  { type: 'tempo',     icon: '🛻', label: 'Tempo' },
+  { type: 'minitruck', icon: '🛻', label: 'Mini truck' },
   { type: 'truck',     icon: '🚚', label: 'Truck' },
+  { type: 'lorry',     icon: '🚛', label: 'Lorry' },
+  { type: 'tipper',    icon: '🚛', label: 'Tipper' },
+  { type: 'trailer',   icon: '🚛', label: 'Trailer' },
   { type: 'bike',      icon: '🛵', label: 'Bike' },
   { type: 'auto',      icon: '🛺', label: 'Auto' },
   { type: 'van',       icon: '📦', label: 'Van' },
@@ -47,7 +55,7 @@ const VEHICLE_TYPES: { type: VehicleType; icon: string; label: string }[] = [
 export default function MapContextMenu({
   lat, lng, nodeId, nodeDegree, roadNames, role,
   screenX, screenY, onClose, onAddSignal, onSpawnVehicle, onSetSource, onSetDest,
-  onReport, nearbyReports, onVote, canRemove, onRemove, simple,
+  onReport, nearbyReports, onVote, canRemove, onRemove, simple, onJam,
 }: MapContextMenuProps) {
   // Clamp to viewport
   const menuWidth = 220;
@@ -126,6 +134,15 @@ export default function MapContextMenu({
               <MenuItem key={t} icon={REPORT_LABEL[t].icon} label={REPORT_LABEL[t].label} onClick={() => { onReport(t); onClose(); }} accent="#FF9800" />
             ))}
         </div>
+
+        {/* Intentional jam for design / training (controllers, simulation only) */}
+        {role === 'controller' && onJam && (
+          <div style={{ borderBottom: '1px solid #1a1a2e' }}>
+            <div style={{ padding: '6px 14px 0', fontSize: 10, color: '#555', textTransform: 'uppercase', letterSpacing: 1 }}>Test jam (simulation)</div>
+            <MenuItem icon="🛑" label="Jam this road — standstill, 400 m" onClick={() => { onJam('stopped'); onClose(); }} accent="#F44336" />
+            <MenuItem icon="🐢" label="Slow this road — crawl, 400 m" onClick={() => { onJam('slow'); onClose(); }} accent="#FF9800" />
+          </div>
+        )}
 
         {/* Add Signal (Supporter + Controller) */}
         {(role === 'supporter' || role === 'controller') && nodeId && nodeDegree >= 2 && (

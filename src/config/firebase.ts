@@ -24,7 +24,7 @@ if (isConfigured && getApps().length === 0) {
   try {
     app = initializeApp(firebaseConfig);
     auth = getAuth(app);
-    // WayFinder's own named database, apart from other apps in the project
+    // WayFinder's own named database; "(default)" belongs to another app in this project
     db = getFirestore(app, import.meta.env.VITE_FIRESTORE_DATABASE || 'wayfinder');
     storage = getStorage(app);
 

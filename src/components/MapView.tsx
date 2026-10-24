@@ -20,7 +20,7 @@ import { distanceMetres } from '../utils/places';
 import SignalCard from './SignalCard';
 import {
   MAP_STYLES, SRC, LAYER, addOverlayLayers, addMissingImage, setSourceData,
-  roadsData, trafficData, trafficBaseData, signalsData, vehiclesData, heatData, linesData, reportsData,
+  roadsData, markingsData, trafficData, trafficBaseData, signalsData, vehiclesData, heatData, linesData, reportsData,
 } from './mapLayers';
 
 const MAP_CENTER: [number, number] = [12.9716, 77.5946];
@@ -66,6 +66,8 @@ interface MapViewProps {
   onReport?: (type: ReportType, lat: number, lng: number, radiusMetres: number) => void;
   onVoteReport?: (id: string, vote: ReportVote) => void;
   onRemoveReport?: (id: string) => void;
+  /** Controllers: jam the road at a point in the simulation */
+  onCreateJam?: (lat: number, lng: number, severity: 'stopped' | 'slow') => void;
   /** Operators: remove reports outright */
   canRemoveReports?: boolean;
   /** The driver's own vehicle: drawn as a heading arrow and followed by the camera */
@@ -117,13 +119,27 @@ function pinElement(color: string, label: string): HTMLElement {
 }
 
 
+/** Lane markings for the roads on screen, only when zoomed in close (they are many). */
+let markingsShown = false;
+function refreshMarkings(map: MLMap, graph: RoadGraph): void {
+  if (!map.getSource(SRC.marks)) return;
+  if (map.getZoom() < 16.3) {
+    if (markingsShown) { setSourceData(map, SRC.marks, { type: 'FeatureCollection', features: [] }); markingsShown = false; }
+    return;
+  }
+  const b = map.getBounds();
+  const pad = 0.002;
+  setSourceData(map, SRC.marks, markingsData(graph, [b.getWest() - pad, b.getSouth() - pad, b.getEast() + pad, b.getNorth() + pad]));
+  markingsShown = true;
+}
+
 export default function MapView({
   graph, signals, vehicles, congestionZones, onCancelOverride,
   overrideActive, overrideTimeRemaining, selectedSource, selectedDest,
   onSelectSource, onSelectDest, role, graphVersion, vehicleVersion, stats,
   onAddSignal, onSpawnVehicleAt, showHeatmap = true, routePolyline, altRoutePolylines, speed: _speed, onSpeedChange: _onSpeedChange,
   onStartNavigation, routeInfo, clearRoute, navigatedVehicle, simpleView = false, compact = false,
-  reports = [], reroutePolyline, onReport, onVoteReport, onRemoveReport, canRemoveReports = false,
+  reports = [], reroutePolyline, onReport, onVoteReport, onRemoveReport, canRemoveReports = false, onCreateJam,
   followVehicleId, traffic, onViewportChange, focus, onSelectJunction,
 }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -261,6 +277,7 @@ export default function MapView({
       viewTimer = window.setTimeout(() => {
         const b = map.getBounds();
         onViewportChangeRef.current?.([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()], map.getZoom());
+        refreshMarkings(map, graphRef.current);
       }, 200);
     };
     map.on('moveend', reportView);
@@ -313,6 +330,7 @@ export default function MapView({
     lastGraphVersion.current = graphVersion;
     setSourceData(map, SRC.roads, roadsData(graph));
     setSourceData(map, SRC.trafficBase, trafficBaseData(graph));
+    refreshMarkings(map, graph);
 
     // Show the whole network first, unless the URL already says where to look
     if (/^#[\d.]+\/[\d.-]+\/[\d.-]+/.test(location.hash)) firstFitDone.current = true;
@@ -625,6 +643,7 @@ export default function MapView({
           onVote={(id, vote) => onVoteReport?.(id, vote)}
           canRemove={canRemoveReports}
           onRemove={id => onRemoveReport?.(id)}
+          onJam={onCreateJam ? severity => onCreateJam(contextMenu.lat, contextMenu.lng, severity) : undefined}
           simple={simpleView}
         />
       )}

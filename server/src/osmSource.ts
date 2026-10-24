@@ -22,7 +22,11 @@ const OVERPASS_MIRRORS = [
   'https://overpass.private.coffee/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
 ];
-/** Every road a car, auto or bike can drive on (residential included) */
+/**
+ * Every road a car, auto or bike can drive on (residential included). Service and frontage
+ * roads come from a separate query (highway=service without a service=* subtype, so no
+ * parking aisles or driveways) when the snapshot is built from downloaded files.
+ */
 const ROAD_FILTER = '^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street)(_link)?$';
 
 interface OverpassElement {

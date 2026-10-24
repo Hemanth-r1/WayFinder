@@ -28,11 +28,18 @@ const VEHICLE_COLORS: Record<VehicleType, string[]> = {
   bike:      ['#3F51B5', '#009688'],
   auto:      ['#FF6F00', '#F57F17'],
   van:       ['#455A64', '#37474F'],
+  xuv:       ['#00897B', '#263238', '#ECEFF1'],
+  tempo:     ['#5C6BC0', '#FFFFFF'],
+  minitruck: ['#A1887F', '#FFFFFF'],
+  lorry:     ['#6D4C41', '#FF8F00'],
+  tipper:    ['#F9A825', '#E65100'],
+  trailer:   ['#546E7A', '#37474F'],
 };
 
 /** Lane index per vehicle type (0 = leftmost in direction of travel; Bangalore drives on left) */
 const PREFERRED_LANE: Record<VehicleType, number> = {
-  bike: 0, auto: 0, sedan: 1, hatchback: 1, suv: 1, van: 1, bus: 1, truck: 1, emergency: 0,
+  bike: 0, auto: 0, sedan: 1, hatchback: 1, suv: 1, xuv: 1, van: 1, bus: 1, truck: 1, emergency: 0,
+  tempo: 0, minitruck: 0, lorry: 0, tipper: 0, trailer: 0,
 };
 
 function rnd(min: number, max: number) { return min + Math.random() * (max - min); }

@@ -23,7 +23,19 @@ export interface WeatherState {
   updatedAt: number;
 }
 
+/**
+ * Driver behaviour switches for the simulation. By default everyone follows the road
+ * rules except a few wrong-way riders (an add-on that operators can switch off); red-light
+ * jumping and lane weaving can be switched on to see their effect.
+ */
+export interface Behaviour {
+  redJumping: boolean;
+  laneWeaving: boolean;
+  wrongWay: boolean;
+}
+
 export interface ConditionsSnapshot {
+  behaviour: Behaviour;
   weather: WeatherState;
   weatherMode: WeatherMode;
   /** Effective level (follows the clock in 'auto' mode) */
@@ -49,6 +61,20 @@ let weatherMode: WeatherMode = 'live';
 let liveWeather: WeatherState = makeWeather('clear', null, 'unavailable');
 /** 'auto' follows Bangalore's daily rhythm; operators can pin a level. */
 let trafficMode: TrafficMode = 'auto';
+let behaviour: Behaviour = { redJumping: false, laneWeaving: false, wrongWay: true };
+
+export function getBehaviour(): Behaviour {
+  return behaviour;
+}
+
+export function setBehaviour(change: Partial<Behaviour>): Behaviour {
+  const next = { ...behaviour };
+  for (const k of ['redJumping', 'laneWeaving', 'wrongWay'] as const) {
+    if (typeof change[k] === 'boolean') next[k] = change[k];
+  }
+  behaviour = next;
+  return behaviour;
+}
 
 function makeWeather(condition: WeatherCondition, precipitation: number | null, source: WeatherState['source']): WeatherState {
   return { condition, precipitation, source, ...WEATHER_EFFECTS[condition], updatedAt: Date.now() };
@@ -129,7 +155,7 @@ export function setTrafficLevel(level: TrafficMode): void {
 
 export function getConditions(): ConditionsSnapshot {
   return {
-    weather: getWeather(), weatherMode, trafficLevel: getTrafficLevel(), trafficMode,
+    behaviour, weather: getWeather(), weatherMode, trafficLevel: getTrafficLevel(), trafficMode,
     demand: Math.round(getDemand() * 100) / 100, reports: getReports(),
   };
 }

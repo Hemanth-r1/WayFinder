@@ -1,42 +1,36 @@
-# Deploying WayFinder to the shared Firebase project
+# Deploying WayFinder to Firebase
 
-WayFinder lives in a Firebase project that also hosts other apps. It is set up so it
-cannot touch them:
+WayFinder deploys to the Firebase project **WayFinder** (`project-7d0d26b8-5887-43f6-804`).
 
-| Piece | What WayFinder uses | Shared with other apps? |
-|---|---|---|
-| Firestore | Its own **named database `wayfinder`** (`firebase.json` → `firestore[].database`; server `FIRESTORE_DATABASE`, client `VITE_FIRESTORE_DATABASE`) | No — other apps keep `(default)`; WayFinder's rules deploy only to `wayfinder` |
-| Hosting | Its own **site**, reached through the hosting target `wayfinder` | No — deploys use `--only hosting:wayfinder` / the action's `target: wayfinder` |
-| API | Cloud Run service `wayfinder-server` (us-central1), 1 instance, 2 GiB | No |
-| Storage | Not used (no storage rules are deployed) | — |
-| Authentication | Firebase Auth of the project | **Yes** — accounts are per project; WayFinder roles live in its own database |
+**Another app shares this project's Firestore `(default)` database** (recruitment data:
+candidates, jobs, employees, students, tickets…). WayFinder therefore keeps all its data in
+its **own named database `wayfinder`** and deploys rules and indexes only there. Never run
+`firebase deploy --only firestore` against `(default)`, and never pass `--force`
+(it would delete the other app's indexes).
 
-## One-time setup
+| Piece | Where |
+|---|---|
+| Web app | Hosting site `project-7d0d26b8-5887-43f6-804` (target `wayfinder` in `.firebaserc`) |
+| API | Cloud Run `wayfinder-server` (us-central1), 1 instance, 2 GiB, CPU always on; Hosting rewrites `/api/**` to it |
+| Data | Firestore database `wayfinder` (asia-south1); rules `firestore.rules`, indexes `firestore.indexes.wayfinder.json` |
+| Sign-in | Firebase Auth — shared by every app in the project |
 
-```bash
-npx firebase-tools login
-npx firebase-tools projects:list                       # find the WayFinder project id
-npx firebase-tools use <project-id>
-npx firebase-tools hosting:sites:list                  # see which sites other apps use
-npx firebase-tools hosting:sites:create <wayfinder-site-id>
-npx firebase-tools target:apply hosting wayfinder <wayfinder-site-id>
-npx firebase-tools firestore:databases:create wayfinder --location=asia-south1
-npx firebase-tools deploy --only firestore:wayfinder   # rules + indexes, wayfinder database only
-```
+Server: `FIRESTORE_DATABASE=wayfinder` (default). Client: `VITE_FIRESTORE_DATABASE=wayfinder` (default).
 
-Then build and deploy the web app to WayFinder's site only:
+## Deploy
 
 ```bash
-npm run build
-npx firebase-tools deploy --only hosting:wayfinder
+# rules + indexes, wayfinder database only (firebase.json targets it)
+npx firebase-tools deploy --only firestore --project project-7d0d26b8-5887-43f6-804
 ```
 
-The server (Cloud Run) is deployed by `.github/workflows/deploy.yml` on pushes to `main`
-(needs the `FIREBASE_SERVICE_ACCOUNT` secret with Cloud Run and Firebase Hosting rights,
-plus the `VITE_FIREBASE_*` secrets). The workflow sets `FIRESTORE_DATABASE=wayfinder`
-and deploys hosting with `target: wayfinder`.
+Server and web app: push to `main` — `.github/workflows/deploy.yml` deploys Cloud Run
+first, then Hosting (`target: wayfinder`). GitHub secrets needed:
+`FIREBASE_SERVICE_ACCOUNT` (Cloud Run Admin, Service Account User, Firebase Hosting Admin,
+Cloud Build Editor, Datastore User), `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_SENDER_ID`,
+`VITE_FIREBASE_APP_ID`.
 
 ## Roles
 
-Promote an officer by editing **the `wayfinder` database** (not `(default)`):
-`users/{uid}` → `role: "controller"` (or `"supporter"`).
+Promote an officer in the **`wayfinder`** database: `users/{uid}` → `role: "controller"`
+(or `"supporter"`).

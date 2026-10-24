@@ -16,6 +16,7 @@ export const MAP_STYLES = {
 
 export const SRC = {
   roads: 'wf-roads',
+  marks: 'wf-marks',
   trafficBase: 'wf-traffic-base',
   traffic: 'wf-traffic',
   heat: 'wf-heat',
@@ -83,7 +84,13 @@ const VEHICLE_SHAPE: Record<string, { len: number; wid: number }> = {
   sedan: { len: 15, wid: 7 },
   suv: { len: 15.5, wid: 7.5 },
   van: { len: 16, wid: 7.5 },
+  xuv: { len: 16, wid: 7.8 },
+  tempo: { len: 15, wid: 7.5 },
+  minitruck: { len: 17, wid: 7.8 },
   truck: { len: 24, wid: 8.5 },
+  lorry: { len: 28, wid: 9 },
+  tipper: { len: 25, wid: 9 },
+  trailer: { len: 40, wid: 9.5 },
   bus: { len: 30, wid: 9 },
   emergency: { len: 15, wid: 7 },
 };
@@ -222,15 +229,43 @@ export function addOverlayLayers(map: MLMap, opts: { showRoads: boolean }): void
       'line-opacity': 0.45,
     },
   });
+  // Zoomed in: carriageway at its real width with lane markings, matching the lanes the
+  // simulation drives in (3.2 m each; a two-way road's directions either side of the centre)
+  const metres = (prop: string) => ['interpolate', ['exponential', 2], ['zoom'],
+    16, ['*', ['get', prop], PX_PER_METRE_Z16], 22, ['*', ['get', prop], PX_PER_METRE_Z16 * 64]] as never;
+  map.addLayer({
+    id: 'wf-carriageway', type: 'line', source: SRC.marks, minzoom: 16.5, filter: ['==', ['get', 'k'], 'road'],
+    layout: { 'line-join': 'round', 'line-cap': 'butt' },
+    paint: { 'line-color': '#5F6670', 'line-width': metres('w'), 'line-opacity': 0.9 },
+  });
+  map.addLayer({
+    id: 'wf-mark-edge', type: 'line', source: SRC.marks, minzoom: 16.5, filter: ['==', ['get', 'k'], 'edge'],
+    paint: { 'line-color': '#F5F5F5', 'line-width': 1.2, 'line-offset': metres('m'), 'line-opacity': 0.85 },
+  });
+  map.addLayer({
+    id: 'wf-mark-centre', type: 'line', source: SRC.marks, minzoom: 16.5, filter: ['==', ['get', 'k'], 'centre'],
+    paint: { 'line-color': '#FFFFFF', 'line-width': ['interpolate', ['linear'], ['zoom'], 17, 1.5, 20, 3], 'line-opacity': 0.95 },
+  });
+  map.addLayer({
+    id: 'wf-mark-centre-dash', type: 'line', source: SRC.marks, minzoom: 16.5, filter: ['==', ['get', 'k'], 'centre-dash'],
+    paint: { 'line-color': '#FFFFFF', 'line-width': ['interpolate', ['linear'], ['zoom'], 17, 1.3, 20, 2.5], 'line-dasharray': [4, 4], 'line-opacity': 0.9 },
+  });
+  map.addLayer({
+    id: 'wf-mark-lane', type: 'line', source: SRC.marks, minzoom: 16.5, filter: ['==', ['get', 'k'], 'lane'],
+    paint: { 'line-color': '#FFFFFF', 'line-width': ['interpolate', ['linear'], ['zoom'], 17, 1, 20, 2], 'line-dasharray': [3, 5], 'line-offset': metres('m'), 'line-opacity': 0.8 },
+  });
+
   // Live traffic, each direction on its own side of the road (India drives on the left)
-  // Main roads in green, drawn once; slow and jammed stretches are drawn over them
+  // Every road the browser has, drawn once (minor roads thinner, from zoom 13); slow and
+  // jammed stretches are drawn over them
+  const minor = (major: number, small: number) => ['case', ['==', ['get', 'mn'], 1], small, major];
   map.addLayer({
     id: 'wf-traffic-base', type: 'line', source: SRC.trafficBase, layout: round,
     paint: {
       'line-color': TRAFFIC_COLORS[0],
-      'line-width': ['interpolate', ['linear'], ['zoom'], 10, 1.2, 13, 2.5, 16, 4, 19, 7],
+      'line-width': ['interpolate', ['linear'], ['zoom'], 10, minor(1.2, 0.4), 13, minor(2.5, 1.2), 16, minor(4, 2.5), 19, minor(7, 4)] as never,
       'line-offset': ['interpolate', ['linear'], ['zoom'], 12, 0, 15, ['*', -2, ['get', 'tw']], 19, ['*', -6, ['get', 'tw']]],
-      'line-opacity': ['interpolate', ['linear'], ['zoom'], 10, 0.75, 17, 0.55],
+      'line-opacity': ['interpolate', ['linear'], ['zoom'], 11, minor(0.75, 0), 13, minor(0.75, 0.6), 17, 0.55, 19, 0.45] as never,
     },
   });
   map.addLayer({
@@ -345,6 +380,47 @@ export function addOverlayLayers(map: MLMap, opts: { showRoads: boolean }): void
 
 const MAJOR = new Set(['motorway', 'trunk', 'primary', 'secondary']);
 
+/** Screen pixels per metre at zoom 16 in Bangalore (512 px tiles, latitude ~13°). */
+const PX_PER_METRE_Z16 = (65536 * 512) / (40075016 * Math.cos(12.97 * Math.PI / 180));
+const LANE_M = 3.2;
+
+/**
+ * Carriageways and lane markings for the roads in view (zoom ≥ 16.5): centre line on
+ * two-way roads (solid on multi-lane roads, broken on narrow ones), broken lines between
+ * lanes, solid edge lines. Offsets are in metres (+ = right of the drawn direction).
+ */
+export function markingsData(graph: RoadGraph, bbox: [number, number, number, number]): FC {
+  const [w, s, e, n] = bbox;
+  const features: Feature<Geometry, Props>[] = [];
+  const drawn = new Set<string>();
+  for (const edge of graph.edges.values()) {
+    const g = edge.geometry;
+    if (!g || g.length < 2) continue;
+    if (!g.some(p => p.lng >= w && p.lng <= e && p.lat >= s && p.lat <= n)) continue;
+    const key = edge.from < edge.to ? `${edge.from}|${edge.to}` : `${edge.to}|${edge.from}`;
+    if (drawn.has(key)) continue;
+    drawn.add(key);
+    const line = g.map(p => [p.lat, p.lng] as LatLng);
+    const add = (k: string, props: Props = {}) => features.push(lineFeature(line, { k, ...props }));
+    const fwd = Math.max(1, edge.lanes);
+    if (edge.oneway) {
+      add('road', { w: fwd * LANE_M + 0.6 });
+      for (let k = 0; k <= fwd; k++) add(k === 0 || k === fwd ? 'edge' : 'lane', { m: -(fwd / 2 - k) * LANE_M });
+      continue;
+    }
+    const rev = Math.max(1, (graph.adjacency.get(edge.to) ?? []).find(r => r.to === edge.from)?.lanes ?? fwd);
+    // Lanes of this direction lie left of the centre, the other direction's right of it
+    const half = Math.max(fwd, rev);
+    add('road', { w: half * 2 * LANE_M + 0.6 });
+    add(fwd + rev >= 4 ? 'centre' : 'centre-dash');
+    for (let k = 1; k < fwd; k++) add('lane', { m: -k * LANE_M });
+    for (let k = 1; k < rev; k++) add('lane', { m: k * LANE_M });
+    add('edge', { m: -fwd * LANE_M });
+    add('edge', { m: rev * LANE_M });
+  }
+  return fc(features);
+}
+
 export function roadsData(graph: RoadGraph): FC {
   const drawn = new Set<string>();
   const features: Feature<Geometry, Props>[] = [];
@@ -359,14 +435,14 @@ export function roadsData(graph: RoadGraph): FC {
 }
 
 /**
- * Main roads, each direction (`tw` = 1 on two-way roads so each direction sits on its
+ * Every road in the browser graph, each direction (`tw` = 1 on two-way roads so each direction sits on its
  * own side). Built once per road network: this is the green "flowing" layer.
  */
 export function trafficBaseData(graph: RoadGraph): FC {
   const features: Feature<Geometry, Props>[] = [];
   for (const edge of graph.edges.values()) {
-    if (!MAJOR.has(edge.roadType) || !edge.geometry || edge.geometry.length < 2) continue;
-    features.push(lineFeature(edge.geometry.map(p => [p.lat, p.lng]), { tw: edge.oneway ? 0 : 1 }));
+    if (!edge.geometry || edge.geometry.length < 2) continue;
+    features.push(lineFeature(edge.geometry.map(p => [p.lat, p.lng]), { tw: edge.oneway ? 0 : 1, mn: MAJOR.has(edge.roadType) ? 0 : 1 }));
   }
   return fc(features);
 }

@@ -1,0 +1,33 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "routes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "userId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "junctionCounts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "junctionId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "binStart",
+          "order": "ASCENDING"
+        }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

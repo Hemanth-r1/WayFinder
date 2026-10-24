@@ -71,5 +71,5 @@ jobs:
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           channelId: live
           projectId: ${{ env.PROJECT_ID }}
-          # Only WayFinder's own Hosting site (see .firebaserc), never other sites in the project
+          # WayFinder's Hosting site (target in .firebaserc)
           target: wayfinder

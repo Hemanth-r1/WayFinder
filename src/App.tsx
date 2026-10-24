@@ -16,7 +16,7 @@ import { progressiveLoader, type LoadUpdate, type LoadPhase } from './services/p
 import { serverClient } from './services/serverClient';
 import type { RoadGraph, TrafficSignal, Vehicle } from './types';
 import type {
-  ServerStats, RouteOption, NavigationResponse, Conditions, WeatherMode, TrafficMode, ReportType, ReportVote,
+  ServerStats, RouteOption, NavigationResponse, Conditions, WeatherMode, TrafficMode, ReportType, ReportVote, Behaviour, Jam, JamSeverity,
 } from './services/serverClient';
 import { REPORT_LABEL } from './utils/reports';
 import ConditionsPanel from './components/ConditionsPanel';
@@ -303,6 +303,34 @@ function AppContent() {
     try { setConditions(await serverClient.fetchConditions()); } catch { /* next live update brings it */ }
   }, []);
 
+  // Intentional test jams (operators see them; controllers create and remove them)
+  const [jams, setJams] = useState<Jam[]>([]);
+  useEffect(() => {
+    if (role === 'user') return;
+    let alive = true;
+    const load = () => serverClient.listJams().then(j => { if (alive) setJams(j); }).catch(() => { /* not signed in yet */ });
+    load();
+    const t = window.setInterval(load, 15000);
+    return () => { alive = false; window.clearInterval(t); };
+  }, [role]);
+  const handleCreateJam = useCallback(async (lat: number, lng: number, severity: JamSeverity) => {
+    try {
+      const { jam, jams: all } = await serverClient.createJam(lat, lng, severity);
+      setJams(all);
+      pushToast(`${severity === 'stopped' ? 'Jammed' : 'Slowed'} ${jam.road}: ${jam.vehicles} vehicles queued over ${jam.metres} m`, 'success');
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : 'Failed to create jam', 'error');
+    }
+  }, []);
+  const handleRemoveJam = useCallback(async (id: string) => {
+    try { setJams(await serverClient.removeJam(id)); } catch (err) {
+      pushToast(err instanceof Error ? err.message : 'Failed to remove jam', 'error');
+    }
+  }, []);
+  const handleBehaviour = useCallback((change: Partial<Behaviour>) => {
+    serverClient.setBehaviour(change).then(setConditions).catch(err => pushToast(err.message, 'error'));
+  }, []);
+
   const handleReport = useCallback(async (type: ReportType, lat: number, lng: number, radiusMetres: number) => {
     const { label } = REPORT_LABEL[type];
     try {
@@ -577,6 +605,9 @@ function AppContent() {
               onWeather={handleWeather}
               onTraffic={handleTraffic}
               onRemoveReport={handleRemoveReport}
+              onBehaviour={handleBehaviour}
+              jams={jams}
+              onRemoveJam={role === 'controller' ? handleRemoveJam : undefined}
             />
           )}
           {role === 'supporter' && (
@@ -661,6 +692,7 @@ function AppContent() {
           onReport={handleReport}
           onVoteReport={handleVoteReport}
           onRemoveReport={handleRemoveReport}
+          onCreateJam={role === 'controller' ? handleCreateJam : undefined}
           canRemoveReports={role !== 'user'}
           followVehicleId={simpleView && navigatedVehicle ? `user_${user.uid}` : undefined}
           traffic={traffic}

@@ -1,8 +1,10 @@
 export interface GeoPoint { lat: number; lng: number; }
 export type Direction = 'N' | 'S' | 'E' | 'W';
 export type SignalColor = 'RED' | 'YELLOW' | 'GREEN';
-export type VehicleType = 'sedan' | 'suv' | 'hatchback' | 'truck' | 'bus' | 'emergency' | 'bike' | 'auto' | 'van';
-export type RoadType = 'motorway' | 'trunk' | 'primary' | 'secondary' | 'tertiary' | 'link' | 'residential';
+export type VehicleType = 'sedan' | 'suv' | 'xuv' | 'hatchback' | 'truck' | 'lorry' | 'tipper' | 'trailer'
+  | 'minitruck' | 'tempo' | 'bus' | 'emergency' | 'bike' | 'auto' | 'van';
+export type RoadType = 'motorway' | 'trunk' | 'primary' | 'secondary' | 'tertiary' | 'link' | 'unclassified'
+  | 'residential' | 'living_street' | 'service';
 
 export interface RoadNode {
   id: string; lat: number; lng: number; isIntersection: boolean; trafficSignalId?: string;
@@ -153,6 +155,12 @@ export const VEHICLE_PHYSICS: Record<VehicleType, {
   bike:      { maxSpeed: 55, acceleration: 3.5, deceleration: 5.5, length: 2.2, width: 0.8, responseDelay: [0.5, 0.9] },
   auto:      { maxSpeed: 35, acceleration: 2.0, deceleration: 4.0, length: 3.0, width: 1.5, responseDelay: [0.7, 1.3] },
   van:       { maxSpeed: 42, acceleration: 1.8, deceleration: 3.5, length: 6.0, width: 2.2, responseDelay: [0.8, 1.5] },
+  xuv:       { maxSpeed: 50, acceleration: 2.4, deceleration: 4.2, length: 4.9, width: 1.9, responseDelay: [0.7, 1.3] },
+  tempo:     { maxSpeed: 40, acceleration: 1.6, deceleration: 3.5, length: 4.6, width: 1.9, responseDelay: [0.8, 1.5] },
+  minitruck: { maxSpeed: 38, acceleration: 1.4, deceleration: 3.2, length: 5.5, width: 2.0, responseDelay: [0.9, 1.6] },
+  lorry:     { maxSpeed: 32, acceleration: 1.0, deceleration: 2.8, length: 10,  width: 2.5, responseDelay: [1.0, 2.0] },
+  tipper:    { maxSpeed: 32, acceleration: 1.0, deceleration: 2.8, length: 8.5, width: 2.5, responseDelay: [1.0, 2.0] },
+  trailer:   { maxSpeed: 28, acceleration: 0.7, deceleration: 2.5, length: 16,  width: 2.6, responseDelay: [1.2, 2.2] },
 };
 
 export const SIGNAL_TIMING = {

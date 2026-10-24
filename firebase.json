@@ -3,7 +3,7 @@
     {
       "database": "wayfinder",
       "rules": "firestore.rules",
-      "indexes": "firestore.indexes.json"
+      "indexes": "firestore.indexes.wayfinder.json"
     }
   ],
   "hosting": {
