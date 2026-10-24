@@ -21,6 +21,8 @@ export interface UserSession {
   mode: DriveMode;
   pendingReroute: RerouteSuggestion | null;
   lastRerouteCheck: number;
+  /** A background reroute search is running */
+  rerouteSearching?: boolean;
   offRouteFixes: number;
   rerouteCount: number;
   vehicleId: string;

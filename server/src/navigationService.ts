@@ -1,9 +1,10 @@
-import type { RoadGraph, TrafficSignal, RouteInfo } from './types.js';
+import type { RoadGraph, RoadEdge, TrafficSignal, RouteInfo } from './types.js';
+import { findRouteOptionsAsync } from './routeWorkers.js';
 import {
-  findRouteOptions, getGraphIndex, routeFromEdgeIds, edgeTravelTime, edgeCapacity, describeRoute,
+  getGraphIndex, routeFromEdgeIds, edgeTravelTime, edgeCapacity, describeRoute,
   type GraphIndex, type RoutingContext,
 } from './pathfindingService.js';
-import { getSimulationEngine } from './simulationEngine.js';
+import { getSimulationEngine, userVehicleKey } from './simulationEngine.js';
 import {
   startUserSession, getUserSession, updateSessionRoute,
   type DriveMode, type RerouteSuggestion, type UserSession,
@@ -37,6 +38,8 @@ export interface NavigationResponse {
   /** Other options that were available when navigation started */
   alternatives: RouteInfo[];
   arrived: boolean;
+  /** This driver's own car on the live map */
+  vehicleId: string;
   mode: DriveMode;
   /** Better route available now (road block ahead, or faster with live traffic) */
   reroute: RerouteOffer | null;
@@ -123,22 +126,22 @@ function requireNodes(index: GraphIndex, ...ids: string[]): void {
 }
 
 /** Route options for a user, fastest first, accounting for routes other users are driving. */
-export function planRoutes(
+export async function planRoutes(
   userId: string | undefined, sourceNodeId: string, destNodeId: string,
   graph: RoadGraph, signals: TrafficSignal[],
-): RouteInfo[] {
+): Promise<RouteInfo[]> {
   requireNodes(getGraphIndex(graph, signals), sourceNodeId, destNodeId);
-  return findRouteOptions(graph, signals, sourceNodeId, destNodeId, routingContext(userId));
+  return findRouteOptionsAsync(sourceNodeId, destNodeId, routingContext(userId));
 }
 
-export function startNavigation(req: NavigationRequest, graph: RoadGraph, signals: TrafficSignal[]): NavigationResponse {
+export async function startNavigation(req: NavigationRequest, graph: RoadGraph, signals: TrafficSignal[]): Promise<NavigationResponse> {
   const { userId, sourceNodeId, destNodeId, edgeIds, mode = 'simulated' } = req;
   const index = getGraphIndex(graph, signals);
   requireNodes(index, sourceNodeId, destNodeId);
   if (!getSimulationEngine()) throw new NavigationError('Simulation engine not initialized', 503);
 
   const ctx = routingContext(userId);
-  const options = findRouteOptions(graph, signals, sourceNodeId, destNodeId, ctx);
+  const options = await findRouteOptionsAsync(sourceNodeId, destNodeId, ctx);
   const chosen = (edgeIds && routeFromEdgeIds(index, sourceNodeId, destNodeId, edgeIds, ctx)) || options[0];
   if (!chosen) throw new NavigationError('No route found', 404);
 
@@ -153,6 +156,7 @@ export function startNavigation(req: NavigationRequest, graph: RoadGraph, signal
     routeInfo: chosen,
     alternatives: options.filter(o => o.edgeIds.join() !== chosen.edgeIds.join()),
     arrived: false,
+    vehicleId: userVehicleKey(userId),
     mode,
     reroute: null,
     blockedAhead: false,
@@ -171,7 +175,7 @@ export function getNavigationUpdate(userId: string, graph: RoadGraph, signals: T
     return {
       path: [], distance: 0, duration: 0, signals: [],
       trafficConditions: { congestionLevel: 0, avgSpeed: 0, vehicleCount: 0 },
-      routeInfo: route, alternatives: [], arrived: true,
+      routeInfo: route, alternatives: [], arrived: true, vehicleId: userVehicleKey(userId),
       mode: session.mode, reroute: null, blockedAhead: false, weather: getWeather().condition,
       reportPrompt: null,
     };
@@ -208,7 +212,7 @@ export function getNavigationUpdate(userId: string, graph: RoadGraph, signals: T
   const blockedAhead = remainingIds.slice(1).some(isEdgeBlocked);
   const reportedAhead = reportsOnEdges(remainingIds.slice(1))
     .some(r => r.status === 'unconfirmed' || r.type === 'waterlogging');
-  refreshRerouteSuggestion(session, index, remainingIds, blockedAhead, reportedAhead, graph, signals);
+  refreshRerouteSuggestion(session, index, remainingIds, blockedAhead, reportedAhead);
   const suggestion = session.pendingReroute;
 
   return {
@@ -220,6 +224,7 @@ export function getNavigationUpdate(userId: string, graph: RoadGraph, signals: T
     routeInfo: route,
     alternatives: [],
     arrived: false,
+    vehicleId: userVehicleKey(userId),
     mode: session.mode,
     reroute: suggestion ? {
       reason: suggestion.reason,
@@ -262,7 +267,7 @@ function nearestReportPrompt(
  */
 function refreshRerouteSuggestion(
   session: UserSession, index: GraphIndex, remainingIds: string[], blockedAhead: boolean,
-  reportedAhead: boolean, graph: RoadGraph, signals: TrafficSignal[],
+  reportedAhead: boolean,
 ): void {
   const current = index.edges.get(remainingIds[0]);
   if (!current) return;
@@ -281,9 +286,25 @@ function refreshRerouteSuggestion(
   session.lastRerouteCheck = now;
   if (remainingIds.length < 2) return;
 
+  if (session.rerouteSearching) return;
+  session.rerouteSearching = true;
   const ctx = routingContext(session.userId);
-  const best = findRouteOptions(graph, signals, current.to, session.destNodeId, ctx, 1)[0];
-  if (!best) return;
+  findRouteOptionsAsync(current.to, session.destNodeId, ctx, 1)
+    .then(([best]) => {
+      // Still on the same road? Otherwise the next update starts a fresh check
+      const now = getSimulationEngine()?.getNavigationProgress(session.userId);
+      if (best && session.isActive && now && session.route.edgeIds[now.edgeIndex] === current.id) {
+        offerReroute(session, index, current, remainingIds, best, blockedAhead, reportedAhead, ctx);
+      }
+    })
+    .catch(err => console.warn('[Navigation] Reroute check failed:', err.message))
+    .finally(() => { session.rerouteSearching = false; });
+}
+
+function offerReroute(
+  session: UserSession, index: GraphIndex, current: RoadEdge, remainingIds: string[], best: RouteInfo,
+  blockedAhead: boolean, reportedAhead: boolean, ctx: RoutingContext,
+): void {
   const rest = remainingIds.slice(1);
   if (best.edgeIds.join() === rest.join()) {
     session.pendingReroute = null;
@@ -319,7 +340,7 @@ function applyRoute(session: UserSession, index: GraphIndex, newEdgeIds: string[
 }
 
 /** Accepts the offered reroute (recomputed from the current position if the offer is stale). */
-export function acceptReroute(userId: string, graph: RoadGraph, signals: TrafficSignal[]): RouteInfo {
+export async function acceptReroute(userId: string, graph: RoadGraph, signals: TrafficSignal[]): Promise<RouteInfo> {
   const session = getUserSession(userId);
   if (!session || !session.isActive) throw new NavigationError('No active navigation', 404);
   const progress = getSimulationEngine()?.getNavigationProgress(userId);
@@ -330,17 +351,17 @@ export function acceptReroute(userId: string, graph: RoadGraph, signals: Traffic
 
   let next = session.pendingReroute?.fromEdgeId === currentId ? session.pendingReroute.route : null;
   if (!next) {
-    next = findRouteOptions(graph, signals, current.to, session.destNodeId, routingContext(userId), 1)[0] ?? null;
+    next = (await findRouteOptionsAsync(current.to, session.destNodeId, routingContext(userId), 1))[0] ?? null;
   }
   if (!next) throw new NavigationError('No other route available', 404);
   return applyRoute(session, index, [currentId, ...next.edgeIds]);
 }
 
 /** A GPS fix from a navigating phone. Leaving the route triggers an automatic reroute. */
-export function updatePosition(
+export async function updatePosition(
   userId: string, lat: number, lng: number, speedKmh: number | undefined,
   graph: RoadGraph, signals: TrafficSignal[],
-): PositionResult {
+): Promise<PositionResult> {
   const session = getUserSession(userId);
   if (!session || !session.isActive) throw new NavigationError('No active navigation', 404);
   const engine = getSimulationEngine();
@@ -365,7 +386,7 @@ export function updatePosition(
     if (d < bestD) { bestD = d; nearest = node.id; }
   }
   if (!nearest || nearest === session.destNodeId) return { onRoute: false, arrived: false, rerouted: false };
-  const next = findRouteOptions(graph, signals, nearest, session.destNodeId, routingContext(userId), 1)[0];
+  const next = (await findRouteOptionsAsync(nearest, session.destNodeId, routingContext(userId), 1))[0];
   if (!next) return { onRoute: false, arrived: false, rerouted: false };
   applyRoute(session, index, next.edgeIds);
   engine?.updateUserGps(userId, lat, lng, speedKmh);

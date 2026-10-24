@@ -34,7 +34,7 @@ const U_TURN_PENALTY = 30;
  * (like navigation apps: main roads in between). Keeps routes sane and searches fast.
  */
 const LOCAL_STREET_METRES = 1500;
-const LOCAL_TYPES = new Set(['residential', 'living_street', 'service']);
+export const LOCAL_TYPES = new Set(['residential', 'living_street', 'service']);
 
 /** Alternatives: accept routes up to this multiple of the best ETA... */
 const MAX_ALT_STRETCH = 1.3;
@@ -122,6 +122,16 @@ export function activeNavigatorCount(): number {
   return userRouteEdges.size;
 }
 
+/** Edges on this user's registered route. */
+export function userRouteEdgeIds(userId: string): string[] {
+  return [...(userRouteEdges.get(userId) ?? [])];
+}
+
+/** Every edge with navigators on it, and how many. */
+export function forEachNavigatorEdge(cb: (edgeId: string, count: number) => void): void {
+  for (const [id, n] of edgeNavigators) cb(id, n);
+}
+
 /** Edge IDs on any active navigator's route. */
 export function activeRouteEdgeIds(): string[] {
   return Array.from(edgeNavigators.keys());
@@ -140,6 +150,14 @@ export function recordObservedSpeed(edgeId: string, kmh: number): void {
     kmh: fresh ? prev.kmh + OBSERVATION_ALPHA * (kmh - prev.kmh) : kmh,
     at: now,
   });
+}
+
+/** Every fresh GPS speed (km/h) per edge. */
+export function forEachObservedSpeed(cb: (edgeId: string, kmh: number) => void): void {
+  const cutoff = Date.now() - OBSERVATION_TTL_MS;
+  for (const [id, o] of observedSpeeds) {
+    if (o.at < cutoff) observedSpeeds.delete(id); else cb(id, o.kmh);
+  }
 }
 
 function observedKmh(edgeId: string): number | null {

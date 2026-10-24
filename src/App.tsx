@@ -694,7 +694,7 @@ function AppContent() {
           onRemoveReport={handleRemoveReport}
           onCreateJam={role === 'controller' ? handleCreateJam : undefined}
           canRemoveReports={role !== 'user'}
-          followVehicleId={simpleView && navigatedVehicle ? `user_${user.uid}` : undefined}
+          followVehicleId={simpleView && navigation?.vehicleId ? navigation.vehicleId : undefined}
           traffic={traffic}
           focus={mapFocus}
           onSelectJunction={setSelectedJunction}

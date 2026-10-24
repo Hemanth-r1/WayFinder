@@ -677,12 +677,24 @@ function analyse(s: TrafficSignal): JunctionDetail | null {
       : greensOf(s)[g];
   }
 
-  // Wait guard (when not saturated): enough green to clear each queue within two cycles
-  if (!saturated) {
+  // Wait guard: every queue clears within two cycles — and in a jam, within MAX_WAIT_S,
+  // so no approach is starved while the busiest one gets the long greens
+  const cyclesToClear = saturated ? Math.max(1, Math.floor(MAX_WAIT_S / cycle)) : 2;
+  const floorGreen: Record<string, number> = {};
+  for (const g of groups) {
+    const worst = approaches.filter(a => a.group === g)
+      .reduce((m, a) => Math.max(m, a.queueAgents / (cyclesToClear * Math.max(1, a.lanes) * DISCHARGE_PER_LANE_S)), 0);
+    floorGreen[g] = Math.max(MIN_GREEN, Math.min(120, Math.round(worst)));
+    if (floorGreen[g] > recGreens[g]) recGreens[g] = floorGreen[g];
+  }
+  // Keep the cycle: take the extra green from groups that have more than their own floor
+  const available = cycle - L;
+  const over = groups.reduce((t, g) => t + recGreens[g], 0) - available;
+  const spare = groups.reduce((t, g) => t + Math.max(0, recGreens[g] - floorGreen[g]), 0);
+  if (over > 0 && spare > 0) {
     for (const g of groups) {
-      const worst = approaches.filter(a => a.group === g)
-        .reduce((m, a) => Math.max(m, a.queueAgents / (2 * Math.max(1, a.lanes) * DISCHARGE_PER_LANE_S)), 0);
-      if (worst > recGreens[g]) recGreens[g] = Math.min(120, Math.round(worst));
+      const give = Math.max(0, recGreens[g] - floorGreen[g]) / spare * Math.min(over, spare);
+      recGreens[g] = Math.round(recGreens[g] - give);
     }
   }
 

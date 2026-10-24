@@ -1,10 +1,7 @@
 import express from 'express';
 import { createServer } from 'http';
-import { initFirebase, getDb } from './firebaseClient.js';
+import { initFirebase } from './firebaseClient.js';
 import { getGraph, getClientGraph } from './graphService.js';
-import { computeCongestionZones, computeStats } from './congestionService.js';
-import { computeSLA } from './slaService.js';
-import { detectActiveCorridors } from './corridorService.js';
 import { activeNavigatorCount, getGraphIndex, nearestRoadSegment } from './pathfindingService.js';
 import {
   getConditions, setWeatherMode, setTrafficLevel, startWeatherPolling,
@@ -14,7 +11,7 @@ import {
 import { createJam, listJams, removeJam } from './jamService.js';
 import { initReports, createReport, vote, withdraw, SEGMENT_TYPES, type ReportType } from './reportsService.js';
 import {
-  requireUser, optionalUser, requireSelf, requireOperator, requireController, rateLimit, caller, authMode,
+  requireUser, requireSelf, requireOperator, requireController, rateLimit, caller, authMode,
 } from './auth.js';
 import {
   initJunctions, listJunctions, getJunction, holdGreen, applyPlan, resetJunction, controlLog, ControlError,
@@ -27,7 +24,7 @@ import {
   startNavigation, getNavigationUpdate, planRoutes, acceptReroute, updatePosition, NavigationError,
 } from './navigationService.js';
 import { initializeWebSocket, handleWebSocketUpgrade, buildUpdate, parseBBox } from './websocketService.js';
-import type { Firestore } from 'firebase-admin/firestore';
+import { initRouteWorkers } from './routeWorkers.js';
 
 const app = express();
 app.use(express.json());
@@ -42,12 +39,16 @@ app.use((req, res, next) => {
   next();
 });
 
-let db: Firestore | null = null;
 try {
   initFirebase();
-  db = getDb();
 } catch (e) {
   console.warn('[WayFinder Server] Firebase init failed — running without Firestore:', e);
+}
+// Without Firebase the server trusts X-Demo-Role headers (anyone could be a controller).
+// That's fine on a laptop, never on Cloud Run: refuse to start instead of failing open.
+if (authMode() === 'demo' && (process.env.K_SERVICE || process.env.NODE_ENV === 'production') && process.env.ALLOW_DEMO_MODE !== 'true') {
+  console.error('[WayFinder Server] Firebase is not configured — refusing to run demo mode in production (set ALLOW_DEMO_MODE=true to override)');
+  process.exit(1);
 }
 
 app.get('/api/health', (_req, res) => {
@@ -76,32 +77,6 @@ app.get('/api/graph', async (req, res) => {
     } else {
       res.send(json);
     }
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get('/api/vehicles', async (_req, res) => {
-  try {
-    const engine = getSimulationEngine();
-    if (!engine) {
-      return res.status(503).json({ error: 'Simulation engine not running' });
-    }
-    const vehicles = engine.getVehicles();
-    res.json({ vehicles });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get('/api/signals', async (_req, res) => {
-  try {
-    const engine = getSimulationEngine();
-    if (!engine) {
-      return res.status(503).json({ error: 'Simulation engine not running' });
-    }
-    const signals = engine.getSignals();
-    res.json({ signals });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -273,7 +248,7 @@ app.post('/api/user/start', requireUser, async (req, res) => {
     }
 
     const { graph, signals } = await getGraph();
-    const navigation = startNavigation(
+    const navigation = await startNavigation(
       { userId, sourceNodeId, destNodeId, edgeIds, mode: mode === 'gps' ? 'gps' : 'simulated' }, graph, signals,
     );
     res.json(navigation);
@@ -317,7 +292,7 @@ app.post('/api/user/:userId/position', requireUser, requireSelf, async (req, res
       return res.status(400).json({ error: 'lat and lng are required numbers' });
     }
     const { graph, signals } = await getGraph();
-    res.json(updatePosition(String(req.params.userId), lat, lng, typeof speed === 'number' ? speed : undefined, graph, signals));
+    res.json(await updatePosition(String(req.params.userId), lat, lng, typeof speed === 'number' ? speed : undefined, graph, signals));
   } catch (err: any) {
     sendError(res, err);
   }
@@ -327,7 +302,7 @@ app.post('/api/user/:userId/position', requireUser, requireSelf, async (req, res
 app.post('/api/user/:userId/reroute', requireUser, requireSelf, async (req, res) => {
   try {
     const { graph, signals } = await getGraph();
-    res.json({ routeInfo: acceptReroute(String(req.params.userId), graph, signals) });
+    res.json({ routeInfo: await acceptReroute(String(req.params.userId), graph, signals) });
   } catch (err: any) {
     sendError(res, err);
   }
@@ -341,23 +316,6 @@ app.delete('/api/user/:userId', requireUser, requireSelf, async (req, res) => {
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
-});
-
-app.post('/api/congestion', (req, res) => {
-  const { vehicles, nodes } = req.body;
-  const zones = computeCongestionZones(vehicles, nodes || []);
-  const stats = computeStats(vehicles, zones);
-  res.json({ zones, stats });
-});
-
-app.post('/api/sla', (req, res) => {
-  const { vehicles } = req.body;
-  res.json(computeSLA(vehicles || []));
-});
-
-app.post('/api/corridors', (req, res) => {
-  const { vehicles } = req.body;
-  res.json({ activeCorridors: detectActiveCorridors(vehicles || []) });
 });
 
 // Route options on the server's own graph. `route` (the first option) is kept for older clients.
@@ -450,16 +408,16 @@ app.get('/api/control/log', requireUser, requireOperator, (_req, res) => {
   res.json({ log: controlLog() });
 });
 
-app.post('/api/route', optionalUser, async (req, res) => {
+app.post('/api/route', requireUser, rateLimit('route requests', 20, 10 * 60 * 1000), async (req, res) => {
   try {
     const { sourceId, destId } = req.body;
-    // Anonymous previews work; signed-in users don't count their own route as load
-    const userId = res.locals.caller?.uid as string | undefined;
+    // The caller's own route doesn't count as load on itself
+    const userId = caller(res).uid;
     if (!sourceId || !destId) {
       return res.status(400).json({ error: 'Missing sourceId or destId' });
     }
     const { graph, signals } = await getGraph();
-    const routes = planRoutes(userId, sourceId, destId, graph, signals);
+    const routes = await planRoutes(userId, sourceId, destId, graph, signals);
     res.json({ routes, route: routes[0] ?? null });
   } catch (err: any) {
     res.status(err instanceof NavigationError ? err.status : 500).json({ error: err.message });
@@ -476,6 +434,7 @@ async function initializeServer() {
     initJunctions(getGraphIndex(graph, signals), signals, (await getGraph()).places);
     getClientGraph().catch(() => {}); // serialise once, now that signals carry their directions
     const engine = initSimulationEngine(graph, signals);
+    initRouteWorkers(graph, signals); // route searches on the other CPU cores
     engine.setArrivalHandler(markArrived);
     engine.setMovementHandler(recordMovement);
     startCounts();
@@ -499,29 +458,5 @@ server.listen(PORT, () => {
   console.log(`[WayFinder Server] Listening on ${PORT}`);
   initializeServer();
 
-  // Firestore command listener — deferred so server boots even if Firebase is down
-  if (!db) {
-    console.warn('[WayFinder Server] Skipping command listener — Firestore unavailable');
-    return;
-  }
-  const unsubCommands = db.collection('commands')
-    .where('processed', '==', false)
-    .onSnapshot(
-      async (snapshot) => {
-        for (const doc of snapshot.docs) {
-          try {
-            const cmd = doc.data();
-            console.log('[WayFinder Server] Processing command:', cmd.type, doc.id);
-            await db!.collection('commands').doc(doc.id).update({ processed: true, processedAt: new Date() });
-          } catch (err) {
-            console.error('Command processing error:', err);
-          }
-        }
-      },
-      (err) => {
-        console.error('[WayFinder Server] Firestore listener error:', err.message);
-      },
-    );
-
-  process.on('SIGTERM', () => { unsubCommands(); process.exit(0); });
+  process.on('SIGTERM', () => process.exit(0));
 });

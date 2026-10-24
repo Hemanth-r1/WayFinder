@@ -15,6 +15,7 @@ import {
   getGraphIndex, congestionFactor, edgeCapacity, activeRouteEdgeIds, recordObservedSpeed, type GraphIndex,
 } from './pathfindingService.js';
 import { signalControl, approachState } from './signalTiming.js';
+import { createHmac, randomBytes } from 'node:crypto';
 import { getWeather, getDemand, getBehaviour, type Behaviour } from './conditionsService.js';
 import { jamSpeedFactor } from './jamService.js';
 import { isEdgeBlocked, edgeSpeedFactor } from './reportsService.js';
@@ -128,6 +129,15 @@ const TICK_MS = 200;
  */
 function reactionSeconds(k: { T: number }): number {
   return (0.55 + 0.5 * k.T) * (0.75 + Math.random() * 0.5);
+}
+/**
+ * Public id of a real user's vehicle: stable while the server runs, but it doesn't reveal
+ * who the driver is (no Firebase uid on the live map). Only the driver's own app learns it,
+ * from its signed-in navigation calls.
+ */
+const VEHICLE_ID_SECRET = randomBytes(16);
+export function userVehicleKey(userId: string): string {
+  return 'nav_' + createHmac('sha256', VEHICLE_ID_SECRET).update(userId).digest('hex').slice(0, 12);
 }
 /** Give-way checks start this close to a junction (m). */
 const GIVE_WAY_METRES = 30;
@@ -261,7 +271,8 @@ function accModel(k: VehicleKind, v: number, v0: number, s: number, vLead: numbe
   if (aIdm >= aCah) return aIdm;
   return Math.max(-9, (1 - COOLNESS) * aIdm + COOLNESS * (aCah + k.b * Math.tanh((aIdm - aCah) / k.b)));
 }
-const USER_KIND: VehicleKind = { ...KINDS[2], type: 'sedan', color: '#4488FF' };
+// Real users' cars look like any sedan to other viewers; the driver's own app highlights theirs
+const USER_KIND: VehicleKind = { ...KINDS[2] };
 
 const ROAD_RANK: Record<string, number> = {
   motorway: 5, trunk: 5, primary: 4, secondary: 3, tertiary: 2, link: 1, unclassified: 1, residential: 0, living_street: 0, service: 0,
@@ -1472,8 +1483,8 @@ class SimulationEngine {
 
     const sv: SimVehicle = {
       pub: {
-        id: `user_${userId}`, lat: 0, lng: 0, speed: 0, bearing: first.bearing,
-        type: 'sedan', color: '#4488FF', isNavigated: true,
+        id: userVehicleKey(userId), lat: 0, lng: 0, speed: 0, bearing: first.bearing,
+        type: 'sedan', color: USER_KIND.color, isNavigated: false,
       },
       kind: USER_KIND,
       edge: first, progress: 0, lane: 0, latPos: 0, lcTimer: 1, idx: -1, seg: 1, v: 0, acc: 0,
@@ -1494,7 +1505,7 @@ class SimulationEngine {
   }
 
   removeUserVehicle(userId: string): void {
-    this.removeVehicle(`user_${userId}`);
+    this.removeVehicle(userVehicleKey(userId));
   }
 
   /** Map positions of all simulated vehicles, computed at most once per step. */
@@ -1506,12 +1517,12 @@ class SimulationEngine {
 
   getUserVehicle(userId: string): Vehicle | undefined {
     this.refreshPositions();
-    return this.state.vehicles.get(`user_${userId}`);
+    return this.state.vehicles.get(userVehicleKey(userId));
   }
 
   getNavigationProgress(userId: string): NavigationProgress | null {
     this.refreshPositions();
-    const sv = this.sim.get(`user_${userId}`);
+    const sv = this.sim.get(userVehicleKey(userId));
     if (!sv || !sv.route) return null;
     return { edgeIndex: sv.routeIndex, edgeProgress: sv.progress, vehicle: sv.pub };
   }
@@ -1521,7 +1532,7 @@ class SimulationEngine {
    * or a fresh start edge (they are placed at its start).
    */
   replaceUserRoute(userId: string, edgeIds: string[]): boolean {
-    const sv = this.sim.get(`user_${userId}`);
+    const sv = this.sim.get(userVehicleKey(userId));
     const first = edgeIds.length > 0 ? this.index.edges.get(edgeIds[0]) : undefined;
     if (!sv || !first) return false;
     if (first.id !== sv.edge.id) {
@@ -1542,7 +1553,7 @@ class SimulationEngine {
    * their route. Their measured speed feeds live traffic for everyone's routing.
    */
   updateUserGps(userId: string, lat: number, lng: number, speedKmh?: number): GpsMatch | null {
-    const sv = this.sim.get(`user_${userId}`);
+    const sv = this.sim.get(userVehicleKey(userId));
     if (!sv || !sv.route) return null;
     const now = Date.now();
     const prev = sv.gps;
@@ -1663,13 +1674,13 @@ class SimulationEngine {
     return Array.from(this.state.vehicles.values());
   }
 
-  /** Vehicles inside a box (plus every navigating user's vehicle), at most `limit`. */
+  /** Vehicles inside a box, at most `limit`. */
   getVehiclesIn(bbox: BBox, limit: number): Vehicle[] {
     this.refreshPositions();
     const [w, s, e, n] = bbox;
     const result: Vehicle[] = [];
     for (const v of this.state.vehicles.values()) {
-      if (v.isNavigated || (v.lng >= w && v.lng <= e && v.lat >= s && v.lat <= n)) {
+      if (v.lng >= w && v.lng <= e && v.lat >= s && v.lat <= n) {
         result.push(v);
         if (result.length >= limit) break;
       }

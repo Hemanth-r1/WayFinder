@@ -10,13 +10,13 @@ import maplibregl from 'maplibre-gl';
 import type { Map as MLMap, MapMouseEvent } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import type { RoadGraph, TrafficSignal, Vehicle, CongestionZone, VehicleType } from '../types';
-import { findNearestNode } from '../data/roadNetwork';
+
 import MapContextMenu from './MapContextMenu';
 import NavigationPanel from './NavigationPanel';
 import ControlPanel from './ControlPanel';
 import type { NavRouteSummary } from './NavigationPanel';
 import type { RoadReport, ReportType, ReportVote } from '../services/serverClient';
-import { distanceMetres } from '../utils/places';
+import { distanceMetres, snapToRoad } from '../utils/places';
 import SignalCard from './SignalCard';
 import {
   MAP_STYLES, SRC, LAYER, addOverlayLayers, addMissingImage, setSourceData,
@@ -235,7 +235,7 @@ export default function MapView({
       }
 
       const { lat, lng } = e.lngLat;
-      const nearest = findNearestNode(graphRef.current.nodes, lat, lng);
+      const nearest = snapToRoad(graphRef.current, lat, lng);
       const nodeId = nearest?.id ?? null;
       const nodeDegree = nodeId ? (graphRef.current.adjacency.get(nodeId)?.length ?? 0) : 0;
       const roadNames: string[] = nodeId

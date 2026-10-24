@@ -18,7 +18,10 @@ service cloud.firestore {
         && request.resource.data.role == resource.data.role;
     }
     match /routes/{routeId} {
-      allow read, update, delete: if signedIn() && request.auth.uid == resource.data.userId;
+      allow read, delete: if signedIn() && request.auth.uid == resource.data.userId;
+      // Owners may edit their routes but not hand them to another account
+      allow update: if signedIn() && request.auth.uid == resource.data.userId
+        && request.resource.data.userId == resource.data.userId;
       allow create: if signedIn() && request.auth.uid == request.resource.data.userId;
     }
     match /signals/{signalId} {

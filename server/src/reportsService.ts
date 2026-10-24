@@ -183,6 +183,11 @@ function remove(id: string): boolean {
 
 // ── Queries used by routing and the simulation ──────────────────────────────
 
+/** Every edge some report affects, with its effect (for the route workers). */
+export function forEachReportEffect(cb: (edgeId: string, effect: { blocked: boolean; timeFactor: number }) => void): void {
+  for (const [id, eff] of effects) cb(id, eff);
+}
+
 /** Confirmed road block on this edge. */
 export function isEdgeBlocked(edgeId: string): boolean {
   return effects.get(edgeId)?.blocked ?? false;

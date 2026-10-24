@@ -275,6 +275,8 @@ export interface NavigationResponse {
   routeInfo: RouteOption;
   alternatives: RouteOption[];
   arrived: boolean;
+  /** This driver's own car on the live map (other drivers' cars are anonymous) */
+  vehicleId?: string;
   mode: DriveMode;
   /** Better route available now (road block ahead, or faster with live traffic) */
   reroute: RerouteOffer | null;
@@ -328,18 +330,6 @@ class ServerClient {
   async fetchGraph() {
     const response = await fetch(`${SERVER_URL}/api/graph`);
     if (!response.ok) throw new Error(`Failed to fetch graph: ${response.statusText}`);
-    return response.json();
-  }
-
-  async fetchVehicles(): Promise<{ vehicles: ServerVehicle[] }> {
-    const response = await fetch(`${SERVER_URL}/api/vehicles`);
-    if (!response.ok) throw new Error(`Failed to fetch vehicles: ${response.statusText}`);
-    return response.json();
-  }
-
-  async fetchSignals(): Promise<{ signals: ServerSignal[] }> {
-    const response = await fetch(`${SERVER_URL}/api/signals`);
-    if (!response.ok) throw new Error(`Failed to fetch signals: ${response.statusText}`);
     return response.json();
   }
 

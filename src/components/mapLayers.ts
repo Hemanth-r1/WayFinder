@@ -212,7 +212,24 @@ export function addMissingImage(map: MLMap, id: string): void {
 export const TRAFFIC_COLORS = ['#34C759', '#FF9500', '#FF3B30', '#8E1B1B'];
 
 /** Vehicles grow with zoom, about to scale from z17. */
-const VEHICLE_SIZE: ExpressionSpecification = ['interpolate', ['exponential', 2], ['zoom'], 13, 0.3, 15, 0.55, 17, 1, 19, 2.4];
+/** Real vehicle lengths (m), as in the simulation. */
+const REAL_LENGTH: Record<string, number> = {
+  bike: 2, auto: 2.8, hatchback: 3.8, sedan: 4.5, suv: 4.4, xuv: 4.9, van: 5, tempo: 4.6, minitruck: 5.5,
+  truck: 8, lorry: 10, tipper: 8.5, trailer: 16, bus: 12, emergency: 5,
+};
+/** Icon scale that draws a vehicle at its real length (k = real metres / icon px). */
+function realScale(type: string): number {
+  const shape = VEHICLE_SHAPE[type] ?? VEHICLE_SHAPE.sedan;
+  return (REAL_LENGTH[type] ?? 4.5) / shape.len;
+}
+/** Px per metre at zoom 16 in Bangalore (512 px tiles, latitude ~13°). */
+const ICON_PX_PER_M_Z16 = (65536 * 512) / (40075016 * Math.cos(12.97 * Math.PI / 180));
+// Zoomed out: enlarged so vehicles stay visible. From zoom 17: true size, so the gaps
+// between queued vehicles are real (enlarged icons looked like collisions)
+const VEHICLE_SIZE = ['interpolate', ['exponential', 2], ['zoom'],
+  13, 0.3, 16, 0.45,
+  17, ['*', ['get', 'k'], ICON_PX_PER_M_Z16 * 2],
+  22, ['*', ['get', 'k'], ICON_PX_PER_M_Z16 * 64]] as unknown as ExpressionSpecification;
 
 export function addOverlayLayers(map: MLMap, opts: { showRoads: boolean }): void {
   for (const id of Object.values(SRC)) map.addSource(id, { type: 'geojson', data: EMPTY });
@@ -490,7 +507,7 @@ export function vehiclesData(vehicles: Iterable<Vehicle>, selfId: string | undef
   const features: Feature<Geometry, Props>[] = [];
   for (const v of vehicles) {
     features.push(pointFeature(v.lat, v.lng, {
-      id: v.id, icon: vehicleIconId(v.type, v.isNavigated ? '#4488FF' : v.color),
+      id: v.id, icon: vehicleIconId(v.type, v.isNavigated ? '#4488FF' : v.color), k: realScale(v.type),
       nav: !!v.isNavigated, self: v.id === selfId, bearing: Number(v.bearing) || 0,
       flag: v.wrongWay ? 'wrong' : v.violation ? 'red' : '',
       label: `${v.type.toUpperCase()} · ${Math.round(v.speed)} km/h`,

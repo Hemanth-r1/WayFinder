@@ -33,7 +33,7 @@ export function parseBBox(raw: unknown): BBox | null {
 }
 
 /**
- * Live update for one viewer: vehicles in view (all navigating users always), each
+ * Live update for one viewer: vehicles in view, each
  * signal's current phase, stats, conditions, and — when asked — traffic per road.
  */
 export function buildUpdate(view: Viewport, includeTraffic: boolean): Record<string, unknown> | null {
@@ -41,9 +41,8 @@ export function buildUpdate(view: Viewport, includeTraffic: boolean): Record<str
   if (!engine) return null;
 
   const showVehicles = view.bbox !== null && view.zoom >= VEHICLE_MIN_ZOOM;
-  const vehicles = showVehicles
-    ? engine.getVehiclesIn(padBBox(view.bbox!), MAX_VEHICLES_PER_UPDATE)
-    : engine.getVehicles().filter(v => v.isNavigated);
+  // Only what's on screen; real drivers' cars carry no identity (see userVehicleKey)
+  const vehicles = showVehicles ? engine.getVehiclesIn(padBBox(view.bbox!), MAX_VEHICLES_PER_UPDATE) : [];
 
   const signalStates: Record<string, [number, number]> = {};
   for (const s of engine.getSignals()) signalStates[s.id] = [s.currentPhaseIndex, Math.round(s.timer * 10) / 10];
