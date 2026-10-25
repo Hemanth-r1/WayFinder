@@ -243,7 +243,7 @@ function tick(): void {
         ? (sig.phases.find(x => x.group === phase.group && x.color === 'YELLOW')?.duration ?? 3) + (sig.phases.find(x => x.group === 'ALL')?.duration ?? 2)
         : 0;
       const lead = switching + LOST + queued / (SAT * lanes) + MARGIN_S;
-      if (s.state === 'green' || eta <= lead) {
+      if (Number.isFinite(eta) && (s.state === 'green' || eta <= lead)) {
         if (engine.setEmergencyGreen(s.junctionId, group, now + (eta + PASS_HOLD_S) * 1000, c.id)) s.state = 'green';
       }
     }

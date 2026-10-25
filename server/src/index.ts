@@ -27,6 +27,7 @@ import {
 import { initRouteWorkers, routeQueuePerWorker } from './routeWorkers.js';
 import { initTurnRules, loadSavedRules, setRules, turnsView, RuleError } from './turnRules.js';
 import { initEmergency, dispatchEmergency, cancelCorridor, listCorridors, EmergencyError } from './emergencyService.js';
+import { initTrips, tripStats } from './tripService.js';
 import { planCoordination, applyCoordination } from './coordinationService.js';
 import { commonJson, trafficJson, cellJson } from './liveSnapshot.js';
 
@@ -436,6 +437,11 @@ app.post('/api/junctions/:id/reset', requireUser, requireController, (req, res) 
   } catch (err) { sendControlError(res, err); }
 });
 
+/** Operators: the trip model (zones, cached routes, trips started / arrived, demand mix). */
+app.get('/api/trips/stats', requireUser, requireOperator, (_req, res) => {
+  res.json(tripStats());
+});
+
 /** Emergency corridors (operators and responders see them on the map). */
 app.get('/api/emergency', requireUser, (req, res) => {
   const { role } = caller(res);
@@ -571,6 +577,7 @@ async function initializeServer() {
     const engine = initSimulationEngine(graph, signals);
     initRouteWorkers(graph, signals); // route searches on the other CPU cores
     initEmergency(graph, signals);
+    initTrips(graph, signals, (await getGraph()).places); // every simulated vehicle drives a real trip
     nearestRoadSegment(getGraphIndex(graph, signals), 12.97, 77.59, 1); // build the nearest-road grid now
     engine.setArrivalHandler(markArrived);
     engine.setMovementHandler(recordMovement);

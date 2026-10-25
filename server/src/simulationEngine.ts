@@ -164,7 +164,7 @@ const LOAD_SMOOTHING_S = 30;
  * for Bangalore: two-wheelers and autos keep short gaps and weave; buses and trucks are
  * slow to pick up and keep left.
  */
-interface VehicleKind {
+export interface VehicleKind {
   type: string; color: string;
   /** Share of vehicles on the road */
   share: number;
@@ -229,6 +229,15 @@ const KINDS: VehicleKind[] = [
   { type: 'tipper', color: '#F9A825', share: 0.01, maxKmh: 40, length: 8.5, pcu: 3, speedFactor: 0.65, T: 1.8, s0: 2.5, a: 0.6, b: 1.8, politeness: 0.2, lcThreshold: 0.3, keepLeft: 0.35, minRank: 3, redJump: 0.02, wrongWay: 0, weave: 0.03, heavy: true },
   { type: 'trailer', color: '#546E7A', share: 0.005, maxKmh: 35, length: 16, pcu: 4.5, speedFactor: 0.6, T: 2.2, s0: 3, a: 0.45, b: 1.5, politeness: 0.4, lcThreshold: 0.4, keepLeft: 0.4, minRank: 5, redJump: 0, wrongWay: 0, weave: 0.02, heavy: true },
 ];
+
+/** A trip handed to the spawner: the route, where on it to start, and whether the driver uses the app. */
+export interface TripPlan { route: string[]; startIndex: number; progress: number; app: boolean }
+/** Gives a trip for a vehicle of this kind (warm: the network is filling up, start mid-route). */
+export type TripSource = (kind: VehicleKind, warm: boolean) => TripPlan | null;
+/** While fewer vehicles than this share of the target are out, trips start mid-route (fast fill). */
+const WARM_SHARE = 0.8;
+/** App users wait this long at a block for a reroute before improvising (s). */
+const BLOCK_PATIENCE = 20;
 
 /** Ambulance / fire engine / police vehicle (dispatched runs only, never spawned at random). */
 export const EMERGENCY_KIND: VehicleKind = { type: 'emergency', color: '#FFFFFF', share: 0, maxKmh: 80, length: 5.5, pcu: 1.5, speedFactor: 1.1, T: 0.9, s0: 1.5, a: 2.2, b: 3.5, politeness: 0, lcThreshold: 0.05, keepLeft: -0.3, minRank: 0, redJump: 0, wrongWay: 0, weave: 0 };
@@ -323,6 +332,8 @@ interface SimVehicle {
   emergency?: boolean;
   /** Close to a red light on an emergency run: crawl through */
   crawl?: boolean;
+  /** Origin–destination trip (tripService): app users get rerouted around blocks; others keep their route */
+  trip?: { app: boolean; startedAt: number; waitedAtBlock: number };
   /** Making way for an emergency vehicle behind, until this tick, and the lane it drives in */
   yieldUntil?: number;
   yieldLane?: number;
@@ -363,7 +374,7 @@ interface SimVehicle {
   reactLeft?: number;
 }
 
-const rankOf = (e: RoadEdge) => ROAD_RANK[e.roadType] ?? 1;
+export const rankOf = (e: RoadEdge) => ROAD_RANK[e.roadType] ?? 1;
 
 /** Bangalore's centre (Vidhana Soudha / MG Road area). */
 const CITY_CENTRE = { lat: 12.9716, lng: 77.5946 };
@@ -420,6 +431,9 @@ class SimulationEngine {
   private basePhases = new Map<string, number[]>();
   /** Vehicles on an emergency run */
   private emergencyIds = new Set<string>();
+  /** Origin–destination trips (tripService) and their counters */
+  private tripSource: TripSource | null = null;
+  private tripStats = { started: 0, done: 0, seconds: 0, metres: 0, fallback: 0, improvised: 0, rerouted: 0 };
   /** Wrong-way copies of one-way roads: contra id → real edge id, and by start node */
   private contraBase = new Map<string, string>();
   private contraFrom = new Map<string, RoadEdge[]>();
@@ -567,6 +581,8 @@ class SimulationEngine {
     if (!sv || edgeIds[0] !== sv.edge.id) return false;
     sv.route = edgeIds;
     sv.routeIndex = 0;
+    sv.through = undefined;
+    if (sv.trip) sv.trip.waitedAtBlock = 0;
     sv.next = this.chooseNext(sv);
     return true;
   }
@@ -776,11 +792,13 @@ class SimulationEngine {
 
   private spawnRandomVehicle(): void {
     const kind = this.pickKind();
-    const corridor = activeRouteEdgeIds().length > 0 && Math.random() < CORRIDOR_SHARE;
-    const edge = this.pickSpawnEdge(kind, corridor);
+    // Origin–destination trips when the trip service has one (scenarios keep their own area)
+    const trip = !this.spawnArea && this.tripSource ? this.tripSource(kind, this.simulatedCount() < this.targetCount() * WARM_SHARE) : null;
+    const corridor = !trip && activeRouteEdgeIds().length > 0 && Math.random() < CORRIDOR_SHARE;
+    const edge = trip ? this.index.edges.get(trip.route[trip.startIndex]) ?? null : this.pickSpawnEdge(kind, corridor);
     if (!edge) return;
     const lane = this.pickLane(edge, kind);
-    const progress = Math.random() * edge.length;
+    const progress = trip ? Math.min(edge.length, trip.progress) : Math.random() * edge.length;
 
     // Don't drop a vehicle on top of another in the same lane
     const bucket = `${edge.id}#${lane}#${Math.floor(progress / 10)}`;
@@ -806,9 +824,11 @@ class SimulationEngine {
       v: 0, acc: 0,
       speedFactor: kind.speedFactor * (0.85 + Math.random() * 0.25) * Math.sqrt(aggr),
       next: null,
-      ttl: LIFETIME.min + Math.random() * (LIFETIME.max - LIFETIME.min),
+      ttl: trip ? Infinity : LIFETIME.min + Math.random() * (LIFETIME.max - LIFETIME.min),
       stuck: 0, atRed: false,
-      routeIndex: 0,
+      route: trip?.route,
+      routeIndex: trip?.startIndex ?? 0,
+      trip: trip ? { app: trip.app, startedAt: this.state.simTime, waitedAtBlock: 0 } : undefined,
       corridor,
       violator: Math.random() < kind.redJump * aggr,
       weave: (Math.random() - 0.5) * kind.weave,
@@ -821,6 +841,7 @@ class SimulationEngine {
     this.placeVehicle(sv);
     this.sim.set(sv.pub.id, sv);
     this.state.vehicles.set(sv.pub.id, sv.pub);
+    if (trip) this.tripStats.started++; else if (this.tripSource && !this.spawnArea) this.tripStats.fallback++;
   }
 
   /** Buses and trucks keep left; others spread over the lanes, two-wheelers anywhere. */
@@ -927,6 +948,12 @@ class SimulationEngine {
     const toLine = edge.length - 1 - sv.progress;
     sv.atRed = false;
     sv.crawl = false;
+    // A road block on a trip: app users wait for their reroute a while, other drivers improvise
+    if (sv.trip && sv.route && sv.next && isEdgeBlocked(sv.next.id) && (!sv.trip.app || sv.trip.waitedAtBlock > BLOCK_PATIENCE)) {
+      this.leaveRoute(sv);
+    } else if (sv.trip?.app && sv.next && isEdgeBlocked(sv.next.id) && toLine < 30) {
+      sv.trip.waitedAtBlock += 0.2;
+    }
     // Navigated vehicles wait before a road block on their route until rerouted; dead ends stop
     if ((sv.route && sv.next && isEdgeBlocked(sv.next.id)) || (!sv.next && !sv.route)) return Math.max(0, toLine);
     const isLastEdge = sv.route !== undefined && sv.routeIndex >= sv.route.length - 1;
@@ -1219,6 +1246,11 @@ class SimulationEngine {
       const next = this.advanceEdge(sv);
       if (!next) {
         if (sv.userId) this.arrivalHandler?.(sv.userId);
+        if (sv.trip) {
+          this.tripStats.done++;
+          this.tripStats.seconds += this.state.simTime - sv.trip.startedAt;
+          this.tripStats.metres += sv.odo;
+        }
         return false;
       }
       sv.progress = Math.min(overflow, next.length);
@@ -1273,6 +1305,15 @@ class SimulationEngine {
     sv.turn = undefined;
     if (sv.route) {
       const id = sv.route[sv.routeIndex + 1];
+      // A turn closed after this trip was planned: the driver meets the sign and improvises
+      // (app users are rerouted before they get here, see tripService)
+      if (id && sv.trip && isTurnBanned(edge.id, id)) {
+        sv.route = undefined;
+        sv.routeIndex = 0;
+        sv.ttl = 120 + Math.random() * 180;
+        this.tripStats.improvised++;
+        return this.chooseNext(sv);
+      }
       // On a signal approach: which movement the route makes (for turn-based phases)
       if (id && movesFrom(edge.id)) {
         const m = movementAlong(edge.id, sv.route.slice(sv.routeIndex + 1, sv.routeIndex + 12));
@@ -1480,6 +1521,40 @@ class SimulationEngine {
   }
 
   /** Back to the default timing; ends holds and scaling. */
+  /** Trips come from here once set (tripService); null goes back to random spawning. */
+  setTripSource(source: TripSource | null): void {
+    this.tripSource = source;
+  }
+
+  /** A trip driver gives up the route (road blocked): drives on like local traffic for a few minutes. */
+  private leaveRoute(sv: SimVehicle): void {
+    sv.route = undefined;
+    sv.routeIndex = 0;
+    sv.ttl = 120 + Math.random() * 180;
+    sv.through = undefined;
+    sv.next = this.chooseNext(sv);
+    this.tripStats.improvised++;
+  }
+
+  /** App-using trip drivers now on the road, with where they are on their route (for reroutes). */
+  *appTrips(): Generator<{ id: string; route: string[]; routeIndex: number; edgeId: string }> {
+    for (const sv of this.sim.values()) {
+      if (sv.trip?.app && sv.route) yield { id: sv.pub.id, route: sv.route, routeIndex: sv.routeIndex, edgeId: sv.edge.id };
+    }
+  }
+
+  /** Trip counters since start: started, arrived (with total time and distance), random fallbacks, improvised. */
+  getTripStats(): { started: number; done: number; seconds: number; metres: number; fallback: number; improvised: number; rerouted: number; onRoad: number; app: number } {
+    let onRoad = 0, app = 0;
+    for (const sv of this.sim.values()) if (sv.trip && sv.route) { onRoad++; if (sv.trip.app) app++; }
+    return { ...this.tripStats, onRoad, app };
+  }
+
+  /** Counts a reroute given to an app-using trip driver. */
+  countTripReroute(): void {
+    this.tripStats.rerouted++;
+  }
+
   /** Vehicles in front of each emergency vehicle (same road, then the next one) slow and pull to the kerb. */
   private makeWayForEmergencies(): void {
     for (const id of this.emergencyIds) {
