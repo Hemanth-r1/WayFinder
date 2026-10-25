@@ -9,7 +9,8 @@ import { getSimulationEngine, type MovementEvent } from './simulationEngine.js';
 import { getGraphIndex, findRoute, type GraphIndex } from './pathfindingService.js';
 import { getGraph } from './graphService.js';
 import { findRouteOptionsAsync } from './routeWorkers.js';
-import { getJunction, applyPlan, holdGreen } from './junctionService.js';
+import { getJunction, applyPlan } from './junctionService.js';
+import { applyCoordination } from './coordinationService.js';
 import { onMovement } from './countsService.js';
 import { haversineMetres } from './osmGraph.js';
 
@@ -230,7 +231,7 @@ export async function runSurge(mode: ScenarioMode, opts: SurgeOptions, minutes =
           .filter(a => a.from && a.queueMetres >= 0.75 * a.from.metres)
           .sort((a, b) => b.queueMetres - a.queueMetres)[0];
         if (j && spill && !j.control?.hold && t - (lastHold.get(id) ?? -1e9) >= 120) {
-          holdGreen(id, spill.group, 30, true, 'scenario');
+          applyCoordination(id, spill.group, 30, 'scenario');
           lastHold.set(id, t);
           controlActions++;
         }

@@ -15,12 +15,12 @@ import MapContextMenu from './MapContextMenu';
 import NavigationPanel from './NavigationPanel';
 import ControlPanel from './ControlPanel';
 import type { NavRouteSummary } from './NavigationPanel';
-import type { RoadReport, ReportType, ReportVote } from '../services/serverClient';
+import type { RoadReport, ReportType, ReportVote, CoordinationPlan } from '../services/serverClient';
 import { distanceMetres, snapToRoad } from '../utils/places';
 import SignalCard from './SignalCard';
 import {
   MAP_STYLES, SRC, LAYER, addOverlayLayers, addMissingImage, setSourceData,
-  roadsData, markingsData, trafficData, trafficBaseData, signalsData, vehiclesData, heatData, linesData, reportsData,
+  roadsData, markingsData, trafficData, trafficBaseData, signalsData, vehiclesData, heatData, linesData, reportsData, coordinationData,
 } from './mapLayers';
 
 const MAP_CENTER: [number, number] = [12.9716, 77.5946];
@@ -80,6 +80,8 @@ interface MapViewProps {
   focus?: { lat: number; lng: number; zoom: number; key: number } | null;
   /** Operators tapped a signal */
   onSelectJunction?: (id: string) => void;
+  /** Police: coordination preview (the junction, its neighbours and their changes) */
+  coordination?: CoordinationPlan | null;
 }
 
 interface ContextMenuState {
@@ -153,7 +155,7 @@ export default function MapView({
   onAddSignal, onSpawnVehicleAt, showHeatmap = true, routePolyline, altRoutePolylines, speed: _speed, onSpeedChange: _onSpeedChange,
   onStartNavigation, routeInfo, clearRoute, navigatedVehicle, simpleView = false, compact = false,
   reports = [], reroutePolyline, onReport, onVoteReport, onRemoveReport, canRemoveReports = false, onCreateJam,
-  followVehicleId, traffic, onViewportChange, focus, onSelectJunction,
+  followVehicleId, traffic, onViewportChange, focus, onSelectJunction, coordination = null,
 }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const miniRef = useRef<HTMLDivElement>(null);
@@ -503,6 +505,18 @@ export default function MapView({
     setSourceData(map, SRC.route, linesData([routePolyline]));
     setSourceData(map, SRC.reroute, linesData([reroutePolyline]));
   }, [routePolyline, altRoutePolylines, reroutePolyline, loadCount]);
+
+  // Coordination preview: draw it and fit the junction and its neighbours in view
+  useEffect(() => {
+    const map = loadedMap();
+    if (!map) return;
+    setSourceData(map, SRC.coord, coordinationData(coordination));
+    if (!coordination?.actions.length) return;
+    const pts = [coordination, ...coordination.actions];
+    const lats = pts.map(p => p.lat), lngs = pts.map(p => p.lng);
+    map.fitBounds([[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]],
+      { padding: compact ? 40 : 90, maxZoom: 16, duration: 700 });
+  }, [coordination, loadCount, compact]);
 
   useEffect(() => {
     const map = loadedMap();

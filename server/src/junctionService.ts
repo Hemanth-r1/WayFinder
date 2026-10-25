@@ -35,9 +35,7 @@ const MAX_LINK_METRES = 1500;
 /** Queue reaching this share of the road to the upstream junction risks blocking it. */
 const SPILLBACK_SHARE = 0.75;
 /** Upstream gating: shorten the feeding green to this share while a hold lasts. */
-const GATE_FACTOR = 0.6;
 /** Downstream green-wave holds last at most this long (s). */
-const WAVE_HOLD_MAX = 60;
 /** Nobody should wait longer than this at one signal (s) — Bangalore drivers already face ~5–6 min. */
 export const MAX_WAIT_S = 300;
 /** Vehicles leaving per lane per second of green (≈ 1800 per hour). */
@@ -60,6 +58,8 @@ export interface JunctionLink {
   road: string;
   /** Direction traffic leaves U on this road (degrees) */
   departure: number;
+  /** The road segment leaving U on this path (one of U's exits) */
+  exitEdgeId: string;
 }
 
 interface JunctionNet {
@@ -100,36 +100,54 @@ export function initJunctions(index: GraphIndex, signals: TrafficSignal[], place
   const upstream = new Map<string, JunctionLink[]>();
   const downstream = new Map<string, JunctionLink[]>();
 
+  // Every signal that can send traffic into each approach, nearest first: a search back
+  // over all roads feeding the approach (traffic that turned left, went straight or turned
+  // right at the neighbour), stopping at the first signal on each path. (Following only
+  // the straightest road missed neighbours behind flyover landings and turning traffic.)
+  const secondsOf = (e: RoadEdge) => e.length / (Math.max(10, e.speedLimit) / 3.6);
   for (const j of signals) {
     const members = new Set(j.nodeIds ?? [j.nodeId]);
     for (const a of j.approaches) {
       if (a.group === 'FREE') continue;
-      let edge = index.edges.get(a.edgeId);
-      let metres = 0, seconds = 0;
-      const seen = new Set<string>();
-      while (edge && metres < MAX_LINK_METRES && !seen.has(edge.id)) {
-        seen.add(edge.id);
-        metres += edge.length;
-        seconds += edge.length / (Math.max(10, edge.speedLimit) / 3.6);
+      const start = index.edges.get(a.edgeId);
+      if (!start) continue;
+      const found = new Set<string>();
+      const best = new Map<string, number>([[start.id, start.length]]);
+      const open: { edge: RoadEdge; metres: number; seconds: number }[] = [{ edge: start, metres: start.length, seconds: secondsOf(start) }];
+      while (open.length) {
+        let k = 0;
+        for (let i = 1; i < open.length; i++) if (open[i].metres < open[k].metres) k = i;
+        const { edge, metres, seconds } = open.splice(k, 1)[0];
+        if (metres > (best.get(edge.id) ?? Infinity)) continue;
         const u = index.signalByNode.get(edge.from);
-        if (u && !members.has(edge.from) && u.id !== j.id) {
+        if (u && (members.has(edge.from) || u.id === j.id)) continue; // back inside this junction
+        if (u) {
+          // One link per neighbour and exit there (two exits can merge just after a junction)
+          if (found.has(u.id + '|' + edge.id)) continue;
+          found.add(u.id + '|' + edge.id);
           const link: JunctionLink = {
             from: u.id, to: j.id,
-            // Straight-through traffic at U leaves in the direction it arrived: same group
+            // The group at U whose traffic heads this way (straight through there)
             fromGroup: groupFor(departureBearing(edge), u.axis ?? 0),
             approachEdgeId: a.edgeId, toGroup: a.group,
             metres: Math.round(metres), seconds: Math.round(seconds),
-            road: index.edges.get(a.edgeId)?.name || edge.name || '',
+            road: start.name || edge.name || '',
             departure: Math.round(departureBearing(edge)),
+            exitEdgeId: edge.id,
           };
           (upstream.get(j.id) ?? upstream.set(j.id, []).get(j.id)!).push(link);
           (downstream.get(u.id) ?? downstream.set(u.id, []).get(u.id)!).push(link);
-          break;
+          continue;
         }
-        // Keep following the same road backwards (straightest predecessor, no U-turns)
-        const cur: RoadEdge = edge;
-        const preds = (inEdges.get(cur.from) ?? []).filter(p => p.from !== cur.to);
-        edge = preds.sort((p, q) => turn(p.bearing, cur.bearing) - turn(q.bearing, cur.bearing))[0];
+        if (metres >= MAX_LINK_METRES) continue;
+        for (const p of inEdges.get(edge.from) ?? []) {
+          if (p.from === edge.to) continue; // no U-turns
+          const m = metres + p.length;
+          if (m < (best.get(p.id) ?? Infinity)) {
+            best.set(p.id, m);
+            open.push({ edge: p, metres: m, seconds: seconds + secondsOf(p) });
+          }
+        }
       }
     }
   }
@@ -141,7 +159,9 @@ export function initJunctions(index: GraphIndex, signals: TrafficSignal[], place
   for (const j of signals) {
     j.arms = describeArms(j, index, inEdges);
     const members = new Set(j.nodeIds ?? [j.nodeId]);
-    exitsBySignal.set(j.id, describeExits(j, members, index, inEdges));
+    const exits = describeExits(j, members, index, inEdges);
+    exitsBySignal.set(j.id, exits);
+    reachBySignal.set(j.id, reachableExits(j, new Set(exits.map(x => x.edgeId)), index));
     feedersBySignal.set(j.id, new Map(j.approaches
       .filter(a => a.group !== 'FREE')
       .map(a => [a.edgeId, findFeeders(index.edges.get(a.edgeId), members, index, inEdges)])));
@@ -338,6 +358,32 @@ export interface FeederRoad {
 }
 
 const exitsBySignal = new Map<string, JunctionExit[]>();
+/** Exits each approach can physically reach (approach edge → exit edge ids) */
+const reachBySignal = new Map<string, Map<string, string[]>>();
+const REACH_METRES = 150;
+
+/** Searches forward from each approach's stop line (≤150 m, no U-turn) for the junction exits it can use. */
+function reachableExits(j: TrafficSignal, exitIds: Set<string>, index: GraphIndex): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const a of j.approaches) {
+    const start = index.edges.get(a.edgeId);
+    if (!start) continue;
+    const found = new Set<string>();
+    const best = new Map<string, number>([[start.to, 0]]);
+    const open: [string, number][] = [[start.to, 0]];
+    while (open.length) {
+      const [node, metres] = open.pop()!;
+      for (const e of index.outEdges.get(node) ?? []) {
+        if (node === start.to && e.to === start.from) continue; // U-turn back up the approach
+        if (exitIds.has(e.id)) found.add(e.id);
+        const m = metres + e.length;
+        if (m <= REACH_METRES && m < (best.get(e.to) ?? Infinity)) { best.set(e.to, m); open.push([e.to, m]); }
+      }
+    }
+    out.set(a.edgeId, [...found]);
+  }
+  return out;
+}
 /** Each approach's road upstream (edge ids, nearest first, ≤ 1.5 km): where its queue can reach */
 const chainsBySignal = new Map<string, Map<string, string[]>>();
 const CHAIN_METRES = 1500;
@@ -763,11 +809,18 @@ function analyse(s: TrafficSignal): JunctionDetail | null {
     advice,
     merges,
     neighbours: {
-      upstream: ups.map(l => ({ id: l.from, name: nameOf(l.from), road: l.road, metres: l.metres, seconds: l.seconds, toGroup: l.toGroup })),
-      downstream: (net.downstream.get(s.id) ?? []).map(l => ({ id: l.to, name: nameOf(l.to), road: l.road, metres: l.metres, seconds: l.seconds, fromGroup: l.fromGroup })),
+      upstream: nearestPer(ups, l => l.from).map(l => ({ id: l.from, name: nameOf(l.from), road: l.road, metres: l.metres, seconds: l.seconds, toGroup: l.toGroup })),
+      downstream: nearestPer(net.downstream.get(s.id) ?? [], l => l.to).map(l => ({ id: l.to, name: nameOf(l.to), road: l.road, metres: l.metres, seconds: l.seconds, fromGroup: l.fromGroup })),
     },
     control,
   };
+}
+
+/** One link per neighbour (the shortest), nearest first: several paths can reach the same junction. */
+function nearestPer(links: JunctionLink[], key: (l: JunctionLink) => string): JunctionLink[] {
+  const best = new Map<string, JunctionLink>();
+  for (const l of links) { const b = best.get(key(l)); if (!b || l.metres < b.metres) best.set(key(l), l); }
+  return [...best.values()].sort((a, b) => a.metres - b.metres);
 }
 
 /** Every junction, worst first. */
@@ -834,7 +887,8 @@ export class ControlError extends Error {
  * released direction get a green wave and upstream neighbours feeding the stopped
  * approaches are gated. Returns what changed.
  */
-export function holdGreen(id: string, group: string, seconds: number, coordinate: boolean, by: string): string[] {
+/** Holds one junction's group green (no neighbours: see coordinationService for coordinated holds). */
+export function holdGreen(id: string, group: string, seconds: number, by: string): string[] {
   const engine = getSimulationEngine();
   if (!engine || !net) throw new ControlError('Simulation not running', 503);
   const secs = Math.round(Math.min(180, Math.max(10, seconds)));
@@ -849,84 +903,30 @@ export function holdGreen(id: string, group: string, seconds: number, coordinate
     }
   }
 
-  if (coordinate) changes.push(...coordinateNeighbours(id, group, secs, by));
   record({ by, junction: id, action: 'hold', detail: changes.join(' | ') });
   return changes;
 }
 
-/** Most neighbouring junctions one coordinated action may adjust, and how far away (m). */
-const MAX_COORDINATED = 5;
-const MAX_COORD_METRES = 3000;
-
-/**
- * Coordinates up to MAX_COORDINATED junctions around a hold, nearest first:
- * - downstream, along the released traffic: each opens its green as the platoon
- *   arrives (cumulative travel time), passing the wave on junction to junction;
- * - upstream, on the roads now stopped: each feeding junction shortens its green
- *   towards the hold (60% for direct neighbours, 80% one junction further back), so
- *   queues don't spill back into junctions behind.
- */
-function coordinateNeighbours(id: string, group: string, secs: number, by: string): string[] {
-  const engine = getSimulationEngine();
-  if (!engine || !net) return [];
-  type Step = { kind: 'wave' | 'gate'; junction: string; group: string; metres: number; seconds: number; hop: number };
-  const candidates: Step[] = [];
-
-  // Downstream: follow the released group from junction to junction
-  const seenDown = new Set<string>([id]);
-  let frontier: { junction: string; group: string; metres: number; seconds: number; hop: number }[] = [{ junction: id, group, metres: 0, seconds: 0, hop: 0 }];
-  while (frontier.length > 0) {
-    const next: typeof frontier = [];
-    for (const f of frontier) {
-      for (const d of (net.downstream.get(f.junction) ?? []).filter(l => l.fromGroup === f.group)) {
-        if (seenDown.has(d.to)) continue;
-        const metres = f.metres + d.metres, seconds = f.seconds + d.seconds;
-        if (metres > MAX_COORD_METRES) continue;
-        seenDown.add(d.to);
-        const step = { junction: d.to, group: d.toGroup, metres, seconds, hop: f.hop + 1 };
-        candidates.push({ kind: 'wave', ...step });
-        next.push(step);
-      }
-    }
-    frontier = next;
-  }
-
-  // Upstream: roads stopped by the hold, then the junctions feeding those
-  const seenUp = new Set<string>([id]);
-  let upFrontier: { junction: string; groups: (g: string) => boolean; metres: number; hop: number }[] =
-    [{ junction: id, groups: g => g !== group, metres: 0, hop: 0 }];
-  while (upFrontier.length > 0) {
-    const next: typeof upFrontier = [];
-    for (const f of upFrontier) {
-      for (const u of (net.upstream.get(f.junction) ?? []).filter(l => f.groups(l.toGroup))) {
-        if (seenUp.has(u.from) || seenDown.has(u.from)) continue;
-        const metres = f.metres + u.metres;
-        if (metres > MAX_COORD_METRES) continue;
-        seenUp.add(u.from);
-        candidates.push({ kind: 'gate', junction: u.from, group: u.fromGroup, metres, seconds: 0, hop: f.hop + 1 });
-        const fed = u.fromGroup;
-        next.push({ junction: u.from, groups: g => g === fed, metres, hop: f.hop + 1 });
-      }
-    }
-    upFrontier = next;
-  }
-
-  const changes: string[] = [];
-  for (const c of candidates.sort((a, b) => a.metres - b.metres).slice(0, MAX_COORDINATED)) {
-    if (c.kind === 'wave') {
-      const hold = Math.min(WAVE_HOLD_MAX, secs);
-      if (engine.holdSignal(c.junction, c.group, hold, `${by} (green wave from ${id})`, c.seconds)) {
-        changes.push(`${c.junction} (${nameOf(c.junction)}): group ${c.group} green in ${c.seconds} s for ${hold} s — green wave (${c.metres} m downstream)`);
-      }
-    } else {
-      const factor = c.hop === 1 ? GATE_FACTOR : 0.8;
-      if (engine.scaleSignalGreen(c.junction, c.group, factor, secs, `${by} (gating for ${id})`)) {
-        changes.push(`${c.junction} (${nameOf(c.junction)}): group ${c.group} green cut to ${Math.round(factor * 100)}% for ${secs} s — holds traffic back (${c.metres} m upstream)`);
-      }
-    }
-  }
-  return changes;
+/** Links to neighbouring signals and the exits of a junction (for coordinationService). */
+export function junctionLinks(id: string): { upstream: JunctionLink[]; downstream: JunctionLink[]; exits: JunctionExit[]; reach: Map<string, string[]> } {
+  return {
+    reach: reachBySignal.get(id) ?? new Map(),
+    upstream: net?.upstream.get(id) ?? [],
+    downstream: net?.downstream.get(id) ?? [],
+    exits: exitsBySignal.get(id) ?? [],
+  };
 }
+
+/** A road edge of the network by id. */
+export function edgeById(id: string): RoadEdge | undefined {
+  return indexRef?.edges.get(id);
+}
+
+/** Logs a coordinated control action (coordinationService). */
+export function recordControl(by: string, junction: string, action: string, detail: string): void {
+  record({ by, junction, action, detail });
+}
+
 
 /** New green times for a junction (or the recommended ones). */
 export function applyPlan(id: string, greens: Record<string, number> | 'recommended', by: string): string[] {

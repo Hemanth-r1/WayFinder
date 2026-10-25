@@ -106,6 +106,43 @@ export interface FeederRoad {
 }
 
 /** Vehicles moving from one approach to one exit (turning movement count). */
+/** One neighbour's change in a coordinated hold (server/src/coordinationService.ts). */
+export interface CoordAction {
+  /** wave-out: green for traffic leaving us · wave-in: green for traffic coming to us · gate: shorter green so a stopped road doesn't overflow */
+  kind: 'wave-out' | 'wave-in' | 'gate';
+  junctionId: string;
+  name: string;
+  lat: number;
+  lng: number;
+  group: string;
+  road: string;
+  startIn: number;
+  seconds: number;
+  factor?: number;
+  vehicles: number;
+  freeVehicles?: number;
+  metres: number;
+  turns?: ('left' | 'straight' | 'right')[];
+  reason: string;
+}
+
+export interface CoordinationPlan {
+  junctionId: string;
+  name: string;
+  lat: number;
+  lng: number;
+  group: string;
+  road: string;
+  requestedSeconds: number;
+  holdSeconds: number;
+  limits: string[];
+  queueVehicles: number;
+  clearSeconds: number;
+  releasedVehicles: number;
+  actions: CoordAction[];
+  warnings: string[];
+}
+
 export interface MovementRow {
   fromRoad: string;
   fromDir: string;
@@ -475,6 +512,11 @@ class ServerClient {
   /** Controllers: keep a group green; with coordinate, neighbours open a green wave / hold traffic back. */
   async holdJunction(id: string, group: string, seconds: number, coordinate: boolean): Promise<{ changes: string[] }> {
     return this.post(`/api/junctions/${encodeURIComponent(id)}/hold`, { group, seconds, coordinate }, 'Failed to hold signal');
+  }
+
+  /** Controllers: what a coordinated hold would do (hold length, neighbours' changes), without applying it. */
+  async previewCoordination(id: string, group: string, seconds: number): Promise<CoordinationPlan> {
+    return this.post(`/api/junctions/${encodeURIComponent(id)}/coordination`, { group, seconds }, 'Failed to plan coordination');
   }
 
   async planJunction(id: string, plan: Record<string, number> | 'recommended'): Promise<{ changes: string[] }> {

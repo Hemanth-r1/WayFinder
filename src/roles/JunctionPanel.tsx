@@ -4,7 +4,7 @@
  * give-green buttons, timing editor and details.
  */
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
-import { serverClient, type JunctionSummary, type JunctionDetail, type ControlLogEntry, type MovementRow } from '../services/serverClient';
+import { serverClient, type JunctionSummary, type JunctionDetail, type ControlLogEntry, type MovementRow, type CoordinationPlan } from '../services/serverClient';
 import JunctionConsole from './JunctionConsole';
 
 interface Props {
@@ -13,6 +13,8 @@ interface Props {
   onSelect: (id: string | null) => void;
   /** Move the map to a junction */
   onFocus: (lat: number, lng: number) => void;
+  /** Coordination preview to draw on the map (stable callback) */
+  onPreview?: (plan: CoordinationPlan | null) => void;
 }
 
 const STATUS_COLOR: Record<JunctionSummary['status'], string> = { ok: '#4CAF50', busy: '#FF9800', critical: '#F44336' };
@@ -24,7 +26,7 @@ function metresBetween(a: { lat: number; lng: number }, b: { lat: number; lng: n
   return Math.hypot((a.lng - b.lng) * kx, (a.lat - b.lat) * 111320);
 }
 
-export default function JunctionPanel({ canControl, selectedId, onSelect, onFocus }: Props) {
+export default function JunctionPanel({ canControl, selectedId, onSelect, onFocus, onPreview }: Props) {
   const [list, setList] = useState<JunctionSummary[]>([]);
   const [detail, setDetail] = useState<JunctionDetail | null>(null);
   const [fetchedAt, setFetchedAt] = useState(0);
@@ -138,7 +140,7 @@ export default function JunctionPanel({ canControl, selectedId, onSelect, onFocu
         <JunctionConsole
           detail={detail} fetchedAt={fetchedAt} canControl={canControl} movements={movements}
           onBack={() => onSelect(null)} onSelect={id => select({ id })} onAction={act} busy={busy} changes={changes}
-          onDownloadCsv={() => downloadCsv(detail.id)}
+          onDownloadCsv={() => downloadCsv(detail.id)} onPreview={onPreview}
         />
       ) : (
         <>

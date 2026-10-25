@@ -28,6 +28,7 @@ export const SRC = {
   signals: 'wf-signals',
   vehicles: 'wf-vehicles',
   reportIcons: 'wf-report-icons',
+  coord: 'wf-coord',
 } as const;
 
 export const LAYER = {
@@ -399,6 +400,49 @@ export function addOverlayLayers(map: MLMap, opts: { showRoads: boolean }): void
     layout: { 'icon-image': ['get', 'icon'], 'icon-allow-overlap': true, 'icon-ignore-placement': true },
     paint: { 'icon-opacity': ['case', ['get', 'confirmed'], 1, 0.65] },
   });
+  // Coordination preview: what a green at one junction does to its neighbours
+  map.addLayer({
+    id: 'wf-coord-line', type: 'line', source: SRC.coord, filter: ['==', ['geometry-type'], 'LineString'],
+    layout: { 'line-cap': 'round' },
+    paint: { 'line-color': ['get', 'color'], 'line-width': 3, 'line-opacity': 0.9, 'line-dasharray': [2, 1.5] },
+  });
+  map.addLayer({
+    id: 'wf-coord-dot', type: 'circle', source: SRC.coord, filter: ['==', ['geometry-type'], 'Point'],
+    paint: {
+      'circle-radius': ['case', ['get', 'centre'], 13, 10], 'circle-color': ['get', 'color'], 'circle-opacity': 0.25,
+      'circle-stroke-color': ['get', 'color'], 'circle-stroke-width': 3,
+    },
+  });
+  map.addLayer({
+    id: 'wf-coord-label', type: 'symbol', source: SRC.coord, filter: ['==', ['geometry-type'], 'Point'],
+    layout: {
+      'text-field': ['get', 'label'], 'text-font': ['Noto Sans Regular'], 'text-size': 12,
+      'text-offset': [0, 1.4], 'text-anchor': 'top', 'text-allow-overlap': true, 'text-max-width': 14,
+    },
+    paint: { 'text-color': '#ffffff', 'text-halo-color': '#000000', 'text-halo-width': 1.5 },
+  });
+}
+
+/** Colours of coordination actions on the map and in the console. */
+export const COORD_COLOR = { centre: '#00E676', 'wave-out': '#4FC3F7', 'wave-in': '#B388FF', gate: '#FF9100' } as const;
+
+/** A coordination plan drawn as the junction, its affected neighbours and a line to each. */
+export function coordinationData(plan: {
+  lat: number; lng: number; holdSeconds: number; road: string;
+  actions: { kind: 'wave-out' | 'wave-in' | 'gate'; lat: number; lng: number; name: string; startIn: number; seconds: number; factor?: number }[];
+} | null): FC {
+  if (!plan) return EMPTY;
+  const features: Feature<Geometry, Props>[] = [];
+  for (const a of plan.actions) {
+    const color = COORD_COLOR[a.kind];
+    const ends: LatLng[] = a.kind === 'wave-out' ? [[plan.lat, plan.lng], [a.lat, a.lng]] : [[a.lat, a.lng], [plan.lat, plan.lng]];
+    features.push(lineFeature(ends, { color }));
+    const what = a.kind === 'gate' ? `green ${Math.round((a.factor ?? 0.6) * 100)}% for ${a.seconds}s`
+      : a.startIn > 0 ? `green in ${a.startIn}s for ${a.seconds}s` : `green ${a.seconds}s`;
+    features.push(pointFeature(a.lat, a.lng, { color, label: `${a.name}\n${what}`, centre: false }));
+  }
+  features.push(pointFeature(plan.lat, plan.lng, { color: COORD_COLOR.centre, label: `${plan.road}\ngreen ${plan.holdSeconds}s`, centre: true }));
+  return fc(features);
 }
 
 // ── GeoJSON builders ─────────────────────────────────────────────────────────

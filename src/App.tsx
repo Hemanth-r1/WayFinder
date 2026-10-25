@@ -18,7 +18,7 @@ import { progressiveLoader, type LoadUpdate, type LoadPhase } from './services/p
 import { serverClient } from './services/serverClient';
 import type { RoadGraph, TrafficSignal, Vehicle } from './types';
 import type {
-  ServerStats, RouteOption, NavigationResponse, Conditions, WeatherMode, TrafficMode, ReportType, ReportVote, Behaviour, Jam, JamSeverity,
+  ServerStats, RouteOption, NavigationResponse, Conditions, WeatherMode, TrafficMode, ReportType, ReportVote, Behaviour, Jam, JamSeverity, CoordinationPlan,
 } from './services/serverClient';
 import { REPORT_LABEL } from './utils/reports';
 import ConditionsPanel from './components/ConditionsPanel';
@@ -67,6 +67,8 @@ function AppContent() {
   /** Junction open in the police panel, and where the map should move to */
   const [selectedJunction, setSelectedJunction] = useState<string | null>(null);
   const [mapFocus, setMapFocus] = useState<{ lat: number; lng: number; zoom: number; key: number } | null>(null);
+  // Police: coordination preview drawn on the map while the console shows it
+  const [coordPlan, setCoordPlan] = useState<CoordinationPlan | null>(null);
   const [stats, setStats] = useState<ServerStats>({
     totalVehicles: 0, avgSpeed: 0, avgDelay: 0, congestionHotspots: 0,
     greenWaveActive: false, signalCoordinationScore: 0, throughput: 0, maxCongestion: 0,
@@ -627,6 +629,7 @@ function AppContent() {
               selectedId={selectedJunction}
               onSelect={setSelectedJunction}
               onFocus={(lat, lng) => setMapFocus({ lat, lng, zoom: 17, key: Date.now() })}
+              onPreview={setCoordPlan}
             />
           )}
           <OfflineCard online={online} />
@@ -721,6 +724,7 @@ function AppContent() {
           traffic={traffic}
           focus={mapFocus}
           onSelectJunction={setSelectedJunction}
+          coordination={role !== 'user' ? coordPlan : null}
           onViewportChange={(bbox, zoom) => { serverClient.setViewport(bbox, zoom); progressiveLoader.loadView(bbox, zoom); }}
         />
       </div>

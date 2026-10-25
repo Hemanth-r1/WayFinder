@@ -25,6 +25,7 @@ import {
   startNavigation, getNavigationUpdate, planRoutes, acceptReroute, updatePosition, NavigationError,
 } from './navigationService.js';
 import { initRouteWorkers, routeQueuePerWorker } from './routeWorkers.js';
+import { planCoordination, applyCoordination } from './coordinationService.js';
 import { commonJson, trafficJson, cellJson } from './liveSnapshot.js';
 
 const app = express();
@@ -390,7 +391,24 @@ app.post('/api/junctions/:id/hold', requireUser, requireController, (req, res) =
     if (typeof group !== 'string' || typeof seconds !== 'number') {
       return res.status(400).json({ error: 'group (string) and seconds (number) required' });
     }
-    res.json({ changes: holdGreen(String(req.params.id), group, seconds, coordinate !== false, caller(res).uid) });
+    const id = String(req.params.id);
+    // Coordinated: the flow plan (green waves out, spillback guards, feeding greens); otherwise this junction only
+    if (coordinate !== false) {
+      const { plan, changes } = applyCoordination(id, group, seconds, caller(res).uid);
+      return res.json({ changes, plan });
+    }
+    res.json({ changes: holdGreen(id, group, seconds, caller(res).uid) });
+  } catch (err) { sendControlError(res, err); }
+});
+
+/** What a coordinated hold would do, without changing anything: { group, seconds } (operators). */
+app.post('/api/junctions/:id/coordination', requireUser, requireOperator, (req, res) => {
+  try {
+    const { group, seconds } = req.body ?? {};
+    if (typeof group !== 'string' || typeof seconds !== 'number') {
+      return res.status(400).json({ error: 'group (string) and seconds (number) required' });
+    }
+    res.json(planCoordination(String(req.params.id), group, seconds));
   } catch (err) { sendControlError(res, err); }
 });
 

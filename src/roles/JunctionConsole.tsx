@@ -4,8 +4,9 @@
  * editor, alerts, and the details (feeders, movements, neighbours) folded away.
  */
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
-import { serverClient, type JunctionDetail, type MovementRow } from '../services/serverClient';
+import { serverClient, type JunctionDetail, type MovementRow, type CoordinationPlan, type CoordAction } from '../services/serverClient';
 import { groupTiming } from '../utils/signalTiming';
+import { COORD_COLOR } from '../components/mapLayers';
 import type { TrafficSignal } from '../types';
 
 const LIGHT = { RED: '#FF1744', YELLOW: '#FFD600', GREEN: '#00E676' } as const;
@@ -24,6 +25,8 @@ interface Props {
   busy: boolean;
   changes: string[];
   onDownloadCsv: () => void;
+  /** The coordination preview being shown (null when closed), for the map */
+  onPreview?: (plan: CoordinationPlan | null) => void;
 }
 
 /** "Tumkur Road" or "Tumkur Road + Outer Ring Road" for a signal group. */
@@ -36,7 +39,7 @@ function fmt(s: number): string {
   return s >= 60 ? `${Math.floor(s / 60)}m ${String(Math.round(s % 60)).padStart(2, '0')}s` : `${Math.round(s)}s`;
 }
 
-export default function JunctionConsole({ detail, fetchedAt, canControl, movements, onBack, onSelect, onAction, busy, changes, onDownloadCsv }: Props) {
+export default function JunctionConsole({ detail, fetchedAt, canControl, movements, onBack, onSelect, onAction, busy, changes, onDownloadCsv, onPreview }: Props) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => { const t = window.setInterval(() => setNow(Date.now()), 500); return () => window.clearInterval(t); }, []);
   const elapsed = Math.max(0, (now - fetchedAt) / 1000);
@@ -54,6 +57,26 @@ export default function JunctionConsole({ detail, fetchedAt, canControl, movemen
   const greensKey = JSON.stringify(detail.greens);
   useEffect(() => { setDraft(JSON.parse(greensKey)); }, [detail.id, greensKey]);
   useEffect(() => { setPicked(null); }, [detail.id]);
+
+  // Coordinated hold: preview what the neighbours will do (also drawn on the map), then confirm
+  const [plan, setPlanState] = useState<CoordinationPlan | null>(null);
+  const [planning, setPlanning] = useState(false);
+  const [planError, setPlanError] = useState<string | null>(null);
+  const setPlan = (p: CoordinationPlan | null) => { setPlanState(p); onPreview?.(p); };
+  useEffect(() => () => onPreview?.(null), [detail.id, onPreview]);
+  useEffect(() => { setPlanState(null); }, [detail.id]);
+  const preview = async (g: string) => {
+    setPlanning(true); setPlanError(null);
+    try { setPlan(await serverClient.previewCoordination(detail.id, g, holdFor)); }
+    catch (err) { setPlanError((err as Error).message); }
+    finally { setPlanning(false); }
+  };
+  const confirm = async () => {
+    if (!plan) return;
+    const { group } = plan;
+    setPlan(null);
+    await onAction(() => serverClient.holdJunction(detail.id, group, holdFor, true));
+  };
 
   const lost = detail.phases.filter(p => p.color !== 'GREEN').reduce((t, p) => t + p.duration, 0);
   const draftCycle = groups.reduce((t, g) => t + (draft[g] ?? 0), 0) + lost;
@@ -123,12 +146,14 @@ export default function JunctionConsole({ detail, fetchedAt, canControl, movemen
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: groups.length > 1 ? '1fr 1fr' : '1fr', gap: 6 }}>
             {groups.map(g => (
-              <button key={g} disabled={busy} onClick={() => onAction(() => serverClient.holdJunction(detail.id, g, holdFor, coordinate))}
-                style={{ ...s.bigButton, outline: picked === g ? '2px solid #4488FF' : 'none' }}>
-                🟢 {groupName(detail, g)}<span style={{ display: 'block', fontSize: 10, fontWeight: 400, opacity: 0.8 }}>for {holdFor}s</span>
+              <button key={g} disabled={busy || planning} onClick={() => coordinate ? preview(g) : onAction(() => serverClient.holdJunction(detail.id, g, holdFor, false))}
+                style={{ ...s.bigButton, outline: picked === g || plan?.group === g ? '2px solid #4488FF' : 'none' }}>
+                🟢 {groupName(detail, g)}<span style={{ display: 'block', fontSize: 10, fontWeight: 400, opacity: 0.8 }}>for {holdFor}s{coordinate ? ' · preview first' : ''}</span>
               </button>
             ))}
           </div>
+          {planError && <div style={{ color: '#F44336', fontSize: 11, marginTop: 4 }}>{planError}</div>}
+          {plan && <PlanCard plan={plan} busy={busy} onConfirm={confirm} onCancel={() => setPlan(null)} />}
 
           <div style={s.section}>Green times</div>
           {groups.map(g => (
@@ -252,6 +277,48 @@ function Diagram({ detail, timing, picked, onPick }: {
         );
       })}
     </svg>
+  );
+}
+
+const KIND_TEXT: Record<CoordAction['kind'], string> = {
+  'wave-out': 'Green wave ahead',
+  gate: 'Hold back (protect)',
+  'wave-in': 'Let traffic in',
+};
+
+/** The coordinated hold before it is applied: our green, the flow numbers, each neighbour's change. */
+function PlanCard({ plan, busy, onConfirm, onCancel }: { plan: CoordinationPlan; busy: boolean; onConfirm: () => void; onCancel: () => void }) {
+  return (
+    <div style={{ background: '#0f1a2a', border: '1px solid #2a4a70', borderRadius: 8, padding: 8, marginTop: 8 }}>
+      <div style={{ color: '#fff', fontSize: 12, fontWeight: 700 }}>
+        <span style={{ color: COORD_COLOR.centre }}>●</span> {plan.road}: green {plan.holdSeconds}s
+        {plan.holdSeconds !== plan.requestedSeconds && <span style={{ color: '#FFB74D', fontWeight: 400 }}> (asked {plan.requestedSeconds}s)</span>}
+      </div>
+      <div style={{ color: '#9ab', fontSize: 11, margin: '2px 0 4px' }}>
+        {plan.queueVehicles} queued · jam clears in ~{fmt(plan.clearSeconds)} · ~{plan.releasedVehicles} vehicles move
+      </div>
+      {plan.limits.map((l, i) => <div key={i} style={{ color: '#FFB74D', fontSize: 10 }}>↳ shorter: {l}</div>)}
+      <div style={{ ...s.section, margin: '8px 0 4px' }}>Neighbours ({plan.actions.length})</div>
+      {plan.actions.length === 0 && <div style={{ color: '#777', fontSize: 11 }}>No linked signal close enough to change — only this junction.</div>}
+      {plan.actions.map(a => (
+        <div key={a.junctionId} style={{ fontSize: 11, padding: '4px 0', borderBottom: '1px solid #1a2a40' }}>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <span style={{ color: COORD_COLOR[a.kind] }}>●</span>
+            <span style={{ flex: 1, color: '#ddd' }}>{KIND_TEXT[a.kind]} · {a.name}</span>
+            <span style={{ fontFamily: 'monospace', color: COORD_COLOR[a.kind] }}>
+              {a.kind === 'gate' ? `${Math.round((a.factor ?? 0.6) * 100)}% · ${a.seconds}s` : `${a.startIn > 0 ? `+${a.startIn}s ` : ''}${a.seconds}s`}
+            </span>
+          </div>
+          <div style={{ color: '#889', fontSize: 10, marginLeft: 14 }}>{a.road} · {a.metres} m · {a.reason}</div>
+        </div>
+      ))}
+      {plan.warnings.map((w, i) => <div key={i} style={{ color: '#ff8a80', fontSize: 11, marginTop: 4 }}>⚠ {w}</div>)}
+      <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+        <button disabled={busy} onClick={onConfirm} style={{ ...s.button, background: '#2E7D32', flex: 1 }}>Apply all</button>
+        <button onClick={onCancel} style={{ ...s.button, background: '#37474F' }}>Cancel</button>
+      </div>
+      <div style={{ color: '#667', fontSize: 10, marginTop: 4 }}>Shown on the map. Numbers are recomputed from live queues when you apply.</div>
+    </div>
   );
 }
 
