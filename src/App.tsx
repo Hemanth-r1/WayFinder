@@ -111,8 +111,8 @@ function AppContent() {
     progressiveLoader.onUpdate(onLoad);
     progressiveLoader.load();
 
-    // Connect WebSocket for real-time updates
-    serverClient.connectWebSocket(user?.uid);
+    // Live map updates
+    serverClient.startLive();
     const onServerUpdate = (data: any) => {
       if ((data.type === 'update' || data.type === 'initial') && data.data) {
         if (data.data.vehicles) {
@@ -149,7 +149,7 @@ function AppContent() {
     return () => {
       progressiveLoader.removeUpdateCallback(onLoad);
       serverClient.removeUpdateCallback(onServerUpdate);
-      serverClient.disconnectWebSocket();
+      serverClient.stopLive();
     };
   }, [user]);
 

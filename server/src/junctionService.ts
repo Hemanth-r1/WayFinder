@@ -838,6 +838,7 @@ export function holdGreen(id: string, group: string, seconds: number, coordinate
   const engine = getSimulationEngine();
   if (!engine || !net) throw new ControlError('Simulation not running', 503);
   const secs = Math.round(Math.min(180, Math.max(10, seconds)));
+  if (!net.signals.has(id)) throw new ControlError(`Unknown junction ${id}`, 404);
   if (!engine.holdSignal(id, group, secs, by)) throw new ControlError(`Junction ${id} has no group ${group}`);
   const changes = [`${id} (${nameOf(id)}): group ${group} held green for ${secs} s`];
   const before = getJunction(id);

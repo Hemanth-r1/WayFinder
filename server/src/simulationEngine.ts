@@ -141,6 +141,8 @@ export function userVehicleKey(userId: string): string {
 }
 /** Give-way checks start this close to a junction (m). */
 const GIVE_WAY_METRES = 30;
+/** Drivers giving way stop this far before the junction point (m). */
+const GIVE_WAY_SETBACK = 3;
 /** Seconds a driver waits to give way before going anyway. */
 const YIELD_PATIENCE = 10;
 /** Road load can slow drivers to at most 1/this of free-flow speed (the drawn queue does the rest). */
@@ -413,7 +415,6 @@ class SimulationEngine {
   private trafficTimer = 0;
   private spawnTimer = 0;
   private vehicleCounter = 0;
-  private updateCallbacks: Set<(state: SimState) => void> = new Set();
   private arrivalHandler: ((userId: string) => void) | null = null;
   /** Scenarios: background spawns only inside this box, and a fixed vehicle count */
   private spawnArea: BBox | null = null;
@@ -480,14 +481,6 @@ class SimulationEngine {
   stop(): void {
     this.state.running = false;
     if (this.timer) clearTimeout(this.timer);
-  }
-
-  onUpdate(callback: (state: SimState) => void): void {
-    this.updateCallbacks.add(callback);
-  }
-
-  removeUpdateCallback(callback: (state: SimState) => void): void {
-    this.updateCallbacks.delete(callback);
   }
 
   /** Called with the userId when a navigated vehicle reaches its destination. */
@@ -595,7 +588,6 @@ class SimulationEngine {
       console.log(`[Sim] ${this.sim.size} vehicles, ${(this.tickStats.ms / this.tickStats.n).toFixed(1)} ms per step`);
       this.tickStats = { ms: 0, n: 0, at: now };
     }
-    this.notifyCallbacks();
     this.timer = setTimeout(() => this.runLoop(), TICK_MS);
   }
 
@@ -905,7 +897,8 @@ class SimulationEngine {
     const control = isLastEdge || this.contraBase.has(edge.id) ? null : signalControl(this.index.signalByNode, edge);
     if (!control) {
       // Unsignalled junction: give way as the road rules say
-      if (!isLastEdge && sv.next && toLine < GIVE_WAY_METRES && this.mustGiveWay(sv, null)) return Math.max(0, toLine);
+      // (wait a few metres back, where the roads haven't merged yet, not on the junction point)
+      if (!isLastEdge && sv.next && toLine < GIVE_WAY_METRES && this.mustGiveWay(sv, null)) return Math.max(0, toLine - GIVE_WAY_SETBACK);
       sv.yieldWait = 0;
       return Infinity;
     }
@@ -1469,9 +1462,6 @@ class SimulationEngine {
     }
   }
 
-  private notifyCallbacks(): void {
-    for (const callback of this.updateCallbacks) callback(this.state);
-  }
 
   // ── Public API ─────────────────────────────────────────────────────────────
 

@@ -1,10 +1,5 @@
 // Production is served by Firebase Hosting, which forwards /api/** to Cloud Run on the same origin.
 const SERVER_URL: string = import.meta.env.VITE_SERVER_URL ?? (import.meta.env.DEV ? 'http://localhost:8080' : '');
-const WS_URL = SERVER_URL
-  ? SERVER_URL.replace('http://', 'ws://').replace('https://', 'wss://')
-  : `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`;
-/** Hosting rewrites don't carry WebSockets; if no socket opens within this time, poll instead. */
-const WS_CONNECT_TIMEOUT_MS = 4000;
 /** Matches the CDN cache time of /api/live/* (1 s) */
 const POLL_INTERVAL_MS = 1000;
 /** Same grid as the server's liveSnapshot.ts */
@@ -29,13 +24,6 @@ function decodeVehicles(raw: unknown[]): ServerVehicle[] {
       wrongWay: flag === 1 || undefined, violation: flag === 2 || undefined,
     };
   });
-}
-
-function decodeMessage(msg: any): any {
-  if ((msg?.type === 'update' || msg?.type === 'initial') && Array.isArray(msg.data?.vehicles)) {
-    msg.data.vehicles = decodeVehicles(msg.data.vehicles);
-  }
-  return msg;
 }
 
 export interface ServerVehicle {
@@ -332,10 +320,7 @@ async function errorMessage(response: Response, fallback: string): Promise<strin
 }
 
 class ServerClient {
-  private ws: WebSocket | null = null;
-  private reconnectTimer: number | null = null;
   private updateCallbacks: Set<(data: any) => void> = new Set();
-  private connectionState: 'connecting' | 'connected' | 'disconnected' = 'disconnected';
   private identity: IdentityProvider = async () => ({});
 
   /** Called when the signed-in user changes. */
@@ -358,9 +343,8 @@ class ServerClient {
   pace(kind: 'gps' | 'navigation'): number {
     return this.paceMs[kind];
   }
-  private shouldReconnect = false;
-  private connectTimer: number | null = null;
   private pollTimer: number | null = null;
+  private pollNow: (() => void) | null = null;
   /** Map area on screen ([west, south, east, north]) and zoom; vehicles are sent only for it */
   private view: { bbox: [number, number, number, number]; zoom: number } | null = null;
   private pollCount = 0;
@@ -368,7 +352,7 @@ class ServerClient {
   /** Tells the server which part of the map is visible. */
   setViewport(bbox: [number, number, number, number], zoom: number): void {
     this.view = { bbox, zoom };
-    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ type: 'viewport', bbox, zoom }));
+    this.pollNow?.(); // vehicles for the new area without waiting for the next poll
   }
 
   async fetchGraph() {
@@ -548,75 +532,12 @@ class ServerClient {
     return response.json();
   }
 
-  connectWebSocket(userId?: string): void {
-    if (this.ws?.readyState === WebSocket.OPEN) return;
-
-    this.shouldReconnect = true;
-    this.connectionState = 'connecting';
-    this.ws = new WebSocket(WS_URL);
-    if (this.connectTimer) clearTimeout(this.connectTimer);
-    this.connectTimer = window.setTimeout(() => {
-      this.connectTimer = null;
-      if (this.shouldReconnect && this.connectionState !== 'connected') this.startPolling();
-    }, WS_CONNECT_TIMEOUT_MS);
-
-    this.ws.onopen = () => {
-      console.log('[ServerClient] WebSocket connected');
-      this.connectionState = 'connected';
-      this.stopPolling();
-      
-      if (userId) {
-        this.ws?.send(JSON.stringify({ type: 'setUserId', userId }));
-      }
-      if (this.view) this.ws?.send(JSON.stringify({ type: 'viewport', ...this.view }));
-    };
-
-    this.ws.onmessage = (event) => {
-      try {
-        this.notifyCallbacks(decodeMessage(JSON.parse(event.data)));
-      } catch (err) {
-        console.error('[ServerClient] Failed to parse WebSocket message:', err);
-      }
-    };
-
-    this.ws.onclose = () => {
-      console.log('[ServerClient] WebSocket disconnected');
-      this.connectionState = 'disconnected';
-      this.ws = null;
-      if (!this.shouldReconnect) return;
-      this.startPolling();
-      this.scheduleReconnect(userId);
-    };
-
-    this.ws.onerror = (err) => {
-      console.error('[ServerClient] WebSocket error:', err);
-    };
-  }
-
-  disconnectWebSocket(): void {
-    this.shouldReconnect = false;
-    this.stopPolling();
-    if (this.connectTimer) {
-      clearTimeout(this.connectTimer);
-      this.connectTimer = null;
-    }
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    if (this.ws) {
-      this.ws.onclose = null;
-      this.ws.close();
-      this.ws = null;
-    }
-    this.connectionState = 'disconnected';
-  }
-
-  /** HTTP fallback delivering the same 'update' messages the WebSocket sends. */
-  private startPolling(): void {
+  /**
+   * Live updates: every second, the shared pieces of the live map (/api/live/*) — the same
+   * URLs for everyone, so the CDN answers most of them. Delivers 'update' messages.
+   */
+  startLive(): void {
     if (this.pollTimer) return;
-    console.warn('[ServerClient] WebSocket unavailable — polling for live updates');
-    // Everyone asks for the same cached pieces (/api/live/*), so the CDN answers most polls
     const getJson = async (path: string) => {
       const res = await fetch(`${SERVER_URL}${path}`);
       return res.ok ? res.json() : null;
@@ -645,25 +566,14 @@ class ServerClient {
       } catch { /* server unreachable; keep trying */ }
     };
     poll();
+    this.pollNow = poll;
     this.pollTimer = window.setInterval(poll, POLL_INTERVAL_MS);
   }
 
-  private stopPolling(): void {
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer);
-      this.pollTimer = null;
-    }
-  }
-
-  private scheduleReconnect(userId?: string): void {
-    if (this.reconnectTimer) return;
-    // Back off while polling covers updates
-    const delay = this.pollTimer ? 30000 : 3000;
-    this.reconnectTimer = window.setTimeout(() => {
-      this.reconnectTimer = null;
-      console.log('[ServerClient] Reconnecting WebSocket...');
-      this.connectWebSocket(userId);
-    }, delay);
+  stopLive(): void {
+    if (this.pollTimer) clearInterval(this.pollTimer);
+    this.pollTimer = null;
+    this.pollNow = null;
   }
 
   onUpdate(callback: (data: any) => void): void {
@@ -677,18 +587,6 @@ class ServerClient {
   private notifyCallbacks(data: any): void {
     for (const callback of this.updateCallbacks) {
       callback(data);
-    }
-  }
-
-  getConnectionState(): 'connecting' | 'connected' | 'disconnected' {
-    return this.connectionState;
-  }
-
-  sendWebSocketMessage(message: any): void {
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(message));
-    } else {
-      console.warn('[ServerClient] WebSocket not connected, cannot send message');
     }
   }
 }

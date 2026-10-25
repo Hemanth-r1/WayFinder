@@ -21,6 +21,11 @@ export interface Caller {
 const ROLES: Role[] = ['user', 'supporter', 'controller'];
 const ROLE_CACHE_MS = 5 * 60 * 1000;
 const roleCache = new Map<string, { role: Role; at: number }>();
+// Drop expired roles, or the cache grows with every user ever seen
+setInterval(() => {
+  const cutoff = Date.now() - ROLE_CACHE_MS;
+  for (const [uid, r] of roleCache) if (r.at < cutoff) roleCache.delete(uid);
+}, ROLE_CACHE_MS).unref();
 
 export function authMode(): 'firebase' | 'demo' {
   return getApps().length > 0 ? 'firebase' : 'demo';
@@ -125,18 +130,24 @@ export function pace(baseMs: number, budgetPerSec: number) {
 
 /** At most `max` calls per caller per window (in memory, per server instance). */
 export function rateLimit(name: string, max: number, windowMs: number) {
-  const hits = new Map<string, number[]>();
+  // Fixed window per caller: two numbers each, so millions of callers stay small
+  const hits = new Map<string, { start: number; count: number }>();
+  // Forget callers whose window has passed (memory would grow with every user)
+  setInterval(() => {
+    const cutoff = Date.now() - windowMs;
+    for (const [key, h] of hits) if (h.start < cutoff) hits.delete(key);
+  }, windowMs).unref();
   return (_req: Request, res: Response, next: NextFunction) => {
     const key = caller(res).uid;
     const now = Date.now();
-    const recent = (hits.get(key) ?? []).filter(t => now - t < windowMs);
-    if (recent.length >= max) {
-      const retry = Math.ceil((windowMs - (now - recent[0])) / 1000);
+    let h = hits.get(key);
+    if (!h || now - h.start >= windowMs) { h = { start: now, count: 0 }; hits.set(key, h); }
+    if (h.count >= max) {
+      const retry = Math.ceil((windowMs - (now - h.start)) / 1000);
       res.setHeader('Retry-After', String(retry));
       return res.status(429).json({ error: `Too many ${name} — try again in ${Math.ceil(retry / 60)} min` });
     }
-    recent.push(now);
-    hits.set(key, recent);
+    h.count++;
     next();
   };
 }

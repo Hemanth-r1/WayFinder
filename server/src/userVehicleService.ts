@@ -21,6 +21,8 @@ export interface UserSession {
   mode: DriveMode;
   pendingReroute: RerouteSuggestion | null;
   lastRerouteCheck: number;
+  /** Last call from the driver's app (ms); quiet sessions are closed */
+  lastSeen?: number;
   /** Last automatic reroute after leaving the route (ms) */
   lastAutoReroute?: number;
   /** A background reroute search is running */
@@ -37,6 +39,12 @@ export interface UserSession {
 }
 
 const sessions = new Map<string, UserSession>();
+/** A driver whose app hasn't called for this long closed it: end the trip, free the car. */
+const SESSION_IDLE_MS = 10 * 60 * 1000;
+setInterval(() => {
+  const cutoff = Date.now() - SESSION_IDLE_MS;
+  for (const [userId, s] of sessions) if ((s.lastSeen ?? 0) < cutoff) removeUserVehicle(userId);
+}, 60_000).unref();
 
 /**
  * Starts driving `route` for `userId`: spawns their vehicle and registers the route as
@@ -59,6 +67,7 @@ export function startUserSession(userId: string, route: RouteInfo, mode: DriveMo
     mode,
     pendingReroute: null,
     lastRerouteCheck: 0,
+    lastSeen: Date.now(),
     offRouteFixes: 0,
     rerouteCount: 0,
     vehicleId: vehicle.id,
@@ -100,8 +109,11 @@ export function removeUserVehicle(userId: string): void {
   sessions.delete(userId);
 }
 
+/** The driver's session; called from their own requests, so it also marks them active. */
 export function getUserSession(userId: string): UserSession | undefined {
-  return sessions.get(userId);
+  const s = sessions.get(userId);
+  if (s) s.lastSeen = Date.now();
+  return s;
 }
 
 export function getUserVehiclePosition(userId: string): Vehicle | null {

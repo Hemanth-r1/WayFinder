@@ -23,9 +23,7 @@ import { removeUserVehicle, getUserVehiclePosition, markArrived } from './userVe
 import {
   startNavigation, getNavigationUpdate, planRoutes, acceptReroute, updatePosition, NavigationError,
 } from './navigationService.js';
-import { initializeWebSocket, handleWebSocketUpgrade, buildUpdate, parseBBox } from './websocketService.js';
 import { initRouteWorkers, routeQueuePerWorker } from './routeWorkers.js';
-import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { commonJson, trafficJson, cellJson } from './liveSnapshot.js';
 
 const app = express();
@@ -83,17 +81,6 @@ app.get('/api/graph', async (req, res) => {
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
-});
-
-// Same payload as a WebSocket 'update' message, for clients that can't hold a socket open.
-// ?bbox=w,s,e,n&zoom=z limits vehicles to the viewer's map; &traffic=1 adds road traffic levels.
-app.get('/api/state', (req, res) => {
-  const data = buildUpdate(
-    { bbox: parseBBox(req.query.bbox), zoom: Number(req.query.zoom) || 0 },
-    req.query.traffic === '1',
-  );
-  if (!data) return res.status(503).json({ error: 'Simulation engine not running' });
-  res.type('json').send(data);
 });
 
 // Live map for many viewers: the same for everyone, so Firebase Hosting's CDN serves it
@@ -432,18 +419,13 @@ app.get('/api/control/log', requireUser, requireOperator, (_req, res) => {
   res.json({ log: controlLog() });
 });
 
-// Load shedding: when the server falls behind, phones plan routes themselves (the app has
-// the road network and live traffic colours), so routing capacity grows with the users
-const loopDelay = monitorEventLoopDelay({ resolution: 20 });
-loopDelay.enable();
-let busy = false;
-setInterval(() => {
-  busy = loopDelay.percentile(99) / 1e6 > 150 || routeQueuePerWorker() > 4;
-  loopDelay.reset();
-}, 1000).unref();
+// Load shedding: when the route workers fall behind, phones plan routes themselves (the app
+// has the road network and live traffic colours), so routing capacity grows with the users.
+// (Main-thread lag is the simulation's own work; routes don't run there.)
+const ROUTE_QUEUE_LIMIT = 4;
 
 app.post('/api/route', requireUser, rateLimit('route requests', 20, 10 * 60 * 1000), async (req, res) => {
-  if (busy) {
+  if (routeQueuePerWorker() > ROUTE_QUEUE_LIMIT) {
     return res.status(503).set('Retry-After', '5').json({ error: 'Server busy — planning on your phone', planOnDevice: true });
   }
   try {
@@ -478,8 +460,6 @@ async function initializeServer() {
     engine.start();
     startWeatherPolling();
     console.log('[WayFinder Server] Simulation engine started');
-    initializeWebSocket();
-    console.log('[WayFinder Server] WebSocket initialized');
   } catch (err) {
     console.error('[WayFinder Server] Failed to initialize simulation interface:', err);
   }
@@ -487,9 +467,6 @@ async function initializeServer() {
 
 const server = createServer(app);
 
-server.on('upgrade', (request, socket, head) => {
-  handleWebSocketUpgrade(request, socket, head);
-});
 
 server.listen(PORT, () => {
   console.log(`[WayFinder Server] Listening on ${PORT}`);
