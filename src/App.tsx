@@ -17,6 +17,8 @@ import AboutCompany from './components/AboutCompany';
 import ThemeToggle from './components/ThemeToggle';
 import { BrandLockup } from './components/BrandMark';
 import { BRAND } from './brand';
+/** Navigation uses the phone's GPS only when it is this close to the chosen start (m) */
+const GPS_START_METRES = 300;
 import { isDriver, canControl } from './types/roles';
 import MyDataCard from './components/MyDataCard';
 import { keepDataOnDevice } from './services/userData';
@@ -35,7 +37,7 @@ import ToastContainer, { pushToast } from './components/Toast';
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 import { db, isFirebaseReady } from './config/firebase';
 import { useIsMobile } from './hooks/useIsMobile';
-import { nodeLabel, snapToRoad, currentPosition, googleMapsUrl, type Place } from './utils/places';
+import { distanceMetres, nodeLabel, snapToRoad, currentPosition, googleMapsUrl, type Place } from './utils/places';
 
 const PHASE_LABEL: Record<LoadPhase, string> = {
   empty: 'Initializing...', map: 'Loading map tiles...', roads: 'Loading road network...', signals: 'Loading signals...', vehicles: 'Loading vehicles...', full: 'Live data',
@@ -546,12 +548,15 @@ function AppContent() {
     setStarting(true);
     try {
       const chosen = routeOptions[selectedRouteIndex];
-      // Phones drive with real GPS when a fix is available; otherwise the drive is simulated
+      // Phones drive with real GPS when they are at the start; otherwise the drive is simulated
+      // (a phone elsewhere would leave the car standing at the start, blocking the road)
       let mode: 'gps' | 'simulated' = 'simulated';
       if (isMobile && 'geolocation' in navigator) {
         try {
-          await currentPosition();
-          mode = 'gps';
+          const pos = await currentPosition();
+          const start = graph.nodes.get(selectedSource);
+          if (start && distanceMetres(pos, start) <= GPS_START_METRES) mode = 'gps';
+          else pushToast('You are not at the start — showing a simulated drive', 'info');
         } catch {
           pushToast('Location is off — showing a simulated drive instead', 'warning');
         }
@@ -577,7 +582,7 @@ function AppContent() {
     } finally {
       setStarting(false);
     }
-  }, [user, selectedSource, selectedDest, sourceLabel, destLabel, routeOptions, selectedRouteIndex, isMobile, role, emergencyKind]);
+  }, [user, selectedSource, selectedDest, sourceLabel, destLabel, routeOptions, selectedRouteIndex, isMobile, role, emergencyKind, graph]);
 
   /**
    * Hands this user's route to Google Maps for voice guidance. The trip is still started in

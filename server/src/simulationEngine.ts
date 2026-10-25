@@ -109,6 +109,8 @@ const CORRIDOR_SHARE = 0.3;
 const CORRIDOR_STICKINESS = 0.7;
 /** GPS points further than this from the upcoming route count as off-route. */
 const GPS_MATCH_METRES = 50;
+/** A real driver's car only takes up road space while its GPS keeps matching the route (ms) */
+const GPS_FRESH_MS = 15_000;
 /** How many upcoming route edges to search when matching GPS. */
 const GPS_LOOKAHEAD_EDGES = 12;
 /** Within this distance of the destination counts as arrived. */
@@ -348,6 +350,8 @@ interface SimVehicle {
   routeIndex: number;
   /** Real driver: position comes from GPS updates, not the simulation */
   gps?: { at: number; lat: number; lng: number };
+  /** Last GPS fix that matched the route: without a recent one the car blocks nobody */
+  gpsOnRouteAt?: number;
   /** Simulated vehicle that keeps to real users' routes */
   corridor?: boolean;
   /** Jumps reds that have just turned */
@@ -663,7 +667,11 @@ class SimulationEngine {
     for (const ix of this.usedEdges) { lanesByEdge[ix] = undefined; rearmost[ix] = undefined; }
     const used: number[] = [];
     this.usedEdges = used;
+    const now = Date.now();
     for (const sv of this.sim.values()) {
+      // A real driver's car whose phone isn't on the route (testing from home, GPS lost) is
+      // left out: otherwise it stands at the start as a parked car and traffic queues behind it
+      if (sv.gps && !(sv.gpsOnRouteAt !== undefined && now - sv.gpsOnRouteAt < GPS_FRESH_MS)) continue;
       const ix = sv.edge.ix!;
       let lanes = lanesByEdge[ix];
       if (!lanes) { lanes = []; lanesByEdge[ix] = lanes; used.push(ix); }
@@ -1799,6 +1807,7 @@ class SimulationEngine {
     }
 
     if (onRoute) {
+      sv.gpsOnRouteAt = now;
       const edge = this.index.edges.get(sv.route[best.index])!;
       // Count junction movements for every route edge passed since the last fix
       for (let k = sv.routeIndex + 1; k <= best.index; k++) {
