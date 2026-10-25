@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from 'react';
 import { downloadOfflineMap, offlineMapInfo, storageUsedMb, type OfflineProgress } from '../services/offlineMap';
 import { progressiveLoader } from '../services/progressiveLoader';
 
-const PROMPT_KEY = 'wf-offline-prompt-dismissed';
+import { OFFLINE_SKIP_KEY as PROMPT_KEY } from './OfflineSetup';
 function promptDismissed(): boolean {
   try { return localStorage.getItem(PROMPT_KEY) === '1'; } catch { return true; }
 }

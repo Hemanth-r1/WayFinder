@@ -4,7 +4,7 @@
  */
 import type { Map as MLMap, GeoJSONSource, ExpressionSpecification } from 'maplibre-gl';
 import type { FeatureCollection, Feature, Geometry } from 'geojson';
-import type { RoadGraph, TrafficSignal, Vehicle, CongestionZone } from '../types';
+import type { RoadGraph, RoadEdge, TrafficSignal, Vehicle, CongestionZone } from '../types';
 import type { RoadReport } from '../services/serverClient';
 import { REPORT_LABEL } from '../utils/reports';
 
@@ -364,9 +364,15 @@ export function addOverlayLayers(map: MLMap, opts: { showRoads: boolean }): void
       'icon-allow-overlap': true, 'icon-ignore-placement': true,
     },
   });
+  // Stop lines: where each approach waits, coloured by its light (from zoom 16)
+  map.addLayer({
+    id: 'wf-stoplines', type: 'line', source: SRC.signals, minzoom: 16, filter: ['==', ['geometry-type'], 'LineString'],
+    layout: { 'line-cap': 'butt' },
+    paint: { 'line-color': ['get', 'color'], 'line-width': ['interpolate', ['linear'], ['zoom'], 16, 2.5, 19, 7], 'line-opacity': 0.95 },
+  });
   // Zoomed out: one dot per junction (main road's light). Zoomed in: every signal head.
   map.addLayer({
-    id: LAYER.signals, type: 'circle', source: SRC.signals, minzoom: 12,
+    id: LAYER.signals, type: 'circle', source: SRC.signals, minzoom: 12, filter: ['==', ['geometry-type'], 'Point'],
     paint: {
       // Zoom must be the outer expression in MapLibre; per-feature size inside it
       'circle-radius': ['interpolate', ['linear'], ['zoom'],
@@ -503,15 +509,40 @@ export function signalColor(sig: TrafficSignal): string {
   return groupColor(sig, sig.phases.some(p => p.group === 'A') ? 'A' : 'NS');
 }
 
+/**
+ * Stop line of an approach: across its lanes, 1.5 m before the end of the road, on the left
+ * half of a two-way road (India drives on the left) or across a one-way road.
+ */
+function stopLine(edge: RoadEdge, graph: RoadGraph): LatLng[] | null {
+  const g = edge.geometry;
+  if (!g || g.length < 2) return null;
+  const p = g[g.length - 1], q = g[g.length - 2];
+  const kx = 111320 * Math.cos(p.lat * Math.PI / 180), ky = 111320;
+  const de = (p.lng - q.lng) * kx, dn = (p.lat - q.lat) * ky, len = Math.hypot(de, dn) || 1;
+  const ue = de / len, un = dn / len;          // along the road
+  const le = -un, ln = ue;                      // to its left
+  const lanes = Math.max(1, edge.lanes) * 3.2;
+  const twoWay = !edge.oneway && graph.edges.has(`${edge.to}-${edge.from}`);
+  const [a, b] = twoWay ? [0.3, lanes] : [-lanes / 2, lanes / 2];
+  const back = Math.min(1.5, len * 0.5);
+  const at = (o: number): LatLng => [p.lat + (-un * back + ln * o) / ky, p.lng + (-ue * back + le * o) / kx];
+  return [at(a), at(b)];
+}
+
 export function signalsData(signals: Map<string, TrafficSignal>, graph: RoadGraph): FC {
   const features: Feature<Geometry, Props>[] = [];
   for (const sig of signals.values()) {
     const node = graph.nodes.get(sig.nodeId) ?? (sig.lat !== undefined && sig.lng !== undefined ? { lat: sig.lat, lng: sig.lng } : null);
     if (!node) continue;
     features.push(pointFeature(node.lat, node.lng, { id: sig.id, color: signalColor(sig), head: false }));
-    // One head per approach, in that approach's colour
+    // One head per approach (across the junction, facing it) and a stop line across the
+    // approach's lanes, both in that approach's colour
     for (const arm of sig.arms ?? []) {
-      features.push(pointFeature(arm.lat, arm.lng, { id: sig.id, color: groupColor(sig, arm.group), head: true }));
+      const color = groupColor(sig, arm.group);
+      features.push(pointFeature(arm.lat, arm.lng, { id: sig.id, color, head: true }));
+      const edge = graph.edges.get(arm.edgeId);
+      const line = edge && stopLine(edge, graph);
+      if (line) features.push(lineFeature(line, { id: sig.id, color, stop: true }));
     }
   }
   return fc(features);

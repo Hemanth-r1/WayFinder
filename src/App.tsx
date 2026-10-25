@@ -4,6 +4,7 @@ import { useAuth } from './context/useAuth';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { LoadingOverlay } from './components/LoadingSpinner';
 import LoginScreen from './components/LoginScreen';
+import OfflineSetup, { needsOfflineSetup } from './components/OfflineSetup';
 import MapView from './components/MapView';
 import RoleSelector from './components/RoleSelector';
 import UserPanel, { type RecentTrip } from './roles/UserPanel';
@@ -31,6 +32,7 @@ const PHASE_LABEL: Record<LoadPhase, string> = {
 };
 
 function AppContent() {
+  const [offlineSetup, setOfflineSetup] = useState(needsOfflineSetup);
   const { user, role, loading: authLoading } = useAuth();
 
   // Every API call identifies the caller: a Firebase ID token, or the demo identity.
@@ -523,6 +525,8 @@ function AppContent() {
 
   if (authLoading) return <LoadingOverlay message="Loading..." />;
   if (!user) return <LoginScreen />;
+  // First launch on this device: download the city first (like a game after install)
+  if (offlineSetup) return <OfflineSetup onDone={() => setOfflineSetup(false)} />;
 
   const hideSidebar = isMobile && navigatedVehicle;
   const conditionBadges: string[] = [];
@@ -609,6 +613,15 @@ function AppContent() {
               onOpenGoogleMaps={handleOpenGoogleMaps}
             />
           )}
+          {/* Police view first: junction control console */}
+          {role !== 'user' && (
+            <JunctionPanel
+              canControl={role === 'controller'}
+              selectedId={selectedJunction}
+              onSelect={setSelectedJunction}
+              onFocus={(lat, lng) => setMapFocus({ lat, lng, zoom: 17, key: Date.now() })}
+            />
+          )}
           <OfflineCard online={online} />
           {/* Operators set city-wide conditions and review driver reports */}
           {role !== 'user' && (
@@ -626,15 +639,6 @@ function AppContent() {
             <SupporterPanel
               graph={graph}
               signals={signals}
-            />
-          )}
-          {/* Police view: junctions by ID; controllers can try changes in the simulation */}
-          {role !== 'user' && (
-            <JunctionPanel
-              canControl={role === 'controller'}
-              selectedId={selectedJunction}
-              onSelect={setSelectedJunction}
-              onFocus={(lat, lng) => setMapFocus({ lat, lng, zoom: 17, key: Date.now() })}
             />
           )}
         </div>

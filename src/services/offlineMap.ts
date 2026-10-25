@@ -107,7 +107,8 @@ export async function downloadOfflineMap(onProgress: (p: OfflineProgress) => voi
   };
   await Promise.all(Array.from({ length: PARALLEL }, worker));
   onProgress({ ...p });
-  localStorage.setItem('wf-offline-map', JSON.stringify({ at: Date.now(), total: p.total, failed: p.failed }));
+  // Only a finished download counts (stopping halfway resumes next time)
+  if (!signal?.aborted) localStorage.setItem('wf-offline-map', JSON.stringify({ at: Date.now(), total: p.total, failed: p.failed }));
   return p;
 }
 
