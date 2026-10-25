@@ -28,6 +28,10 @@ const CELL_MIN_ZOOM = 13;
 /** Extra margin around the view, so roads just off screen are there when you pan. */
 const VIEW_MARGIN = 0.1;
 const MAX_CELLS = 40;
+/** If the server hasn't sent the roads by then, open from the copy saved on this device. */
+const SLOW_START_MS = 3000;
+/** Retries (every 5 s) while waiting for a sleeping or unreachable server. */
+const ONLINE_RETRIES = 24;
 
 export type LoadPhase = 'empty' | 'map' | 'roads' | 'signals' | 'vehicles' | 'full';
 
@@ -108,36 +112,75 @@ export class ProgressiveLoader {
     return serverClient.fetchRoads(path) as Promise<T>;
   }
 
-  async load(): Promise<void> {
-    this.notify({ phase: 'map', source: 'tiles' });
-    dataCache.remove('graph'); // drop graphs cached by older versions (could be the demo grid)
-    try {
-      const meta = await this.getJson<{ version: string; source: string }>('/api/roads/meta');
-      this.version = meta.version;
-      this.source = meta.source;
-      const [signals, main] = await Promise.all([
-        this.getJson<TrafficSignal[]>(`/api/roads/${this.version}/signals`),
-        this.getJson<RawRoads>(`/api/roads/${this.version}/main`),
-      ]);
-      this.signals = new Map(signals.map(s => [s.id, { ...s, approaches: s.approaches ?? [] }]));
-      this.merge(main);
-    } catch (err) {
-      // Server unreachable: the full network saved for offline use, if any
-      const saved = await loadFromIndexedDB<RawGraphData>(GRAPH_KEY).catch(() => null);
-      if (!saved || saved.data.format !== 2) {
-        console.error('[ProgressiveLoader] Failed to load roads:', err);
-        this.notify({ phase: 'full', source: 'error', graph: this.graph, signals: this.signals });
-        return;
-      }
-      console.warn('[ProgressiveLoader] Server unreachable — using the road network saved on this device');
-      this.merge(saved.data);
-      this.signals = new Map(saved.data.signals.map(s => [s.id, { ...s, approaches: s.approaches ?? [] }]));
-      this.source = `${saved.data.source} (saved ${new Date(saved.timestamp).toLocaleDateString()})`;
-    }
+  /** Roads from the server: version, signals and main roads. Resolves once all have arrived. */
+  private async loadOnline(): Promise<{ version: string; source: string; signals: TrafficSignal[]; main: RawRoads }> {
+    const meta = await this.getJson<{ version: string; source: string }>('/api/roads/meta');
+    const [signals, main] = await Promise.all([
+      this.getJson<TrafficSignal[]>(`/api/roads/${meta.version}/signals`),
+      this.getJson<RawRoads>(`/api/roads/${meta.version}/main`),
+    ]);
+    return { ...meta, signals, main };
+  }
+
+  /** The full network saved on this device (offline download), if any. */
+  private async loadSaved(): Promise<boolean> {
+    const saved = await loadFromIndexedDB<RawGraphData>(GRAPH_KEY).catch(() => null);
+    if (!saved || saved.data.format !== 2) return false;
+    this.merge(saved.data);
+    this.signals = new Map(saved.data.signals.map(s => [s.id, { ...s, approaches: s.approaches ?? [] }]));
+    this.source = `${saved.data.source} (saved on this device)`;
+    return true;
+  }
+
+  private ready(): void {
     this.notify({ phase: 'roads', source: this.source, graph: this.graph, signals: this.signals });
     this.notify({ phase: 'signals', source: this.source, signals: this.signals });
     this.notify({ phase: 'full', source: this.source });
     if (this.view) this.loadView(this.view.bbox, this.view.zoom);
+  }
+
+  /**
+   * Starts from the server; if it hasn't answered within SLOW_START_MS (it sleeps when
+   * nobody uses it and takes a while to wake) or can't be reached, opens from the copy
+   * saved on this device and switches to the server's roads and live data once it answers.
+   */
+  async load(): Promise<void> {
+    this.notify({ phase: 'map', source: 'tiles' });
+    dataCache.remove('graph'); // drop graphs cached by older versions (could be the demo grid)
+    let online = this.loadOnline();
+    const first = await Promise.race([
+      online.then(() => 'online' as const, () => 'failed' as const),
+      new Promise<'slow'>(r => setTimeout(() => r('slow'), SLOW_START_MS)),
+    ]);
+    let fromDevice = false;
+    if (first !== 'online') {
+      fromDevice = await this.loadSaved();
+      if (fromDevice) {
+        console.warn(`[ProgressiveLoader] Server ${first === 'slow' ? 'slow to answer (waking up?)' : 'unreachable'} — opened from the map saved on this device`);
+        this.source += ' — live traffic starting…';
+        this.ready();
+      }
+    }
+    // Keep trying the server; switch to its roads and live data when it answers
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const r = await online;
+        this.version = r.version;
+        this.source = r.source;
+        this.signals = new Map(r.signals.map(s => [s.id, { ...s, approaches: s.approaches ?? [] }]));
+        this.merge(r.main);
+        this.ready();
+        return;
+      } catch (err) {
+        if (!fromDevice && attempt === 0) {
+          console.error('[ProgressiveLoader] Failed to load roads:', err);
+          this.notify({ phase: 'full', source: 'error', graph: this.graph, signals: this.signals });
+        }
+        if (attempt >= ONLINE_RETRIES) return;
+        await new Promise(r => setTimeout(r, 5000));
+        online = this.loadOnline();
+      }
+    }
   }
 
   /** Loads the road cells covering the view plus a 10% margin (zoomed in only). */
