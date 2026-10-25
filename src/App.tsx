@@ -14,6 +14,7 @@ import JunctionPanel from './roles/JunctionPanel';
 import EmergencyPanel from './roles/EmergencyPanel';
 import AdminPanel from './roles/AdminPanel';
 import AboutCompany from './components/AboutCompany';
+import ThemeToggle from './components/ThemeToggle';
 import { BrandLockup } from './components/BrandMark';
 import { BRAND } from './brand';
 import { isDriver, canControl } from './types/roles';
@@ -643,16 +644,16 @@ function AppContent() {
       <div style={{
         display: hideSidebar ? 'none' : 'flex', flexDirection: 'column',
         ...(isMobile
-          ? { width: '100%', maxHeight: '52%', borderTop: '1px solid #222', borderRadius: '14px 14px 0 0' }
-          : { width: 340, minWidth: 340, height: '100%', borderRight: '1px solid #222' }),
-        background: 'rgba(8,8,18,0.99)', zIndex: 1001,
+          ? { width: '100%', maxHeight: '52%', borderTop: '1px solid var(--wf-border)', borderRadius: '14px 14px 0 0' }
+          : { width: 340, minWidth: 340, height: '100%', borderRight: '1px solid var(--wf-border)' }),
+        background: 'var(--wf-panel)', zIndex: 1001,
         fontFamily: 'inherit',
       }}>
         {/* Header */}
         <div style={{
-          padding: isMobile ? '8px 14px' : '10px 14px', borderBottom: '1px solid #222',
+          padding: isMobile ? '8px 14px' : '10px 14px', borderBottom: '1px solid var(--wf-border)',
           display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8,
-          background: 'rgba(10,10,13,0.97)', borderRadius: isMobile ? '14px 14px 0 0' : 0,
+          background: 'var(--wf-panel)', borderRadius: isMobile ? '14px 14px 0 0' : 0,
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
             <button onClick={() => setShowAbout(true)} title="About WayFinder and TUFF Foundation" style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}>
@@ -662,13 +663,16 @@ function AppContent() {
               <span style={{ fontSize: 10, color: '#FF9800' }}>{PHASE_LABEL[loadingPhase]}</span>
             )}
           </div>
-          <RoleSelector />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <ThemeToggle />
+            <RoleSelector />
+          </div>
         </div>
 
         {/* Announcement from the admins */}
         {announcement && (
           <div role="status" style={{
-            padding: '8px 14px', fontSize: 12, lineHeight: 1.45, borderBottom: '1px solid #222',
+            padding: '8px 14px', fontSize: 12, lineHeight: 1.45, borderBottom: '1px solid var(--wf-border)',
             color: announcement.level === 'warning' ? '#fbbf24' : '#2fe4cc',
             background: announcement.level === 'warning' ? '#fbbf2414' : '#2fe4cc12',
           }}>
@@ -677,7 +681,7 @@ function AppContent() {
         )}
         {loadingPhase === 'full' && conditionBadges.length > 0 && (
           <div title="Current road conditions" style={{
-            padding: '6px 14px', fontSize: 12, color: '#64B5F6', background: '#64B5F60d', borderBottom: '1px solid #222',
+            padding: '6px 14px', fontSize: 12, color: '#64B5F6', background: '#64B5F60d', borderBottom: '1px solid var(--wf-border)',
           }}>
             {conditionBadges.join(' · ')}
           </div>
@@ -760,7 +764,7 @@ function AppContent() {
           )}
           {role === 'admin' && user && <AdminPanel myUid={user.uid} />}
           {/* Company info */}
-          <div style={{ padding: '14px', borderTop: '1px solid #1a1a22', fontSize: 11, color: '#7a95b0', lineHeight: 1.6 }}>
+          <div style={{ padding: '14px', borderTop: '1px solid var(--wf-border-soft)', fontSize: 11, color: '#7a95b0', lineHeight: 1.6 }}>
             <button onClick={() => setShowAbout(true)} style={{ background: 'none', border: 'none', padding: 0, color: '#2fe4cc', cursor: 'pointer', fontSize: 11 }}>About WayFinder</button>
             {' · '}A {BRAND.parent.name} company{' · '}
             <a href={BRAND.companies[1].url} target="_blank" rel="noopener" style={{ color: '#7a95b0' }}>{BRAND.companies[1].name}</a>
@@ -776,16 +780,16 @@ function AppContent() {
 
         {/* Footer: operator tools (hidden for drivers) */}
         {!simpleView && (
-          <div style={{ padding: '8px 14px', borderTop: '1px solid #0a0a0d', background: 'rgba(10,10,13,0.97)' }}>
+          <div style={{ padding: '8px 14px', borderTop: '1px solid var(--wf-bg)', background: 'var(--wf-panel)' }}>
             <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
               <button onClick={handleRefresh} style={{ flex: 1, padding: '9px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 'bold' }}>
                 🔄 Refresh
               </button>
-              <button onClick={() => setShowHeatmap(p => !p)} style={{ flex: 1, padding: '9px', background: showHeatmap ? 'rgba(68,136,255,0.25)' : '#222', color: '#fff', border: `1px solid ${showHeatmap ? '#4f8ef7' : '#444'}`, borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 'bold' }}>
+              <button onClick={() => setShowHeatmap(p => !p)} style={{ flex: 1, padding: '9px', background: showHeatmap ? 'rgba(68,136,255,0.25)' : 'var(--wf-border)', color: 'var(--wf-text-strong)', border: `1px solid ${showHeatmap ? '#4f8ef7' : 'var(--wf-border)'}`, borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 'bold' }}>
                 🔥 Heatmap
               </button>
             </div>
-            <div style={{ fontSize: 10, color: '#555', textAlign: 'center', fontFamily: 'monospace' }}>
+            <div style={{ fontSize: 10, color: 'var(--wf-soft)', textAlign: 'center', fontFamily: 'monospace' }}>
               {vehicles.size}v · {signals.size}s · {graph.nodes.size}n
             </div>
             <div style={{ fontSize: 10, textAlign: 'center', fontFamily: 'monospace', marginTop: 2 }}>

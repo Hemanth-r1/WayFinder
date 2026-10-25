@@ -58,8 +58,8 @@ export default function PlaceInput({
   return (
     <div style={{ position: 'relative' }}>
       <div style={{
-        display: 'flex', alignItems: 'center', gap: 8, background: '#0a0a0d',
-        border: `1px solid ${editing ? '#4f8ef7' : '#26262e'}`, borderRadius: 8, padding: '0 10px', height: 44,
+        display: 'flex', alignItems: 'center', gap: 8, background: 'var(--wf-bg)',
+        border: `1px solid ${editing ? '#4f8ef7' : 'var(--wf-border)'}`, borderRadius: 8, padding: '0 10px', height: 44,
       }}>
         <span style={{ color: dotColor, fontSize: 14 }}>●</span>
         <input
@@ -78,7 +78,7 @@ export default function PlaceInput({
           }}
           style={{
             flex: 1, minWidth: 0, background: 'transparent', border: 'none', outline: 'none',
-            color: showValue ? '#fff' : '#ccc', fontSize: 14,
+            color: showValue ? 'var(--wf-text-strong)' : 'var(--wf-text-2)', fontSize: 14,
           }}
         />
         {onUseLocation && !value && (
@@ -100,7 +100,7 @@ export default function PlaceInput({
             title="Clear"
             aria-label="Clear"
             style={{
-              background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: 16, padding: 0,
+              background: 'none', border: 'none', color: 'var(--wf-muted)', cursor: 'pointer', fontSize: 16, padding: 0,
               width: 32, height: 32, marginRight: -6, display: 'flex', alignItems: 'center', justifyContent: 'center',
             }}
           >✕</button>
@@ -110,7 +110,7 @@ export default function PlaceInput({
       {editing && (results.length > 0 || searching) && (
         <div style={{
           position: 'absolute', top: 48, left: 0, right: 0, zIndex: 3000,
-          background: '#141426', border: '1px solid #333', borderRadius: 8,
+          background: '#141426', border: '1px solid var(--wf-border)', borderRadius: 8,
           boxShadow: '0 8px 24px rgba(0,0,0,0.6)', maxHeight: '40vh', overflowY: 'auto',
         }}>
           {results.map((r, i) => (
@@ -119,15 +119,15 @@ export default function PlaceInput({
               onMouseDown={e => { e.preventDefault(); pick(r); }}
               onMouseEnter={() => setActive(i)}
               style={{
-                padding: '9px 12px', cursor: 'pointer', borderBottom: '1px solid #222',
+                padding: '9px 12px', cursor: 'pointer', borderBottom: '1px solid var(--wf-border)',
                 background: i === active ? '#4488FF22' : 'transparent',
               }}
             >
-              <div style={{ fontSize: 13, color: '#fff' }}>{r.source === 'road' ? '🛣️ ' : '📍 '}{r.label}</div>
-              {r.detail && <div style={{ fontSize: 11, color: '#777', marginTop: 1 }}>{r.detail}</div>}
+              <div style={{ fontSize: 13, color: 'var(--wf-text-strong)' }}>{r.source === 'road' ? '🛣️ ' : '📍 '}{r.label}</div>
+              {r.detail && <div style={{ fontSize: 11, color: 'var(--wf-soft)', marginTop: 1 }}>{r.detail}</div>}
             </div>
           ))}
-          {searching && <div style={{ padding: '8px 12px', fontSize: 11, color: '#777' }}>Searching…</div>}
+          {searching && <div style={{ padding: '8px 12px', fontSize: 11, color: 'var(--wf-soft)' }}>Searching…</div>}
         </div>
       )}
     </div>

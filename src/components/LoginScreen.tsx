@@ -7,6 +7,7 @@ import { useAuth } from '../context/useAuth';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { BRAND, COLORS, FONTS } from '../brand';
 import { BrandLockup } from './BrandMark';
+import ThemeToggle from './ThemeToggle';
 
 const POINTS = [
   ['🚦', 'Signals that adapt to live traffic, and police control with green waves'],
@@ -43,6 +44,7 @@ export default function LoginScreen() {
       background: `radial-gradient(1200px 600px at 15% 10%, ${COLORS.teal}14, transparent 60%), radial-gradient(900px 500px at 90% 90%, ${COLORS.amber}10, transparent 60%), ${COLORS.bgDeep}`,
       display: 'flex', alignItems: isMobile ? 'flex-start' : 'center', justifyContent: 'center', padding: isMobile ? '28px 16px' : 32,
     }}>
+      <div style={{ position: 'fixed', top: 14, right: 14 }}><ThemeToggle /></div>
       <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: isMobile ? 24 : 48, alignItems: isMobile ? 'stretch' : 'center', maxWidth: 940, width: '100%' }}>
         {/* Brand */}
         <div style={{ flex: 1, minWidth: 0 }}>
@@ -62,14 +64,14 @@ export default function LoginScreen() {
           ))}
           <div style={{ marginTop: 22, fontSize: 12, color: COLORS.textSoft, lineHeight: 1.6 }}>
             A {BRAND.parent.name} company · Sister company:{' '}
-            <a href={BRAND.companies[1].url} target="_blank" rel="noopener" style={{ color: COLORS.teal, textDecoration: 'none' }}>{BRAND.companies[1].name}</a>
+            <a href={BRAND.companies[1].url} target="_blank" rel="noopener" style={{ color: COLORS.link, textDecoration: 'none' }}>{BRAND.companies[1].name}</a>
           </div>
         </div>
 
         {/* Form */}
         <div style={{
-          width: isMobile ? '100%' : 380, flexShrink: 0, background: 'rgba(10,10,13,0.86)', border: `1px solid ${COLORS.border}`,
-          borderRadius: 18, padding: isMobile ? 22 : 30, boxShadow: '0 20px 60px rgba(0,0,0,0.55)', backdropFilter: 'blur(10px)',
+          width: isMobile ? '100%' : 380, flexShrink: 0, background: 'var(--wf-panel)', border: `1px solid ${COLORS.border}`,
+          borderRadius: 18, padding: isMobile ? 22 : 30, boxShadow: '0 20px 60px var(--wf-shadow)', backdropFilter: 'blur(10px)',
         }}>
           <h2 style={{ fontFamily: FONTS.display, fontSize: 20, fontWeight: 700, color: COLORS.text, margin: '0 0 4px' }}>
             {isLogin ? 'Welcome back' : 'Create your account'}
@@ -117,6 +119,6 @@ const s: Record<string, CSSProperties> = {
     width: '100%', marginTop: 10, padding: '10px', background: 'transparent', color: COLORS.amber, border: `1px solid ${COLORS.amber}66`,
     borderRadius: 999, cursor: 'pointer', fontSize: 13, fontWeight: 600,
   },
-  link: { display: 'block', margin: '16px auto 0', background: 'none', border: 'none', color: COLORS.teal, cursor: 'pointer', fontSize: 13 },
+  link: { display: 'block', margin: '16px auto 0', background: 'none', border: 'none', color: COLORS.link, cursor: 'pointer', fontSize: 13 },
   note: { border: '1px solid', borderRadius: 10, padding: '8px 12px', marginBottom: 12, fontSize: 12 },
 };

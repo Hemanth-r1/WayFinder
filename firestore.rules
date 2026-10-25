@@ -42,7 +42,7 @@ service cloud.firestore {
       allow read: if signedIn();
       allow write: if signedIn() && roleOf(request.auth.uid) in ['controller', 'admin'];
     }
-    // Everything else (server `commands`, `junctionCounts`, `signalControlLog`, `junctionRules`,
+    // Everything else (server `commands`, `junctionCountBins`, `signalControlLog`, `junctionRules`,
     // `tripRoutes`, `userFiles`, `adminLog`, `appSettings`) is Admin SDK only.
   }
 }

@@ -112,14 +112,14 @@ export default function UserPanel(p: Props) {
           disabled={!p.sourceLabel && !p.destLabel}
           title="Swap origin and destination"
           style={{
-            width: 34, height: 34, borderRadius: 17, border: '1px solid #333', background: '#0a0a0d',
-            color: '#aaa', cursor: 'pointer', fontSize: 16, flexShrink: 0,
+            width: 34, height: 34, borderRadius: 17, border: '1px solid var(--wf-border)', background: 'var(--wf-bg)',
+            color: 'var(--wf-muted)', cursor: 'pointer', fontSize: 16, flexShrink: 0,
           }}
         >⇅</button>
       </div>
 
       {!hasTrip && (
-        <div style={{ fontSize: 12, color: '#666', marginTop: 12, lineHeight: 1.5 }}>
+        <div style={{ fontSize: 12, color: 'var(--wf-soft)', marginTop: 12, lineHeight: 1.5 }}>
           Search for a road or place, use your location, or tap a road on the map.
         </div>
       )}
@@ -134,18 +134,18 @@ export default function UserPanel(p: Props) {
               <button key={r.edgeIds.join()} onClick={() => p.onSelectRoute(i)} style={{
                 ...styles.option,
                 background: isSel ? '#4488FF1f' : '#ffffff06',
-                border: `1px solid ${isSel ? '#4f8ef7' : '#26262e'}`,
+                border: `1px solid ${isSel ? '#4f8ef7' : 'var(--wf-border)'}`,
               }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                  <span style={{ fontSize: 18, fontWeight: 'bold', color: i === 0 ? '#4CAF50' : '#fff' }}>
+                  <span style={{ fontSize: 18, fontWeight: 'bold', color: i === 0 ? '#4CAF50' : 'var(--wf-text-strong)' }}>
                     {formatMinutes(r.estimatedTime)}
                   </span>
-                  <span style={{ fontSize: 12, color: '#999' }}>{(r.distance / 1000).toFixed(1)} km</span>
+                  <span style={{ fontSize: 12, color: 'var(--wf-muted)' }}>{(r.distance / 1000).toFixed(1)} km</span>
                 </div>
-                <div style={{ fontSize: 12, color: '#bbb', marginTop: 2 }}>
+                <div style={{ fontSize: 12, color: 'var(--wf-text-2)', marginTop: 2 }}>
                   {r.roadNames.length > 0 ? `via ${distinctRoads(p.routeOptions, i).slice(0, 2).join(', ')}` : 'via local roads'}
                 </div>
-                <div style={{ fontSize: 11, color: '#777', marginTop: 2 }}>
+                <div style={{ fontSize: 11, color: 'var(--wf-soft)', marginTop: 2 }}>
                   {i === 0 ? 'Best route for you' : 'Alternative'} · {r.signalCount} signal{r.signalCount === 1 ? '' : 's'}
                   {r.sharedUsers > 0 && <span style={{ color: '#FF9800' }}> · busier with other drivers</span>}
                 </div>
@@ -156,15 +156,15 @@ export default function UserPanel(p: Props) {
           {selected && (
             <>
               {/* Start stays in reach on small screens where the option list scrolls */}
-              <div style={{ position: 'sticky', bottom: 0, background: 'rgba(8,8,18,0.99)', paddingBottom: 8 }}>
+              <div style={{ position: 'sticky', bottom: 0, background: 'var(--wf-panel)', paddingBottom: 8 }}>
                 {p.onEmergencyKind && (
                   <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', margin: '4px 0 8px' }}>
                     {EMERGENCY_CHOICES.map(c => (
                       <button key={c.label} onClick={() => p.onEmergencyKind!(c.kind)} style={{
                         flex: 1, minWidth: 0, padding: '7px 4px', fontSize: 12, borderRadius: 8, cursor: 'pointer', whiteSpace: 'nowrap',
-                        background: p.emergencyKind === c.kind ? (c.kind ? '#FF174433' : '#4488FF33') : '#0a0a0d',
-                        color: p.emergencyKind === c.kind ? '#fff' : '#aaa',
-                        border: `1px solid ${p.emergencyKind === c.kind ? (c.kind ? '#FF1744' : '#4f8ef7') : '#26262e'}`,
+                        background: p.emergencyKind === c.kind ? (c.kind ? '#FF174433' : '#4488FF33') : 'var(--wf-bg)',
+                        color: p.emergencyKind === c.kind ? 'var(--wf-text-strong)' : 'var(--wf-muted)',
+                        border: `1px solid ${p.emergencyKind === c.kind ? (c.kind ? '#FF1744' : '#4f8ef7') : 'var(--wf-border)'}`,
                       }}>{c.label}</button>
                     ))}
                   </div>
@@ -189,9 +189,9 @@ export default function UserPanel(p: Props) {
         <div style={{ marginTop: 18 }}>
           <div style={styles.sectionTitle}>Recent</div>
           {recent.map(t => (
-            <button key={t.id} onClick={() => p.onPickRecent(t)} style={{ ...styles.option, background: 'transparent', border: 'none', borderBottom: '1px solid #222', borderRadius: 0 }}>
-              <div style={{ fontSize: 13, color: '#ddd' }}>{t.destName}</div>
-              <div style={{ fontSize: 11, color: '#777' }}>from {t.sourceName}</div>
+            <button key={t.id} onClick={() => p.onPickRecent(t)} style={{ ...styles.option, background: 'transparent', border: 'none', borderBottom: '1px solid var(--wf-border)', borderRadius: 0 }}>
+              <div style={{ fontSize: 13, color: 'var(--wf-text-2)' }}>{t.destName}</div>
+              <div style={{ fontSize: 11, color: 'var(--wf-soft)' }}>from {t.sourceName}</div>
             </button>
           ))}
         </div>
@@ -201,11 +201,11 @@ export default function UserPanel(p: Props) {
 }
 
 const styles: Record<string, CSSProperties> = {
-  muted: { fontSize: 12, color: '#888' },
-  sectionTitle: { fontSize: 11, color: '#777', textTransform: 'uppercase', marginBottom: 6, fontWeight: 'bold', letterSpacing: 0.5 },
+  muted: { fontSize: 12, color: 'var(--wf-muted)' },
+  sectionTitle: { fontSize: 11, color: 'var(--wf-soft)', textTransform: 'uppercase', marginBottom: 6, fontWeight: 'bold', letterSpacing: 0.5 },
   option: {
     display: 'block', width: '100%', textAlign: 'left', marginBottom: 8, padding: '10px 12px',
-    color: '#ccc', cursor: 'pointer', borderRadius: 8,
+    color: 'var(--wf-text-2)', cursor: 'pointer', borderRadius: 8,
   },
   primary: {
     width: '100%', height: 46, marginTop: 4, background: '#4f8ef7', color: '#fff', border: 'none',

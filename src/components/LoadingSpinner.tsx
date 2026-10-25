@@ -37,8 +37,8 @@ export function LoadingSpinner({
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    background: '#000000',
-    color: '#fff',
+    background: 'var(--wf-bg-deep)',
+    color: 'var(--wf-text-strong)',
     fontFamily: 'inherit',
     flexDirection: 'column' as const,
     gap: 16,
@@ -57,7 +57,7 @@ export function LoadingSpinner({
         <div style={{
           fontSize: dimensions.fontSize,
           fontWeight: 'bold',
-          color: '#fff',
+          color: 'var(--wf-text-strong)',
           textAlign: 'center' as const,
         }}>
           {text}
@@ -87,12 +87,12 @@ export function LoadingOverlay({ message = 'Initializing simulation...' }: { mes
       alignItems: 'center',
       justifyContent: 'center',
       gap: 20,
-      color: '#fff',
+      color: 'var(--wf-text-strong)',
       fontFamily: 'inherit',
     }}>
       <BrandLockup size={44} />
       <LoadingSpinner size="large" color="#2fe4cc" text="" />
-      <div style={{ fontSize: 14, color: '#888', textAlign: 'center' }}>{message}</div>
+      <div style={{ fontSize: 14, color: 'var(--wf-muted)', textAlign: 'center' }}>{message}</div>
     </div>
   );
 }

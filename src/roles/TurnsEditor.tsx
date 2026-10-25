@@ -38,7 +38,7 @@ export default function TurnsEditor({ junctionId, canControl, groupOf, onSaved }
   }, [junctionId]);
 
   if (error && !view) return <div style={{ color: '#F44336', fontSize: 11 }}>{error}</div>;
-  if (!view) return <div style={{ color: '#666', fontSize: 11 }}>Loading turns…</div>;
+  if (!view) return <div style={{ color: 'var(--wf-soft)', fontSize: 11 }}>Loading turns…</div>;
 
   const rule = (edgeId: string) => rules.find(r => r.edgeId === edgeId)!;
   const toggleAllowed = (edgeId: string, t: Turn) => setRules(rs => rs.map(r => r.edgeId !== edgeId ? r
@@ -103,7 +103,7 @@ export default function TurnsEditor({ junctionId, canControl, groupOf, onSaved }
       <div style={s.head}>Allowed turns</div>
       {view.approaches.map(a => (
         <div key={a.edgeId} style={s.row}>
-          <div style={{ color: '#ddd', fontSize: 11 }}>{a.road} <span style={{ color: '#777' }}>from the {a.from} · {a.lanes} lanes</span></div>
+          <div style={{ color: 'var(--wf-text-2)', fontSize: 11 }}>{a.road} <span style={{ color: 'var(--wf-soft)' }}>from the {a.from} · {a.lanes} lanes</span></div>
           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 3, alignItems: 'center' }}>
             {a.moves.map(m => {
               const on = rule(a.edgeId).allowed.includes(m.turn);
@@ -115,7 +115,7 @@ export default function TurnsEditor({ junctionId, canControl, groupOf, onSaved }
               );
             })}
             {a.moves.some(m => m.turn === 'left') && rule(a.edgeId).allowed.includes('left') && (
-              <label style={{ fontSize: 10, color: '#aaa', display: 'flex', gap: 3, alignItems: 'center', marginLeft: 4 }}>
+              <label style={{ fontSize: 10, color: 'var(--wf-muted)', display: 'flex', gap: 3, alignItems: 'center', marginLeft: 4 }}>
                 <input type="checkbox" disabled={!canControl} checked={rule(a.edgeId).freeLeft} onChange={e => setFree(a.edgeId, e.target.checked)} /> free left
               </label>
             )}
@@ -130,7 +130,7 @@ export default function TurnsEditor({ junctionId, canControl, groupOf, onSaved }
         <button disabled={!canControl} onClick={presetSplit} style={s.pill}>One road at a time</button>
       </div>
       {phases === null ? (
-        <div style={{ color: '#888', fontSize: 11 }}>
+        <div style={{ color: 'var(--wf-muted)', fontSize: 11 }}>
           Main road, then cross road: {view.defaultGreens.map(g => `${g.group} ${g.green}s`).join(', ')}. Every allowed turn goes on its road's green (right turns give way).
         </div>
       ) : (
@@ -138,7 +138,7 @@ export default function TurnsEditor({ junctionId, canControl, groupOf, onSaved }
           {phases.map((p, i) => (
             <div key={i} style={s.phase}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ color: '#fff', fontSize: 12, fontWeight: 700 }}>Phase {i + 1}</span>
+                <span style={{ color: 'var(--wf-text-strong)', fontSize: 12, fontWeight: 700 }}>Phase {i + 1}</span>
                 <input type="range" min={5} max={120} step={1} value={p.green} disabled={!canControl}
                   onChange={e => setPhase(i, { ...p, green: Number(e.target.value) })} style={{ flex: 1 }} />
                 <span style={{ fontFamily: 'monospace', color: '#81C784', fontSize: 11, width: 34, textAlign: 'right' }}>{p.green}s</span>
@@ -154,7 +154,7 @@ export default function TurnsEditor({ junctionId, canControl, groupOf, onSaved }
                 const cur = p.moves.find(m => m.edgeId === a.edgeId)?.turns ?? [];
                 return (
                   <div key={a.edgeId} style={{ display: 'flex', gap: 4, alignItems: 'center', marginTop: 3 }}>
-                    <span style={{ flex: 1, minWidth: 0, fontSize: 10, color: cur.length ? '#ddd' : '#666', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.road} · {a.from}</span>
+                    <span style={{ flex: 1, minWidth: 0, fontSize: 10, color: cur.length ? 'var(--wf-text-2)' : 'var(--wf-soft)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.road} · {a.from}</span>
                     {turns.map(t => (
                       <button key={t} disabled={!canControl} onClick={() => toggleMove(i, a.edgeId, t)} title={WORD[t]}
                         style={{ ...s.turnSmall, ...(cur.includes(t) ? s.goOn : s.idle) }}>{ARROW[t]}</button>
@@ -167,7 +167,7 @@ export default function TurnsEditor({ junctionId, canControl, groupOf, onSaved }
           {canControl && phases.length < 8 && (
             <button onClick={() => setPhases(ps => [...ps!, { green: 20, moves: [] }])} style={{ ...s.pill, marginTop: 4 }}>+ Add phase</button>
           )}
-          <div style={{ color: '#888', fontSize: 10, marginTop: 4 }}>Greens {cycle}s + amber and all-red after each phase. Free lefts never wait.</div>
+          <div style={{ color: 'var(--wf-muted)', fontSize: 10, marginTop: 4 }}>Greens {cycle}s + amber and all-red after each phase. Free lefts never wait.</div>
         </>
       )}
 
@@ -180,24 +180,24 @@ export default function TurnsEditor({ junctionId, canControl, groupOf, onSaved }
           <button disabled={busy} onClick={save} style={{ ...s.button, background: '#2E7D32', flex: 1 }}>Save turns{phases ? ' & phases' : ''}</button>
           <button disabled={busy} onClick={clear} style={{ ...s.button, background: '#37474F' }}>All open</button>
         </div>
-      ) : <div style={{ color: '#777', fontSize: 10, marginTop: 6 }}>View only — controllers can change turns.</div>}
-      {view.by && <div style={{ color: '#666', fontSize: 10, marginTop: 4 }}>Set by {view.by} · {new Date(view.at!).toLocaleString()}</div>}
+      ) : <div style={{ color: 'var(--wf-soft)', fontSize: 10, marginTop: 6 }}>View only — controllers can change turns.</div>}
+      {view.by && <div style={{ color: 'var(--wf-soft)', fontSize: 10, marginTop: 4 }}>Set by {view.by} · {new Date(view.at!).toLocaleString()}</div>}
     </div>
   );
 }
 
 const s: Record<string, CSSProperties> = {
-  head: { fontSize: 10, color: '#888', textTransform: 'uppercase', letterSpacing: 1, margin: '8px 0 4px', fontWeight: 600 },
-  row: { padding: '4px 0', borderBottom: '1px solid #0a0a0d' },
+  head: { fontSize: 10, color: 'var(--wf-muted)', textTransform: 'uppercase', letterSpacing: 1, margin: '8px 0 4px', fontWeight: 600 },
+  row: { padding: '4px 0', borderBottom: '1px solid var(--wf-bg)' },
   turn: { padding: '4px 7px', fontSize: 11, borderRadius: 6, cursor: 'pointer', minHeight: 30 },
   turnSmall: { width: 30, height: 28, fontSize: 13, borderRadius: 6, cursor: 'pointer', padding: 0 },
-  turnOn: { background: '#1565C033', color: '#fff', border: '1px solid #4f8ef7' },
-  turnOff: { background: '#0a0a0d', color: '#666', border: '1px solid #26262e', textDecoration: 'line-through' },
-  idle: { background: '#0a0a0d', color: '#777', border: '1px solid #26262e' },
+  turnOn: { background: '#1565C033', color: 'var(--wf-text-strong)', border: '1px solid #4f8ef7' },
+  turnOff: { background: 'var(--wf-bg)', color: 'var(--wf-soft)', border: '1px solid var(--wf-border)', textDecoration: 'line-through' },
+  idle: { background: 'var(--wf-bg)', color: 'var(--wf-soft)', border: '1px solid var(--wf-border)' },
   goOn: { background: '#1B5E2066', color: '#00E676', border: '1px solid #00E676' },
-  pill: { padding: '5px 9px', fontSize: 11, borderRadius: 14, background: '#0a0a0d', color: '#aaa', border: '1px solid #26262e', cursor: 'pointer' },
-  pillOn: { background: '#4488FF33', color: '#fff', borderColor: '#4f8ef7' },
-  phase: { background: '#16161a', border: '1px solid #26262e', borderRadius: 8, padding: 6, marginBottom: 6 },
-  mini: { background: '#0a0a0d', color: '#aaa', border: '1px solid #26262e', borderRadius: 4, cursor: 'pointer', fontSize: 10, width: 22, height: 22, padding: 0 },
+  pill: { padding: '5px 9px', fontSize: 11, borderRadius: 14, background: 'var(--wf-bg)', color: 'var(--wf-muted)', border: '1px solid var(--wf-border)', cursor: 'pointer' },
+  pillOn: { background: '#4488FF33', color: 'var(--wf-text-strong)', borderColor: '#4f8ef7' },
+  phase: { background: 'var(--wf-surface)', border: '1px solid var(--wf-border)', borderRadius: 8, padding: 6, marginBottom: 6 },
+  mini: { background: 'var(--wf-bg)', color: 'var(--wf-muted)', border: '1px solid var(--wf-border)', borderRadius: 4, cursor: 'pointer', fontSize: 10, width: 22, height: 22, padding: 0 },
   button: { padding: '8px 10px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 11, fontWeight: 600, minHeight: 36 },
 };

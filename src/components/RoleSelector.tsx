@@ -60,9 +60,9 @@ export default function RoleSelector() {
         title={user?.email ?? undefined}
         style={{
           padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 'bold',
-          background: `${roleColors[role] || '#555'}22`,
-          color: roleColors[role] || '#888',
-          border: `1px solid ${roleColors[role] || '#555'}44`,
+          background: `${roleColors[role] || '#7a95b0'}22`,
+          color: roleColors[role] || 'var(--wf-muted)',
+          border: `1px solid ${roleColors[role] || '#7a95b0'}44`,
           textTransform: 'capitalize',
           cursor: role !== 'admin' ? 'pointer' : 'default',
         }}
@@ -70,8 +70,8 @@ export default function RoleSelector() {
         {role}
       </span>
       <button onClick={signOut} style={{
-        padding: '0 12px', minHeight: 32, background: '#333', color: '#ccc',
-        border: '1px solid #555', borderRadius: 6, cursor: 'pointer',
+        padding: '0 12px', minHeight: 32, background: 'var(--wf-border)', color: 'var(--wf-text-2)',
+        border: '1px solid var(--wf-soft)', borderRadius: 6, cursor: 'pointer',
         fontSize: 12,
       }}>
         Sign Out
@@ -80,14 +80,14 @@ export default function RoleSelector() {
       {showPromote && role !== 'admin' && (
         <div style={{
           position: 'absolute', top: '100%', right: 0, marginTop: 6,
-          background: 'rgba(10,10,13,0.97)', border: '1px solid #333',
+          background: 'var(--wf-panel)', border: '1px solid var(--wf-border)',
           borderRadius: 8, padding: 12, zIndex: 2000, minWidth: 220,
           boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
         }}>
-          <div style={{ fontSize: 12, fontWeight: 'bold', color: '#fff', marginBottom: 4 }}>
+          <div style={{ fontSize: 12, fontWeight: 'bold', color: 'var(--wf-text-strong)', marginBottom: 4 }}>
             {ROLE_LABELS[role]}
           </div>
-          <div style={{ fontSize: 10, color: '#888', marginBottom: 10 }}>
+          <div style={{ fontSize: 10, color: 'var(--wf-muted)', marginBottom: 10 }}>
             {ROLE_DESCRIPTION[role]}
           </div>
           <button
@@ -95,7 +95,7 @@ export default function RoleSelector() {
             disabled={promoting}
             style={{
               padding: '8px 16px', background: roleColors[NEXT_ROLE[role]] || '#4f8ef7',
-              color: '#fff', border: 'none', borderRadius: 6, cursor: promoting ? 'wait' : 'pointer',
+              color: 'var(--wf-text-strong)', border: 'none', borderRadius: 6, cursor: promoting ? 'wait' : 'pointer',
               fontSize: 12, fontWeight: 'bold', width: '100%',
             }}
           >

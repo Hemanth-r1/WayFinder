@@ -39,7 +39,7 @@ const MAX_CACHE = 6000;
 const REROUTE_EVERY_MS = 2000;
 const MAX_REROUTES = 2;
 /** Planned routes are saved to Firestore `tripRoutes/{originZone}` this often, and loaded at start-up */
-const SAVE_EVERY_MS = 10 * 60_000;
+const SAVE_EVERY_MS = 60 * 60_000; // hourly: at most ~6,000 Firestore writes a day (free tier 20,000)
 /** Options kept per pair when saving (a Firestore document holds at most 1 MB) */
 const SAVED_OPTIONS = 2;
 const MAX_DOC_BYTES = 900_000;

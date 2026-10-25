@@ -20,7 +20,7 @@ export function BrandLockup({ size = 28, light = false, showParent = true }: { s
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: size * 0.32 }}>
       <BrandMark size={size} />
       <span style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.05 }}>
-        <span style={{ fontFamily: FONTS.display, fontWeight: 800, fontSize: size * 0.62, letterSpacing: '-0.01em', color: light ? '#0b1b33' : COLORS.text }}>
+        <span style={{ fontFamily: FONTS.display, fontWeight: 800, fontSize: size * 0.62, letterSpacing: '-0.01em', color: light ? '#0b1b33' : 'var(--wf-text-strong)' }}>
           {BRAND.product.name}
         </span>
         {showParent && (

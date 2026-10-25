@@ -63,7 +63,7 @@ export default function MyDataCard({ uid, current, onGo, lastReportId }: Props) 
   };
 
   return (
-    <div style={{ padding: '10px 14px', borderTop: '1px solid #222' }}>
+    <div style={{ padding: '10px 14px', borderTop: '1px solid var(--wf-border)' }}>
       {/* Saved places are always visible: one tap to go there */}
       {places.length > 0 && (
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
@@ -103,7 +103,7 @@ export default function MyDataCard({ uid, current, onGo, lastReportId }: Props) 
           {files.slice(0, 20).map(f => (
             <div key={f.id} style={s.row}>
               <button style={{ ...s.link, flex: 1, textAlign: 'left' }} onClick={() => openFile(f)}>
-                {f.type === 'application/pdf' ? '📄' : '🖼'} {f.name} <span style={{ color: '#666' }}>· {Math.round(f.size / 1024)} KB{f.purpose === 'report-photo' ? ' · report photo' : ''}</span>
+                {f.type === 'application/pdf' ? '📄' : '🖼'} {f.name} <span style={{ color: 'var(--wf-soft)' }}>· {Math.round(f.size / 1024)} KB{f.purpose === 'report-photo' ? ' · report photo' : ''}</span>
               </button>
               <button style={s.link} onClick={() => remove(f)}>delete</button>
             </div>
@@ -125,11 +125,11 @@ export default function MyDataCard({ uid, current, onGo, lastReportId }: Props) 
 }
 
 const s: Record<string, CSSProperties> = {
-  head: { background: 'none', border: 'none', color: '#9ab', cursor: 'pointer', padding: '4px 0', fontSize: 12, width: '100%', textAlign: 'left' },
-  label: { fontSize: 10, color: '#888', textTransform: 'uppercase', letterSpacing: 1, margin: '10px 0 4px', fontWeight: 600 },
-  muted: { fontSize: 11, color: '#777' },
-  row: { display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, color: '#ddd', padding: '3px 0', borderBottom: '1px solid #0a0a0d' },
-  chip: { padding: '6px 10px', fontSize: 12, borderRadius: 14, background: '#0a0a0d', color: '#ddd', border: '1px solid #26262e', cursor: 'pointer', textTransform: 'capitalize' },
-  small: { padding: '6px 9px', fontSize: 11, borderRadius: 6, background: '#0a0a0d', color: '#ccc', border: '1px solid #26262e', cursor: 'pointer' },
+  head: { background: 'none', border: 'none', color: 'var(--wf-muted)', cursor: 'pointer', padding: '4px 0', fontSize: 12, width: '100%', textAlign: 'left' },
+  label: { fontSize: 10, color: 'var(--wf-muted)', textTransform: 'uppercase', letterSpacing: 1, margin: '10px 0 4px', fontWeight: 600 },
+  muted: { fontSize: 11, color: 'var(--wf-soft)' },
+  row: { display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, color: 'var(--wf-text-2)', padding: '3px 0', borderBottom: '1px solid var(--wf-bg)' },
+  chip: { padding: '6px 10px', fontSize: 12, borderRadius: 14, background: 'var(--wf-bg)', color: 'var(--wf-text-2)', border: '1px solid var(--wf-border)', cursor: 'pointer', textTransform: 'capitalize' },
+  small: { padding: '6px 9px', fontSize: 11, borderRadius: 6, background: 'var(--wf-bg)', color: 'var(--wf-text-2)', border: '1px solid var(--wf-border)', cursor: 'pointer' },
   link: { background: 'none', border: 'none', color: '#2fe4cc', cursor: 'pointer', padding: 0, fontSize: 11 },
 };

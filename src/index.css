@@ -1,3 +1,37 @@
+/* Theme colours (Avakasha's dark and light pairs). Components use these variables. */
+:root, [data-theme="dark"] {
+  --wf-bg-deep: #000000;
+  --wf-bg: #0a0a0d;
+  --wf-panel: rgba(10, 10, 13, 0.97);
+  --wf-surface: #16161a;
+  --wf-input: #000000;
+  --wf-border: #26262e;
+  --wf-border-soft: #1a1a22;
+  --wf-text-strong: #ffffff;
+  --wf-text: #e8f2ff;
+  --wf-text-2: #cfd8e3;
+  --wf-muted: #a8bdd1;
+  --wf-soft: #7a95b0;
+  --wf-link: #2fe4cc;
+  --wf-shadow: rgba(0, 0, 0, 0.55);
+}
+[data-theme="light"] {
+  --wf-bg-deep: #eef4ff;
+  --wf-bg: #f7faff;
+  --wf-panel: rgba(255, 255, 255, 0.97);
+  --wf-surface: #ffffff;
+  --wf-input: #ffffff;
+  --wf-border: #d5deeb;
+  --wf-border-soft: #e4ebf5;
+  --wf-text-strong: #0b1b33;
+  --wf-text: #10213d;
+  --wf-text-2: #24364f;
+  --wf-muted: #3b4f6b;
+  --wf-soft: #5b6f8c;
+  --wf-link: #0f766e;
+  --wf-shadow: rgba(15, 30, 60, 0.18);
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -8,8 +42,8 @@ html, body, #root {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #000;
-  color: #e8f2ff;
+  background: var(--wf-bg-deep);
+  color: var(--wf-text);
   /* Shared look with Avakasha (TUFF Foundation): Inter for text, Plus Jakarta Sans for titles */
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
 }

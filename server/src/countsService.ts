@@ -200,13 +200,23 @@ async function persist(bin: Bin): Promise<void> {
     })),
   }));
 
+  // One document per 15-minute bin (split only when it would pass ~800 KB): ~100 writes a day
+  // instead of one per junction per bin (~46,000 a day), inside Firestore's free 20,000 writes/day
   const db = getDb();
   if (db) {
-    for (let i = 0; i < docs.length; i += 400) {
-      const batch = db.batch();
-      for (const d of docs.slice(i, i + 400)) batch.set(db.collection('junctionCounts').doc(`${d.junctionId}_${d.binStart}`), d);
-      await batch.commit();
+    const shards: (typeof docs)[] = [[]];
+    let size = 0;
+    for (const d of docs) {
+      const n = JSON.stringify(d).length;
+      if (size + n > 800_000 && shards[shards.length - 1].length) { shards.push([]); size = 0; }
+      shards[shards.length - 1].push(d);
+      size += n;
     }
+    const batch = db.batch();
+    shards.forEach((junctions, k) => batch.set(db.collection('junctionCountBins').doc(`${bin.start}_${k}`), {
+      binStart: bin.start, binMinutes: BIN_MS / 60000, part: k, parts: shards.length, junctions,
+    }));
+    await batch.commit();
   }
   if (COUNTS_DIR) {
     await mkdir(COUNTS_DIR, { recursive: true });

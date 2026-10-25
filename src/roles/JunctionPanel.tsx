@@ -133,7 +133,7 @@ export default function JunctionPanel({ canControl, selectedId, onSelect, onFocu
   for (const j of list) counts[j.status]++;
 
   return (
-    <div style={{ padding: '12px 14px', borderTop: '1px solid #222' }}>
+    <div style={{ padding: '12px 14px', borderTop: '1px solid var(--wf-border)' }}>
       {error && <div style={{ color: '#F44336', fontSize: 11, marginBottom: 6 }}>{error}</div>}
 
       {detail ? (
@@ -158,13 +158,13 @@ export default function JunctionPanel({ canControl, selectedId, onSelect, onFocu
             <button onClick={nearMe} style={{ ...styles.tab, ...(filter === 'near' ? styles.tabOn : {}) }}>📍 Near me</button>
           </div>
           <div style={{ maxHeight: 360, overflowY: 'auto' }}>
-            {filtered.length === 0 && <div style={{ fontSize: 11, color: '#666', padding: 8 }}>{query ? 'No junction matches.' : 'All junctions are flowing.'}</div>}
+            {filtered.length === 0 && <div style={{ fontSize: 11, color: 'var(--wf-soft)', padding: 8 }}>{query ? 'No junction matches.' : 'All junctions are flowing.'}</div>}
             {filtered.slice(0, 100).map(j => (
               <button key={j.id} onClick={() => select(j)} style={styles.row}>
                 <span style={{ color: STATUS_COLOR[j.status], fontSize: 14 }}>●</span>
                 <span style={{ flex: 1, minWidth: 0 }}>
-                  <span style={{ display: 'block', color: '#ddd', fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{j.name}</span>
-                  <span style={{ color: '#666', fontSize: 10, fontFamily: 'monospace' }}>
+                  <span style={{ display: 'block', color: 'var(--wf-text-2)', fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{j.name}</span>
+                  <span style={{ color: 'var(--wf-soft)', fontSize: 10, fontFamily: 'monospace' }}>
                     {filter === 'near' && me ? `${Math.round(metresBetween(me, j))} m · ` : ''}{j.id} · {j.queueVehicles} queued · cycle {j.cycle}s{j.controlled ? ' · ● controlled' : ''}
                   </span>
                 </span>
@@ -180,7 +180,7 @@ export default function JunctionPanel({ canControl, selectedId, onSelect, onFocu
         <>
           <div style={styles.title}>Recent changes</div>
           {log.slice(0, 6).map((e, i) => (
-            <div key={i} style={{ fontSize: 10, color: '#777', marginBottom: 3 }}>
+            <div key={i} style={{ fontSize: 10, color: 'var(--wf-soft)', marginBottom: 3 }}>
               {new Date(e.at).toLocaleTimeString()} · {e.junction} · {e.action} {e.detail} · {e.by}
             </div>
           ))}
@@ -191,20 +191,20 @@ export default function JunctionPanel({ canControl, selectedId, onSelect, onFocu
 }
 
 const styles: Record<string, CSSProperties> = {
-  title: { fontSize: 11, color: '#888', textTransform: 'uppercase', letterSpacing: 1, margin: '6px 0', fontWeight: 600 },
+  title: { fontSize: 11, color: 'var(--wf-muted)', textTransform: 'uppercase', letterSpacing: 1, margin: '6px 0', fontWeight: 600 },
   input: {
-    width: '100%', padding: '8px 10px', marginBottom: 6, background: '#111', border: '1px solid #333',
-    borderRadius: 6, color: '#ddd', fontSize: 12, boxSizing: 'border-box',
+    width: '100%', padding: '8px 10px', marginBottom: 6, background: 'var(--wf-input)', border: '1px solid var(--wf-border)',
+    borderRadius: 6, color: 'var(--wf-text-2)', fontSize: 12, boxSizing: 'border-box',
   },
   // minWidth 0 + ellipsis: three tabs must fit a phone's width
   tab: {
-    flex: 1, minWidth: 0, padding: '6px 4px', fontSize: 11, borderRadius: 6, background: '#0a0a0d', color: '#aaa',
-    border: '1px solid #26262e', cursor: 'pointer', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minHeight: 36,
+    flex: 1, minWidth: 0, padding: '6px 4px', fontSize: 11, borderRadius: 6, background: 'var(--wf-bg)', color: 'var(--wf-muted)',
+    border: '1px solid var(--wf-border)', cursor: 'pointer', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minHeight: 36,
   },
-  tabOn: { background: '#4488FF33', color: '#fff', borderColor: '#4f8ef7' },
+  tabOn: { background: '#4488FF33', color: 'var(--wf-text-strong)', borderColor: '#4f8ef7' },
   row: {
     display: 'flex', gap: 8, alignItems: 'center', width: '100%', padding: '8px 4px', background: 'none',
-    border: 'none', borderBottom: '1px solid #0a0a0d', cursor: 'pointer', textAlign: 'left', minHeight: 44,
+    border: 'none', borderBottom: '1px solid var(--wf-bg)', cursor: 'pointer', textAlign: 'left', minHeight: 44,
   },
   link: { background: 'none', border: 'none', color: '#2fe4cc', cursor: 'pointer', padding: 0, fontSize: 11 },
 };

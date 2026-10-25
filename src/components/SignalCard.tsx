@@ -42,17 +42,17 @@ export default function SignalCard({ signal, updatedAt, onClose, compact }: Prop
     <div style={{
       position: 'absolute', zIndex: 1600,
       ...(compact ? { left: 8, right: 8, top: 8 } : { top: 12, right: 12, width: 340 }),
-      background: 'rgba(10,10,13,0.96)', border: '1px solid #26262e', borderRadius: 12,
-      padding: 12, color: '#ccc', fontFamily: 'inherit', boxShadow: '0 6px 24px rgba(0,0,0,0.5)',
+      background: 'var(--wf-panel)', border: '1px solid var(--wf-border)', borderRadius: 12,
+      padding: 12, color: 'var(--wf-text-2)', fontFamily: 'inherit', boxShadow: '0 6px 24px rgba(0,0,0,0.5)',
     }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ color: '#fff', fontSize: 14, fontWeight: 600 }}>🚦 {signal.name ?? 'Traffic signal'}</div>
-          <div style={{ color: '#666', fontSize: 10, fontFamily: 'monospace' }}>
+          <div style={{ color: 'var(--wf-text-strong)', fontSize: 14, fontWeight: 600 }}>🚦 {signal.name ?? 'Traffic signal'}</div>
+          <div style={{ color: 'var(--wf-soft)', fontSize: 10, fontFamily: 'monospace' }}>
             {signal.id} · cycle {signal.cycleLength} s
           </div>
         </div>
-        <button onClick={onClose} aria-label="Close" style={{ background: 'none', border: 'none', color: '#888', fontSize: 18, cursor: 'pointer', lineHeight: 1 }}>×</button>
+        <button onClick={onClose} aria-label="Close" style={{ background: 'none', border: 'none', color: 'var(--wf-muted)', fontSize: 18, cursor: 'pointer', lineHeight: 1 }}>×</button>
       </div>
 
       <div style={{ marginTop: 8 }}>
@@ -62,12 +62,12 @@ export default function SignalCard({ signal, updatedAt, onClose, compact }: Prop
           const main = turns.includes('straight') ? 'straight' : turns[0];
           const t = groupTiming(signal, r.group, elapsed, main ? `${r.key}:${main}` : undefined);
           return (
-            <div key={r.key} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '7px 0', borderTop: '1px solid #0a0a0d' }}>
+            <div key={r.key} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '7px 0', borderTop: '1px solid var(--wf-bg)' }}>
               <span style={{ width: 16, height: 16, borderRadius: 8, background: LIGHT[t.light], flexShrink: 0, boxShadow: `0 0 8px ${LIGHT[t.light]}` }} />
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ color: '#eee', fontSize: 12, fontWeight: 600 }}>{r.title}</div>
-                {r.sub && <div style={{ color: '#888', fontSize: 11 }}>{r.sub}</div>}
-                <div style={{ color: '#666', fontSize: 10, marginTop: 1 }}>
+                <div style={{ color: 'var(--wf-text)', fontSize: 12, fontWeight: 600 }}>{r.title}</div>
+                {r.sub && <div style={{ color: 'var(--wf-muted)', fontSize: 11 }}>{r.sub}</div>}
+                <div style={{ color: 'var(--wf-soft)', fontSize: 10, marginTop: 1 }}>
                   green {formatSeconds(t.green)} · amber {formatSeconds(t.yellow)} · red {formatSeconds(t.red)} each cycle
                   {t.allRed > 0 && <> (incl. {t.allRed} s all-red clearance)</>}
                 </div>
@@ -89,7 +89,7 @@ export default function SignalCard({ signal, updatedAt, onClose, compact }: Prop
               </div>
               <div style={{ textAlign: 'right', fontFamily: 'monospace' }}>
                 <div style={{ color: LIGHT[t.light], fontSize: 16, fontWeight: 700 }}>{t.changesIn}s</div>
-                <div style={{ color: '#666', fontSize: 9 }}>{t.light === 'RED' ? 'until green' : t.light === 'GREEN' ? 'until amber' : 'until red'}</div>
+                <div style={{ color: 'var(--wf-soft)', fontSize: 9 }}>{t.light === 'RED' ? 'until green' : t.light === 'GREEN' ? 'until amber' : 'until red'}</div>
               </div>
             </div>
           );

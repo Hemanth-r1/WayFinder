@@ -75,28 +75,28 @@ export default function MapContextMenu({
       {/* Menu */}
       <div style={{
         position: 'fixed', left, top, zIndex: 2001,
-        background: 'rgba(12,12,22,0.97)', border: '1px solid #333',
+        background: 'rgba(12,12,22,0.97)', border: '1px solid var(--wf-border)',
         borderRadius: 10, padding: '6px 0', minWidth: menuWidth,
         maxHeight: 'calc(100vh - 20px)', overflowY: 'auto',
         boxShadow: '0 8px 32px rgba(0,0,0,0.7)',
-        fontFamily: 'inherit', color: '#fff',
+        fontFamily: 'inherit', color: 'var(--wf-text-strong)',
       }}>
         {/* Header: node info */}
-        <div style={{ padding: '6px 14px 8px', borderBottom: '1px solid #222' }}>
+        <div style={{ padding: '6px 14px 8px', borderBottom: '1px solid var(--wf-border)' }}>
           {!simple && <>
-            <div style={{ fontSize: 10, color: '#555', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 2 }}>Map Point</div>
-            <div style={{ fontSize: 11, fontFamily: 'monospace', color: '#888' }}>
+            <div style={{ fontSize: 10, color: 'var(--wf-soft)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 2 }}>Map Point</div>
+            <div style={{ fontSize: 11, fontFamily: 'monospace', color: 'var(--wf-muted)' }}>
               {lat.toFixed(5)}, {lng.toFixed(5)}
             </div>
           </>}
-          {simple && roadNames.length === 0 && <div style={{ fontSize: 12, color: '#aaa' }}>Unnamed road</div>}
+          {simple && roadNames.length === 0 && <div style={{ fontSize: 12, color: 'var(--wf-muted)' }}>Unnamed road</div>}
           {nodeId && !simple && (
-            <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>
+            <div style={{ fontSize: 11, color: 'var(--wf-soft)', marginTop: 2 }}>
               Node {nodeId} · {nodeDegree} connections
             </div>
           )}
           {roadNames.length > 0 && (
-            <div style={{ fontSize: simple ? 13 : 11, color: simple ? '#fff' : '#FF9800', marginTop: 2 }}>
+            <div style={{ fontSize: simple ? 13 : 11, color: simple ? 'var(--wf-text-strong)' : '#FF9800', marginTop: 2 }}>
               {roadNames.slice(0, 2).join(', ')}
             </div>
           )}
@@ -104,7 +104,7 @@ export default function MapContextMenu({
 
         {/* Source / Destination (User + Controller) */}
         {(isDriver(role) || canControl(role)) && (
-          <div style={{ borderBottom: '1px solid #0a0a0d' }}>
+          <div style={{ borderBottom: '1px solid var(--wf-bg)' }}>
             <MenuItem icon="🟢" label="Set as Origin" onClick={() => { onSetSource(); onClose(); }} />
             <MenuItem icon="🔴" label="Set as Destination" onClick={() => { onSetDest(); onClose(); }} />
           </div>
@@ -112,25 +112,25 @@ export default function MapContextMenu({
 
         {/* Existing reports here: drivers confirm or clear them */}
         {nearbyReports.map(r => (
-          <div key={r.id} style={{ padding: '8px 14px', borderBottom: '1px solid #0a0a0d' }}>
-            <div style={{ fontSize: 12, color: '#fff' }}>
+          <div key={r.id} style={{ padding: '8px 14px', borderBottom: '1px solid var(--wf-bg)' }}>
+            <div style={{ fontSize: 12, color: 'var(--wf-text-strong)' }}>
               {REPORT_LABEL[r.type].icon} {REPORT_LABEL[r.type].label}
-              <span style={{ color: r.status === 'confirmed' ? '#FF9800' : '#888', fontSize: 11 }}>
+              <span style={{ color: r.status === 'confirmed' ? '#FF9800' : 'var(--wf-muted)', fontSize: 11 }}>
                 {' · '}{r.status === 'confirmed' ? 'confirmed' : 'unconfirmed'} · {r.confirmations} report{r.confirmations === 1 ? '' : 's'}
               </span>
             </div>
-            <div style={{ fontSize: 11, color: '#999', margin: '2px 0 6px' }}>{REPORT_LABEL[r.type].question}</div>
+            <div style={{ fontSize: 11, color: 'var(--wf-muted)', margin: '2px 0 6px' }}>{REPORT_LABEL[r.type].question}</div>
             <div style={{ display: 'flex', gap: 6 }}>
               <button onClick={() => { onVote(r.id, 'confirm'); onClose(); }} style={pill('#FF9800')}>Yes, still there</button>
               <button onClick={() => { onVote(r.id, 'clear'); onClose(); }} style={pill('#4CAF50')}>No, it's clear</button>
-              {canRemove && <button onClick={() => { onRemove(r.id); onClose(); }} style={pill('#888')}>Remove</button>}
+              {canRemove && <button onClick={() => { onRemove(r.id); onClose(); }} style={pill('#7a95b0')}>Remove</button>}
             </div>
           </div>
         ))}
 
         {/* New reports (all roles) */}
-        <div style={{ borderBottom: '1px solid #0a0a0d' }}>
-          <div style={{ padding: '6px 14px 0', fontSize: 10, color: '#555', textTransform: 'uppercase', letterSpacing: 1 }}>Report here</div>
+        <div style={{ borderBottom: '1px solid var(--wf-bg)' }}>
+          <div style={{ padding: '6px 14px 0', fontSize: 10, color: 'var(--wf-soft)', textTransform: 'uppercase', letterSpacing: 1 }}>Report here</div>
           {(['block', 'tree', 'waterlogging', 'rain'] as const)
             .filter(t => !nearbyReports.some(r => r.type === t))
             .map(t => (
@@ -140,8 +140,8 @@ export default function MapContextMenu({
 
         {/* Intentional jam for design / training (controllers, simulation only) */}
         {canControl(role) && onJam && (
-          <div style={{ borderBottom: '1px solid #0a0a0d' }}>
-            <div style={{ padding: '6px 14px 0', fontSize: 10, color: '#555', textTransform: 'uppercase', letterSpacing: 1 }}>Test jam (simulation)</div>
+          <div style={{ borderBottom: '1px solid var(--wf-bg)' }}>
+            <div style={{ padding: '6px 14px 0', fontSize: 10, color: 'var(--wf-soft)', textTransform: 'uppercase', letterSpacing: 1 }}>Test jam (simulation)</div>
             <MenuItem icon="🛑" label="Jam this road — standstill, 400 m" onClick={() => { onJam('stopped'); onClose(); }} accent="#F44336" />
             <MenuItem icon="🐢" label="Slow this road — crawl, 400 m" onClick={() => { onJam('slow'); onClose(); }} accent="#FF9800" />
           </div>
@@ -149,8 +149,8 @@ export default function MapContextMenu({
 
         {/* Emergency run (controllers, simulation): pick start, then destination */}
         {canControl(role) && onAmbulance && (
-          <div style={{ borderBottom: '1px solid #0a0a0d' }}>
-            <div style={{ padding: '6px 14px 0', fontSize: 10, color: '#555', textTransform: 'uppercase', letterSpacing: 1 }}>Emergency run (simulation)</div>
+          <div style={{ borderBottom: '1px solid var(--wf-bg)' }}>
+            <div style={{ padding: '6px 14px 0', fontSize: 10, color: 'var(--wf-soft)', textTransform: 'uppercase', letterSpacing: 1 }}>Emergency run (simulation)</div>
             <MenuItem icon="🚑" label="Ambulance starts here" onClick={() => { onAmbulance('from'); onClose(); }} accent="#FF1744" />
             {ambulanceFromSet && <MenuItem icon="🏥" label="Ambulance goes here — dispatch" onClick={() => { onAmbulance('to'); onClose(); }} accent="#FF1744" />}
           </div>
@@ -158,14 +158,14 @@ export default function MapContextMenu({
 
         {/* Add Signal (Supporter + Controller) */}
         {isOperator(role) && nodeId && nodeDegree >= 2 && (
-          <div style={{ borderBottom: '1px solid #0a0a0d' }}>
+          <div style={{ borderBottom: '1px solid var(--wf-bg)' }}>
             <MenuItem icon="🚦" label="Add Signal Here" onClick={() => { onAddSignal(); onClose(); }} accent="#FF9800" />
           </div>
         )}
 
         {/* Spawn Vehicle (operators) */}
         {!simple && <div>
-          <div style={{ padding: '5px 14px 3px', fontSize: 10, color: '#555', textTransform: 'uppercase', letterSpacing: 1 }}>
+          <div style={{ padding: '5px 14px 3px', fontSize: 10, color: 'var(--wf-soft)', textTransform: 'uppercase', letterSpacing: 1 }}>
             Spawn Vehicle
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 2, padding: '0 8px 6px' }}>
@@ -174,8 +174,8 @@ export default function MapContextMenu({
                 key={vt.type}
                 onClick={() => { onSpawnVehicle(vt.type); onClose(); }}
                 style={{
-                  padding: '5px 4px', background: '#0a0a0d', border: '1px solid #2a2a3e',
-                  borderRadius: 6, cursor: 'pointer', color: '#ccc', fontSize: 10,
+                  padding: '5px 4px', background: 'var(--wf-bg)', border: '1px solid #2a2a3e',
+                  borderRadius: 6, cursor: 'pointer', color: 'var(--wf-text-2)', fontSize: 10,
                   display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
                 }}
               >
@@ -204,7 +204,7 @@ function MenuItem({ icon, label, onClick, accent }: { icon: string; label: strin
       style={{
         width: '100%', display: 'flex', alignItems: 'center', gap: 10,
         padding: '8px 14px', background: 'transparent', border: 'none',
-        cursor: 'pointer', color: accent || '#ccc', fontSize: 12, textAlign: 'left',
+        cursor: 'pointer', color: accent || 'var(--wf-text-2)', fontSize: 12, textAlign: 'left',
       }}
       onMouseEnter={e => (e.currentTarget.style.background = '#ffffff0a')}
       onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}

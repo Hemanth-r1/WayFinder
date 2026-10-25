@@ -37,12 +37,12 @@ export default function OfflineCard({ online }: { online: boolean }) {
 
   const downloading = progress !== null;
   return (
-    <div style={{ padding: '10px 14px', borderTop: '1px solid #222', fontSize: 11, color: '#999' }}>
+    <div style={{ padding: '10px 14px', borderTop: '1px solid var(--wf-border)', fontSize: 11, color: 'var(--wf-muted)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span style={{ color: online ? '#4CAF50' : '#FF9800' }}>●</span>
         <span style={{ flex: 1 }}>
           {online ? 'Online' : 'Offline — showing saved map; routes use typical speeds'}
-          {info && <span style={{ color: '#666' }}> · city map saved {new Date(info.at).toLocaleDateString()}{usedMb !== null ? ` (${usedMb} MB)` : ''}</span>}
+          {info && <span style={{ color: 'var(--wf-soft)' }}> · city map saved {new Date(info.at).toLocaleDateString()}{usedMb !== null ? ` (${usedMb} MB)` : ''}</span>}
         </span>
       </div>
       {showPrompt && online && !downloading && (
@@ -51,13 +51,13 @@ export default function OfflineCard({ online }: { online: boolean }) {
           only live traffic is downloaded each time.
           <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
             <button onClick={start} style={{ flex: 1, padding: 6, background: '#4f8ef7', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 11 }}>Download</button>
-            <button onClick={dismiss} style={{ padding: '6px 10px', background: 'none', color: '#9ab', border: '1px solid #2c4a7a', borderRadius: 6, cursor: 'pointer', fontSize: 11 }}>Not now</button>
+            <button onClick={dismiss} style={{ padding: '6px 10px', background: 'none', color: 'var(--wf-muted)', border: '1px solid #2c4a7a', borderRadius: 6, cursor: 'pointer', fontSize: 11 }}>Not now</button>
           </div>
         </div>
       )}
       {downloading ? (
         <div style={{ marginTop: 6 }}>
-          <div style={{ height: 4, background: '#222', borderRadius: 2, overflow: 'hidden' }}>
+          <div style={{ height: 4, background: 'var(--wf-border)', borderRadius: 2, overflow: 'hidden' }}>
             <div style={{ width: `${Math.round(progress.done / Math.max(1, progress.total) * 100)}%`, height: '100%', background: '#4f8ef7' }} />
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>

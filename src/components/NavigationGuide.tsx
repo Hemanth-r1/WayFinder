@@ -61,14 +61,14 @@ export default function NavigationGuide({
     // data-map-cover: the map's follow camera keeps the car above this card
     <div data-map-cover="bottom" style={{
       ...container,
-      background: 'rgba(10,10,13,0.96)', border: '1px solid #26262e', borderRadius: 14,
+      background: 'var(--wf-panel)', border: '1px solid var(--wf-border)', borderRadius: 14,
       padding: 14, zIndex: 1500, boxShadow: '0 6px 24px rgba(0,0,0,0.55)',
-      fontFamily: 'inherit', color: '#ccc',
+      fontFamily: 'inherit', color: 'var(--wf-text-2)',
     }}>
       {/* An emergency vehicle close behind: make way */}
       {navigation.emergencyBehind && (
         <div role="alert" style={{ background: '#D5000033', border: '1px solid #FF1744', borderRadius: 10, padding: '10px 12px', marginBottom: 12 }}>
-          <div style={{ fontSize: 15, fontWeight: 'bold', color: '#fff' }}>
+          <div style={{ fontSize: 15, fontWeight: 'bold', color: 'var(--wf-text-strong)' }}>
             {navigation.emergencyBehind.kind === 'fire' ? '🚒 Fire engine' : navigation.emergencyBehind.kind === 'police' ? '🚓 Police' : '🚑 Ambulance'} {navigation.emergencyBehind.metres} m behind you
           </div>
           <div style={{ fontSize: 12, color: '#ffcdd2', marginTop: 2 }}>Keep left and slow down to let it pass. Don't stop suddenly.</div>
@@ -81,7 +81,7 @@ export default function NavigationGuide({
             🚨 Emergency run · {navigation.emergencyRun.greenAhead} signal{navigation.emergencyRun.greenAhead === 1 ? '' : 's'} green ahead
           </div>
           {navigation.emergencyRun.next && (
-            <div style={{ fontSize: 12, color: '#ccc', marginTop: 2 }}>
+            <div style={{ fontSize: 12, color: 'var(--wf-text-2)', marginTop: 2 }}>
               Next: {navigation.emergencyRun.next.name} — {navigation.emergencyRun.next.green ? 'green for you' : `turns green before you arrive${navigation.emergencyRun.next.eta != null ? ` (~${navigation.emergencyRun.next.eta} s)` : ''}`}
             </div>
           )}
@@ -94,12 +94,12 @@ export default function NavigationGuide({
           border: `1px solid ${offer.reason === 'blocked' ? '#FF174466' : '#00E67655'}`,
           borderRadius: 10, padding: '10px 12px', marginBottom: 12,
         }}>
-          <div style={{ fontSize: 14, fontWeight: 'bold', color: '#fff' }}>
+          <div style={{ fontSize: 14, fontWeight: 'bold', color: 'var(--wf-text-strong)' }}>
             {offer.reason === 'blocked' ? '🚧 Road blocked ahead'
               : offer.reason === 'reported' ? '⚠️ Problem reported ahead (not yet confirmed)'
               : `⚡ Faster route: save ${formatDuration(offer.savedSeconds)}`}
           </div>
-          <div style={{ fontSize: 12, color: '#aaa', marginTop: 2 }}>
+          <div style={{ fontSize: 12, color: 'var(--wf-muted)', marginTop: 2 }}>
             New route {formatDuration(offer.estimatedTime)} · {formatDistance(offer.distance)}
             {offer.roadNames.length > 0 && ` via ${offer.roadNames.slice(0, 2).join(', ')}`}
           </div>
@@ -109,14 +109,14 @@ export default function NavigationGuide({
               borderRadius: 18, cursor: 'pointer', fontSize: 13, fontWeight: 'bold',
             }}>{rerouting ? 'Rerouting…' : 'Reroute'}</button>
             <button onClick={onDismissReroute} style={{
-              height: 36, padding: '0 14px', background: 'transparent', color: '#aaa',
-              border: '1px solid #444', borderRadius: 18, cursor: 'pointer', fontSize: 12,
+              height: 36, padding: '0 14px', background: 'transparent', color: 'var(--wf-muted)',
+              border: '1px solid var(--wf-border)', borderRadius: 18, cursor: 'pointer', fontSize: 12,
             }}>Keep route</button>
           </div>
         </div>
       )}
       {navigation.blockedAhead && (
-        <div style={{ background: '#FF174422', border: '1px solid #FF174466', borderRadius: 10, padding: '8px 12px', marginBottom: 12, fontSize: 13, color: '#fff' }}>
+        <div style={{ background: '#FF174422', border: '1px solid #FF174466', borderRadius: 10, padding: '8px 12px', marginBottom: 12, fontSize: 13, color: 'var(--wf-text-strong)' }}>
           🚧 Road blocked ahead — no way around found yet
         </div>
       )}
@@ -124,11 +124,11 @@ export default function NavigationGuide({
       {/* Crowd report ahead: ask the driver whether it is still there */}
       {prompt && (
         <div style={{ background: '#FF910014', border: '1px solid #FF910055', borderRadius: 10, padding: '10px 12px', marginBottom: 12 }}>
-          <div style={{ fontSize: 13, color: '#fff' }}>
+          <div style={{ fontSize: 13, color: 'var(--wf-text-strong)' }}>
             {REPORT_LABEL[prompt.type].icon} {REPORT_LABEL[prompt.type].label} reported {formatDistance(prompt.distance)} ahead
             {prompt.roadName && ` on ${prompt.roadName}`}
           </div>
-          <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>
+          <div style={{ fontSize: 11, color: 'var(--wf-muted)', marginTop: 2 }}>
             {prompt.status === 'confirmed' ? 'Confirmed' : 'Not confirmed yet'} · {prompt.confirmations} report{prompt.confirmations === 1 ? '' : 's'} · {REPORT_LABEL[prompt.type].question}
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
@@ -147,30 +147,30 @@ export default function NavigationGuide({
       {/* ETA row */}
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
         <span style={{ fontSize: 24, fontWeight: 'bold', color: '#4CAF50' }}>{formatDuration(navigation.duration)}</span>
-        <span style={{ fontSize: 14, color: '#aaa' }}>{formatDistance(navigation.distance)}</span>
-        <span style={{ fontSize: 13, color: '#777', marginLeft: 'auto' }}>arrive {arrival}</span>
+        <span style={{ fontSize: 14, color: 'var(--wf-muted)' }}>{formatDistance(navigation.distance)}</span>
+        <span style={{ fontSize: 13, color: 'var(--wf-soft)', marginLeft: 'auto' }}>arrive {arrival}</span>
       </div>
-      <div style={{ fontSize: 12, color: '#999', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+      <div style={{ fontSize: 12, color: 'var(--wf-muted)', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {destLabel ? `to ${destLabel}` : 'to destination'}
         {navigation.routeInfo.roadNames.length > 0 && ` · via ${navigation.routeInfo.roadNames.slice(0, 2).join(', ')}`}
       </div>
 
-      <div style={{ fontSize: 11, color: '#777', marginTop: 4, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+      <div style={{ fontSize: 11, color: 'var(--wf-soft)', marginTop: 4, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
         <span>{navigation.mode === 'gps' ? '📍 Live GPS' : '🚗 Simulated drive'}</span>
         {WEATHER_NOTE[navigation.weather] && <span style={{ color: '#64B5F6' }}>{WEATHER_NOTE[navigation.weather]}</span>}
       </div>
 
       {/* Next signal + traffic */}
       <div style={{ display: shortScreen ? 'none' : 'flex', gap: 8, marginTop: 12 }}>
-        <div style={{ flex: 1, background: '#0a0a0d', borderRadius: 10, padding: '8px 10px', display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ flex: 1, background: 'var(--wf-bg)', borderRadius: 10, padding: '8px 10px', display: 'flex', alignItems: 'center', gap: 10 }}>
           {nextSignal ? (
             <>
               <span style={{ width: 22, height: 22, borderRadius: 11, background: LIGHT[nextSignal.currentState], flexShrink: 0 }} />
               <div>
-                <div style={{ fontSize: 13, color: '#fff' }}>
+                <div style={{ fontSize: 13, color: 'var(--wf-text-strong)' }}>
                   {nextSignal.name && nextSignal.name !== nextSignal.signalId ? nextSignal.name : 'Signal'} in {formatDistance(nextSignal.distance)}
                 </div>
-                <div style={{ fontSize: 11, color: '#888' }}>
+                <div style={{ fontSize: 11, color: 'var(--wf-muted)' }}>
                   {nextSignal.currentState.charAt(0) + nextSignal.currentState.slice(1).toLowerCase()} now · {nextSignal.estimatedWait < 1 ? 'green when you get there' : `~${Math.round(nextSignal.estimatedWait)} s wait when you get there`}
                 </div>
                 {/* Stopped (or about to stop) at a long red: save fuel and air */}
@@ -182,12 +182,12 @@ export default function NavigationGuide({
               </div>
             </>
           ) : (
-            <div style={{ fontSize: 12, color: '#888' }}>No signals ahead</div>
+            <div style={{ fontSize: 12, color: 'var(--wf-muted)' }}>No signals ahead</div>
           )}
         </div>
-        <div style={{ background: '#0a0a0d', borderRadius: 10, padding: '8px 10px', minWidth: 96 }}>
+        <div style={{ background: 'var(--wf-bg)', borderRadius: 10, padding: '8px 10px', minWidth: 96 }}>
           <div style={{ fontSize: 12, color: trafficColor, fontWeight: 'bold' }}>{trafficText}</div>
-          <div style={{ fontSize: 11, color: '#888' }}>{Math.round(traffic.avgSpeed)} km/h avg</div>
+          <div style={{ fontSize: 11, color: 'var(--wf-muted)' }}>{Math.round(traffic.avgSpeed)} km/h avg</div>
         </div>
       </div>
 

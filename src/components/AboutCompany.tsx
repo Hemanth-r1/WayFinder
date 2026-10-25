@@ -54,4 +54,4 @@ export default function AboutCompany({ onClose }: { onClose: () => void }) {
 }
 
 const label = { fontSize: 10, color: COLORS.textSoft, textTransform: 'uppercase', letterSpacing: 1, fontWeight: 700, margin: '14px 0 6px' } as const;
-const link = { color: COLORS.teal, textDecoration: 'none' } as const;
+const link = { color: COLORS.link, textDecoration: 'none' } as const;

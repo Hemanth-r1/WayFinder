@@ -7,7 +7,7 @@ import type { CSSProperties } from 'react';
 import type { Corridor } from '../services/serverClient';
 
 const ICON = { ambulance: '🚑', fire: '🚒', police: '🚓' } as const;
-const STATE_COLOR = { ahead: '#FF9100', green: '#00E676', passed: '#555' } as const;
+const STATE_COLOR = { ahead: '#FF9100', green: '#00E676', passed: '#7a95b0' } as const;
 
 interface Props {
   corridors: Corridor[];
@@ -26,10 +26,10 @@ export default function EmergencyPanel({ corridors, canControl, picking, onCance
   const active = corridors.filter(c => c.status === 'active');
   if (active.length === 0 && !canControl) return null;
   return (
-    <div style={{ padding: '10px 14px', borderTop: '1px solid #222' }}>
+    <div style={{ padding: '10px 14px', borderTop: '1px solid var(--wf-border)' }}>
       <div style={s.title}>Emergency runs{active.length ? ` · ${active.length} active` : ''}</div>
       {active.length === 0 && (
-        <div style={{ fontSize: 11, color: '#777' }}>
+        <div style={{ fontSize: 11, color: 'var(--wf-soft)' }}>
           {picking ? 'Start point set — right-click the destination: “Ambulance goes here”.' : 'None. Right-click the map: “Ambulance starts here”, then “goes here”, to send a simulated run.'}
         </div>
       )}
@@ -41,7 +41,7 @@ export default function EmergencyPanel({ corridors, canControl, picking, onCance
               <button onClick={() => c.position && onFocus(c.position.lat, c.position.lng)} style={s.link}>
                 {ICON[c.kind]} {c.kind} {c.id}
               </button>
-              <span style={{ flex: 1, color: '#aaa', fontSize: 11 }}>{c.userId ? 'responder' : 'simulated'} · arrives in ~{minutes(c.eta)}</span>
+              <span style={{ flex: 1, color: 'var(--wf-muted)', fontSize: 11 }}>{c.userId ? 'responder' : 'simulated'} · arrives in ~{minutes(c.eta)}</span>
               {canControl && <button onClick={() => onCancel(c.id)} style={s.cancel}>Cancel</button>}
             </div>
             <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
@@ -60,7 +60,7 @@ export default function EmergencyPanel({ corridors, canControl, picking, onCance
 }
 
 const s: Record<string, CSSProperties> = {
-  title: { fontSize: 11, color: '#888', textTransform: 'uppercase', letterSpacing: 1, margin: '2px 0 6px', fontWeight: 600 },
+  title: { fontSize: 11, color: 'var(--wf-muted)', textTransform: 'uppercase', letterSpacing: 1, margin: '2px 0 6px', fontWeight: 600 },
   card: { background: '#1a0d10', border: '1px solid #5a1a24', borderRadius: 8, padding: 8, marginBottom: 6 },
   link: { background: 'none', border: 'none', color: '#FF8A80', cursor: 'pointer', padding: 0, fontSize: 12, fontWeight: 700, textTransform: 'capitalize' },
   cancel: { background: '#37474F', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 11, padding: '4px 8px' },

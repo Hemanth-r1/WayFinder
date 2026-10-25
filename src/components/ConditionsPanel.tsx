@@ -47,25 +47,25 @@ export default function ConditionsPanel({ conditions, onWeather, onTraffic, onRe
     : weather.precipitation !== null ? `${weather.precipitation.toFixed(1)} mm/h` : '';
 
   return (
-    <div style={{ padding: '12px 14px', borderTop: '1px solid #222' }}>
+    <div style={{ padding: '12px 14px', borderTop: '1px solid var(--wf-border)' }}>
       <div style={styles.title}>Road conditions</div>
 
-      <div style={styles.label}>Weather {conditions.weatherMode === 'live' && liveNote && <span style={{ color: '#666' }}>· {liveNote}</span>}</div>
+      <div style={styles.label}>Weather {conditions.weatherMode === 'live' && liveNote && <span style={{ color: 'var(--wf-soft)' }}>· {liveNote}</span>}</div>
       <Segmented options={WEATHER_OPTIONS} value={conditions.weatherMode} onChange={onWeather} />
 
       <div style={styles.label}>
         Simulated traffic
         {conditions.demand !== undefined && (
-          <span style={{ color: '#666' }}> · {Math.round(conditions.demand * 100)}% of peak{conditions.trafficMode === 'auto' ? ' (Bangalore time of day)' : ''}</span>
+          <span style={{ color: 'var(--wf-soft)' }}> · {Math.round(conditions.demand * 100)}% of peak{conditions.trafficMode === 'auto' ? ' (Bangalore time of day)' : ''}</span>
         )}
       </div>
       <Segmented options={TRAFFIC_OPTIONS} value={conditions.trafficMode ?? conditions.trafficLevel} onChange={onTraffic} />
 
       {conditions.behaviour && <>
-        <div style={styles.label}>Driver behaviour <span style={{ color: '#666' }}>· everyone else follows the road rules</span></div>
+        <div style={styles.label}>Driver behaviour <span style={{ color: 'var(--wf-soft)' }}>· everyone else follows the road rules</span></div>
         {BEHAVIOURS.map(b => (
           <div key={b.key} style={{ display: 'flex', alignItems: 'center', gap: 8 }} title={b.hint}>
-            <div style={{ flex: 1, fontSize: 11, color: '#bbb', marginBottom: 10 }}>{b.label}</div>
+            <div style={{ flex: 1, fontSize: 11, color: 'var(--wf-text-2)', marginBottom: 10 }}>{b.label}</div>
             <div style={{ width: 96 }}>
               <Segmented options={ON_OFF} value={conditions.behaviour![b.key] ? 'on' : 'off'}
                 onChange={v => onBehaviour({ [b.key]: v === 'on' })} />
@@ -74,13 +74,13 @@ export default function ConditionsPanel({ conditions, onWeather, onTraffic, onRe
         ))}
       </>}
 
-      <div style={styles.label}>Test jams ({jams.length}) <span style={{ color: '#666' }}>· right-click a road → Jam this road</span></div>
+      <div style={styles.label}>Test jams ({jams.length}) <span style={{ color: 'var(--wf-soft)' }}>· right-click a road → Jam this road</span></div>
       {jams.map(j => (
-        <div key={j.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0', borderBottom: '1px solid #0a0a0d' }}>
+        <div key={j.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0', borderBottom: '1px solid var(--wf-bg)' }}>
           <span>{j.severity === 'stopped' ? '🛑' : '🐢'}</span>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 12, color: '#ddd' }}>{j.road}</div>
-            <div style={{ fontSize: 10, color: '#777' }}>
+            <div style={{ fontSize: 12, color: 'var(--wf-text-2)' }}>{j.road}</div>
+            <div style={{ fontSize: 10, color: 'var(--wf-soft)' }}>
               {j.severity === 'stopped' ? 'standstill' : 'slow'} · {j.metres} m queue · {j.vehicles} vehicles
               {' · '}until {new Date(j.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
             </div>
@@ -92,14 +92,14 @@ export default function ConditionsPanel({ conditions, onWeather, onTraffic, onRe
 
       <div style={styles.label}>Driver reports ({conditions.reports.length})</div>
       {conditions.reports.length === 0 && (
-        <div style={{ fontSize: 11, color: '#666' }}>None right now. Drivers report by tapping a road on the map.</div>
+        <div style={{ fontSize: 11, color: 'var(--wf-soft)' }}>None right now. Drivers report by tapping a road on the map.</div>
       )}
       {conditions.reports.map(r => (
-        <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0', borderBottom: '1px solid #0a0a0d' }}>
+        <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0', borderBottom: '1px solid var(--wf-bg)' }}>
           <span style={{ opacity: r.status === 'confirmed' ? 1 : 0.6 }}>{REPORT_LABEL[r.type].icon}</span>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 12, color: '#ddd' }}>{REPORT_LABEL[r.type].label} · {r.roadName || 'Unnamed road'}</div>
-            <div style={{ fontSize: 10, color: r.status === 'confirmed' ? '#FF9800' : '#777' }}>
+            <div style={{ fontSize: 12, color: 'var(--wf-text-2)' }}>{REPORT_LABEL[r.type].label} · {r.roadName || 'Unnamed road'}</div>
+            <div style={{ fontSize: 10, color: r.status === 'confirmed' ? '#FF9800' : 'var(--wf-soft)' }}>
               {r.status === 'confirmed' ? (r.confirmSource ? CONFIRMED_BY[r.confirmSource] : 'confirmed') : 'unconfirmed'}
               {' · '}{r.confirmations} yes / {r.clears} clear
               {' · '}until {new Date(r.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -121,9 +121,9 @@ function Segmented<T extends string>({ options, value, onChange }: {
       {options.map(o => (
         <button key={o.value} onClick={() => onChange(o.value)} style={{
           flex: 1, padding: '6px 4px', fontSize: 11, borderRadius: 6, cursor: 'pointer',
-          background: o.value === value ? '#4488FF33' : '#0a0a0d',
-          border: `1px solid ${o.value === value ? '#4f8ef7' : '#26262e'}`,
-          color: o.value === value ? '#fff' : '#aaa',
+          background: o.value === value ? '#4488FF33' : 'var(--wf-bg)',
+          border: `1px solid ${o.value === value ? '#4f8ef7' : 'var(--wf-border)'}`,
+          color: o.value === value ? 'var(--wf-text-strong)' : 'var(--wf-muted)',
         }}>{o.label}</button>
       ))}
     </div>
@@ -131,10 +131,10 @@ function Segmented<T extends string>({ options, value, onChange }: {
 }
 
 const styles: Record<string, CSSProperties> = {
-  title: { fontSize: 11, color: '#777', textTransform: 'uppercase', marginBottom: 8, fontWeight: 'bold', letterSpacing: 0.5 },
-  label: { fontSize: 11, color: '#999', marginBottom: 4 },
+  title: { fontSize: 11, color: 'var(--wf-soft)', textTransform: 'uppercase', marginBottom: 8, fontWeight: 'bold', letterSpacing: 0.5 },
+  label: { fontSize: 11, color: 'var(--wf-muted)', marginBottom: 4 },
   small: {
-    padding: '3px 10px', background: '#222', color: '#ccc', border: '1px solid #444',
+    padding: '3px 10px', background: 'var(--wf-border)', color: 'var(--wf-text-2)', border: '1px solid var(--wf-border)',
     borderRadius: 4, cursor: 'pointer', fontSize: 11,
   },
 };

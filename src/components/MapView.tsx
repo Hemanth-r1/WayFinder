@@ -18,6 +18,7 @@ import type { NavRouteSummary } from './NavigationPanel';
 import type { RoadReport, ReportType, ReportVote, CoordinationPlan, Corridor } from '../services/serverClient';
 import { distanceMetres, snapToRoad } from '../utils/places';
 import SignalCard from './SignalCard';
+import { getTheme, useTheme } from '../theme';
 import {
   MAP_STYLES, SRC, LAYER, addOverlayLayers, addMissingImage, setSourceData,
   roadsData, markingsData, trafficData, trafficBaseData, signalsData, vehiclesData, heatData, linesData, reportsData, coordinationData, emergencyData,
@@ -163,6 +164,7 @@ export default function MapView({
   reports = [], reroutePolyline, onReport, onVoteReport, onRemoveReport, canRemoveReports = false, onCreateJam,
   followVehicleId, traffic, onViewportChange, focus, onSelectJunction, coordination = null, emergencyCorridors, onAmbulance, ambulanceFromSet = false,
 }: MapViewProps) {
+  const [theme] = useTheme();
   const containerRef = useRef<HTMLDivElement>(null);
   const miniRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MLMap | null>(null);
@@ -210,7 +212,7 @@ export default function MapView({
     if (!container || mapRef.current) return;
 
     let map: MLMap;
-    styleUrlRef.current = simpleViewRef.current ? MAP_STYLES.light : MAP_STYLES.dark;
+    styleUrlRef.current = getTheme() === 'light' ? MAP_STYLES.light : MAP_STYLES.dark;
     try {
       map = new maplibregl.Map({
         container,
@@ -334,7 +336,7 @@ export default function MapView({
     try {
       mini = new maplibregl.Map({
         container: miniRef.current,
-        style: MAP_STYLES.dark,
+        style: getTheme() === 'light' ? MAP_STYLES.light : MAP_STYLES.dark,
         center: [MAP_CENTER[1], MAP_CENTER[0]],
         zoom: 10,
         interactive: false,
@@ -367,16 +369,16 @@ export default function MapView({
     }
   }, [graph, graphVersion, loadCount]);
 
-  // Role changed (demo role switch): light map for drivers, dark for operators
+  // Light or dark base map, following the app's theme (☀️ / 🌙 button)
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !loadedMap()) return;
-    const want = simpleView ? MAP_STYLES.light : MAP_STYLES.dark;
+    const want = theme === 'light' ? MAP_STYLES.light : MAP_STYLES.dark;
     if (styleUrlRef.current === want) return;
     styleUrlRef.current = want;
     loadedMapRef.current = null; // overlay waits for 'style.load'
     map.setStyle(want, { diff: false });
-  }, [simpleView, loadCount]);
+  }, [theme, loadCount]);
 
   // Drivers see the base map's roads; operators also see the simulated network
   useEffect(() => {
@@ -613,7 +615,7 @@ export default function MapView({
       {mapError && (
         <div style={{
           position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-          color: '#ccc', fontSize: 14, padding: 24, textAlign: 'center', background: '#0a0a0d',
+          color: 'var(--wf-text-2)', fontSize: 14, padding: 24, textAlign: 'center', background: 'var(--wf-bg)',
         }}>
           The map needs WebGL, which this browser or device has turned off. Try an up-to-date Chrome, Edge, Safari or Firefox.
         </div>
@@ -634,14 +636,14 @@ export default function MapView({
       {!simpleView && !compact && <div ref={miniRef} style={{
         position: 'absolute', bottom: 12, right: 12, zIndex: 1000,
         width: 160, height: 120, borderRadius: 8, overflow: 'hidden',
-        border: '2px solid #333', boxShadow: '0 4px 16px rgba(0,0,0,0.6)',
+        border: '2px solid var(--wf-border)', boxShadow: '0 4px 16px rgba(0,0,0,0.6)',
       }} />}
 
       {/* Live stats HUD (desktop operators) */}
       {!simpleView && !compact && <div style={{
         position: 'absolute', top: 12, left: 270, zIndex: 1001,
-        background: 'rgba(10,10,20,0.85)', border: '1px solid #333', borderRadius: 8,
-        padding: '6px 12px', fontFamily: 'monospace', fontSize: 11, color: '#ccc',
+        background: 'rgba(10,10,20,0.85)', border: '1px solid var(--wf-border)', borderRadius: 8,
+        padding: '6px 12px', fontFamily: 'monospace', fontSize: 11, color: 'var(--wf-text-2)',
         display: 'flex', gap: 14, backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
       }}>
         <span>🚗 {stats.vehicleCount}</span>
@@ -661,7 +663,7 @@ export default function MapView({
           backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
         }}>
           <span style={{ color: '#FF9800' }}>⚡ OVERRIDE</span>
-          <span style={{ color: '#fff' }}>{Math.round(overrideTimeRemaining)}s</span>
+          <span style={{ color: 'var(--wf-text-strong)' }}>{Math.round(overrideTimeRemaining)}s</span>
           <button onClick={onCancelOverride} style={{
             padding: '3px 10px', background: '#FF9800', color: '#000',
             border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 'bold',

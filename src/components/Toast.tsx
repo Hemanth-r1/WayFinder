@@ -54,7 +54,7 @@ export default function ToastContainer() {
           key={msg.id}
           onClick={() => dismiss(msg.id)}
           style={{
-            background: bgColor[msg.type], color: '#fff', padding: '8px 14px',
+            background: bgColor[msg.type], color: 'var(--wf-text-strong)', padding: '8px 14px',
             borderRadius: 6, fontSize: 12, fontFamily: 'monospace',
             boxShadow: '0 2px 8px rgba(0,0,0,0.3)', cursor: 'pointer',
             pointerEvents: 'auto', maxWidth: 320,

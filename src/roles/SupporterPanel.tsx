@@ -59,14 +59,14 @@ export default function SupporterPanel({ graph, signals }: Props) {
       <div style={styles.section}>
         <div style={styles.sectionTitle}>Supporter Tools</div>
         <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-          <button onClick={() => setMode('view')} style={{ flex: 1, padding: '6px 8px', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 'bold', background: mode === 'view' ? '#FF9800' : '#333' }} title="View existing signals">View</button>
-          <button onClick={() => setMode('add')} style={{ flex: 1, padding: '6px 8px', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 'bold', background: mode === 'add' ? '#4CAF50' : '#333' }} title="Add a new signal">Add Signal</button>
+          <button onClick={() => setMode('view')} style={{ flex: 1, padding: '6px 8px', color: 'var(--wf-text-strong)', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 'bold', background: mode === 'view' ? '#FF9800' : 'var(--wf-border)' }} title="View existing signals">View</button>
+          <button onClick={() => setMode('add')} style={{ flex: 1, padding: '6px 8px', color: 'var(--wf-text-strong)', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 'bold', background: mode === 'add' ? '#4CAF50' : 'var(--wf-border)' }} title="Add a new signal">Add Signal</button>
         </div>
         {mode === 'add' && (
           <div>
             <input type="text" value={roadName} onChange={(e) => setRoadName(e.target.value)} placeholder="Road name" style={styles.input} />
-            {placementPos && <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>Lat: {placementPos.lat.toFixed(6)}, Lng: {placementPos.lng.toFixed(6)}</div>}
-            {!placementPos && <div style={{ fontSize: 11, color: '#666', padding: '4px 0' }}>Click map to place</div>}
+            {placementPos && <div style={{ fontSize: 11, color: 'var(--wf-muted)', marginBottom: 4 }}>Lat: {placementPos.lat.toFixed(6)}, Lng: {placementPos.lng.toFixed(6)}</div>}
+            {!placementPos && <div style={{ fontSize: 11, color: 'var(--wf-soft)', padding: '4px 0' }}>Click map to place</div>}
             <button onClick={handlePlace} style={{ width: '100%', padding: '8px', background: '#4CAF50', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 'bold', marginTop: 4 }}>Place Signal</button>
           </div>
         )}
@@ -74,11 +74,11 @@ export default function SupporterPanel({ graph, signals }: Props) {
       <div style={styles.section}>
         <div style={styles.sectionTitle}>Coverage Gaps ({gapNodes.length})</div>
         {gapNodes.slice(0, 10).map((node) => (
-          <div key={node.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0', borderBottom: '1px solid #222' }}>
-            <span style={{ fontSize: 11, color: '#888', fontFamily: 'monospace' }}>{node.lat.toFixed(4)}, {node.lng.toFixed(4)}</span>
+          <div key={node.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0', borderBottom: '1px solid var(--wf-border)' }}>
+            <span style={{ fontSize: 11, color: 'var(--wf-muted)', fontFamily: 'monospace' }}>{node.lat.toFixed(4)}, {node.lng.toFixed(4)}</span>
             <button onClick={() => { setPlacementPos({ lat: node.lat, lng: node.lng }); setMode('add'); }} style={{ padding: '2px 8px', background: '#FF980022', color: '#FF9800', border: '1px solid #FF980044', borderRadius: 3, cursor: 'pointer', fontSize: 10 }}>+ Add</button>          </div>
         ))}
-        {gapNodes.length > 10 && <div style={{ fontSize: 11, color: '#666', padding: '4px 0' }}>+{gapNodes.length - 10} more...</div>}
+        {gapNodes.length > 10 && <div style={{ fontSize: 11, color: 'var(--wf-soft)', padding: '4px 0' }}>+{gapNodes.length - 10} more...</div>}
       </div>
       <div style={styles.section}>
         <div style={styles.sectionTitle}>Signals ({signalList.length})</div>
@@ -88,7 +88,7 @@ export default function SupporterPanel({ graph, signals }: Props) {
             return (
               <div key={sig.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' }}>
                 <span style={{ width: 8, height: 8, borderRadius: '50%', background: isGreen ? '#4CAF50' : '#f44336', flexShrink: 0 }} />
-                <span style={{ flex: 1, fontSize: 11, fontFamily: 'monospace', color: '#fff' }}>{sig.id}</span>
+                <span style={{ flex: 1, fontSize: 11, fontFamily: 'monospace', color: 'var(--wf-text-strong)' }}>{sig.id}</span>
                 <span style={{ color: isGreen ? '#4CAF50' : '#f44336', fontSize: 11, fontWeight: 'bold' }}>{phase.color}</span>
               </div>
             );
@@ -101,8 +101,8 @@ export default function SupporterPanel({ graph, signals }: Props) {
           {firebaseSignals.map((s) => (
             <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' }}>
               <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#FF9800', flexShrink: 0 }} />
-              <span style={{ flex: 1, fontSize: 11, fontFamily: 'monospace', color: '#fff' }}>{s.roadName}</span>
-              <span style={{ color: '#888', fontSize: 10 }}>{new Date(s.timestamp).toLocaleTimeString()}</span>
+              <span style={{ flex: 1, fontSize: 11, fontFamily: 'monospace', color: 'var(--wf-text-strong)' }}>{s.roadName}</span>
+              <span style={{ color: 'var(--wf-muted)', fontSize: 10 }}>{new Date(s.timestamp).toLocaleTimeString()}</span>
             </div>
           ))}
         </div>
@@ -112,7 +112,7 @@ export default function SupporterPanel({ graph, signals }: Props) {
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  section: { padding: '10px 0', borderBottom: '1px solid #222' },
-  sectionTitle: { fontSize: 11, color: '#888', textTransform: 'uppercase' as const, marginBottom: 8, fontWeight: 'bold' },
-  input: { width: '100%', padding: '6px 8px', background: '#0a0a0d', border: '1px solid #444', borderRadius: 4, color: '#fff', fontSize: 11, marginBottom: 6, boxSizing: 'border-box' as const },
+  section: { padding: '10px 0', borderBottom: '1px solid var(--wf-border)' },
+  sectionTitle: { fontSize: 11, color: 'var(--wf-muted)', textTransform: 'uppercase' as const, marginBottom: 8, fontWeight: 'bold' },
+  input: { width: '100%', padding: '6px 8px', background: 'var(--wf-bg)', border: '1px solid var(--wf-border)', borderRadius: 4, color: '#fff', fontSize: 11, marginBottom: 6, boxSizing: 'border-box' as const },
 };

@@ -96,10 +96,10 @@ const s: Record<string, CSSProperties> = {
     padding: 16, boxSizing: 'border-box', zIndex: 50,
   },
   card: {
-    width: '100%', maxWidth: 380, background: '#16161a', border: '1px solid #26262e', borderRadius: 16,
+    width: '100%', maxWidth: 380, background: 'var(--wf-surface)', border: '1px solid var(--wf-border)', borderRadius: 16,
     padding: '24px 20px', textAlign: 'center', boxSizing: 'border-box',
   },
-  title: { color: '#fff', fontSize: 20, fontWeight: 700, margin: '8px 0' },
+  title: { color: 'var(--wf-text-strong)', fontSize: 20, fontWeight: 700, margin: '8px 0' },
   text: { color: '#aab', fontSize: 13, lineHeight: 1.5, marginBottom: 12 },
   small: { color: '#99a', fontSize: 12, margin: '8px 0' },
   primary: {
@@ -110,6 +110,6 @@ const s: Record<string, CSSProperties> = {
     width: '100%', padding: 10, background: 'none', color: '#8ab4ff', border: 'none', fontSize: 13,
     cursor: 'pointer', marginTop: 8, minHeight: 44,
   },
-  bar: { height: 8, background: '#26262e', borderRadius: 4, overflow: 'hidden', marginTop: 8 },
+  bar: { height: 8, background: 'var(--wf-border)', borderRadius: 4, overflow: 'hidden', marginTop: 8 },
   fill: { height: '100%', background: '#4f8ef7', transition: 'width 0.3s' },
 };

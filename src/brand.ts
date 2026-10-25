@@ -29,15 +29,17 @@ export const BRAND = {
   ],
 } as const;
 
-/** Shared look with Avakasha (dark theme values of its design tokens). */
+/** Shared look with Avakasha. Surfaces and text follow the light / dark theme (index.css); accents are fixed. */
 export const COLORS = {
-  bgDeep: '#000000',
-  bgMid: '#0a0a0d',
-  surface: '#16161a',
-  border: '#26262e',
-  text: '#e8f2ff',
-  textMuted: '#a8bdd1',
-  textSoft: '#7a95b0',
+  bgDeep: 'var(--wf-bg-deep)',
+  bgMid: 'var(--wf-bg)',
+  surface: 'var(--wf-surface)',
+  border: 'var(--wf-border)',
+  text: 'var(--wf-text)',
+  textMuted: 'var(--wf-muted)',
+  textSoft: 'var(--wf-soft)',
+  /** Link text: bright teal on dark, deep teal on light (readable on both) */
+  link: 'var(--wf-link)',
   teal: '#2fe4cc',
   blue: '#4f8ef7',
   amber: '#fbbf24',
