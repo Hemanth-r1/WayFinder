@@ -2,7 +2,8 @@
  * WayFinder service worker: keeps Bangalore usable offline.
  * - Map tiles, styles, sprites and fonts (OpenFreeMap): cache first — they rarely change,
  *   and "Download Bangalore for offline use" pre-fills this cache.
- * - The app itself and the road network (/api/graph): network first, cached copy offline.
+ * - Road tiles (/api/roads/<version>/…): cache first — their URLs change when the roads do.
+ * - The app itself, /api/roads/meta and the full road network (/api/graph): network first, cached copy offline.
  * - Live data (/api/live/*, routes, reports…): network only — it must be fresh.
  */
 const MAP_CACHE = 'wf-map-v1';
@@ -48,9 +49,12 @@ self.addEventListener('fetch', event => {
     event.respondWith(cacheFirst(request));
     return;
   }
-  if (url.origin !== self.location.origin && !url.pathname.startsWith('/api/graph')) return;
+  const ours = url.origin === self.location.origin || url.pathname.startsWith('/api/');
+  if (!ours) return;
   if (url.pathname.startsWith('/api/')) {
-    if (url.pathname === '/api/graph') event.respondWith(networkFirst(request));
+    // Road tiles have the version in their URL and never change: keep them on the device
+    if (url.pathname.startsWith('/api/roads/') && url.pathname !== '/api/roads/meta') event.respondWith(cacheFirst(request));
+    else if (url.pathname === '/api/graph' || url.pathname === '/api/roads/meta') event.respondWith(networkFirst(request));
     return; // live data: straight to the network
   }
   event.respondWith(networkFirst(request));

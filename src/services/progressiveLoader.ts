@@ -1,52 +1,33 @@
 import { serverClient } from './serverClient.ts';
 import { dataCache } from './dataCache.ts';
 import { saveToIndexedDB, loadFromIndexedDB } from '../data/indexedDBCache';
-import type { RoadGraph, RoadEdge, RoadNode, TrafficSignal, RoadType, GeoPoint } from '../types';
+import type { RoadGraph, RoadNode, TrafficSignal, RoadType, GeoPoint } from '../types';
 
 /**
- * Graph as the server sends it (format 2): nodes as [id, lat, lng]; edges as
- * [id, from, to, name, roadType, speedLimit, lanes, length, bearing, geometry | null].
+ * Road data as the server sends it (format 2): nodes as [id, lat, lng]; edges as
+ * [id, from, to, name, roadType, speedLimit, lanes, length, bearing, geometry | null, oneway?].
  * A null geometry is the reverse direction of a two-way road: reuse the other one reversed.
  */
-interface RawGraphData {
+interface RawRoads {
   format: 2;
   nodes: [string, number, number][];
-  edges: [string, string, string, string, string, number, number, number, number, [number, number][] | null][];
+  edges: [string, string, string, string, string, number, number, number, number, [number, number][] | null, number?][];
+}
+interface RawGraphData extends RawRoads {
   signals: TrafficSignal[];
   source: string;
+  version?: string;
 }
 
-function hydrate(raw: RawGraphData): { graph: RoadGraph; signals: Map<string, TrafficSignal> } {
-  const nodes = new Map<string, RoadNode>(
-    raw.nodes.map(([id, lat, lng]) => [id, { id, lat, lng, isIntersection: true }]),
-  );
-  const shapes = new Map<string, GeoPoint[]>();
-  for (const e of raw.edges) if (e[9]) shapes.set(e[0], e[9].map(([lat, lng]) => ({ lat, lng })));
-
-  const edges = new Map<string, RoadEdge>();
-  const adjacency = new Map<string, RoadEdge[]>();
-  for (const [id, from, to, name, roadType, speedLimit, lanes, length, bearing] of raw.edges) {
-    const reverseId = `${to}-${from}`;
-    const geometry = shapes.get(id) ?? [...(shapes.get(reverseId) ?? [])].reverse();
-    const edge: RoadEdge = {
-      id, from, to, name, roadType: roadType as RoadType, speedLimit, lanes, length, bearing,
-      geometry: geometry.length >= 2 ? geometry : [nodes.get(from)!, nodes.get(to)!],
-      congestionWeight: 0,
-      oneway: false,
-    };
-    edges.set(id, edge);
-    (adjacency.get(from) ?? adjacency.set(from, []).get(from)!).push(edge);
-  }
-  for (const e of edges.values()) e.oneway = !edges.has(`${e.to}-${e.from}`);
-
-  return {
-    graph: { nodes, edges, adjacency },
-    signals: new Map(raw.signals.map(s => [s.id, { ...s, approaches: s.approaches ?? [] }])),
-  };
-}
-
-/** IndexedDB key for the saved road network (roads, junctions, signals). */
+/** IndexedDB key for the full road network saved for offline use. */
 const GRAPH_KEY = 'bangalore-graph-v2';
+/** Same grid as the server's road tiles (degrees). */
+const CELL_DEG = 0.02;
+/** Below this zoom only the main roads are needed (they come with the first load). */
+const CELL_MIN_ZOOM = 13;
+/** Extra margin around the view, so roads just off screen are there when you pan. */
+const VIEW_MARGIN = 0.1;
+const MAX_CELLS = 40;
 
 export type LoadPhase = 'empty' | 'map' | 'roads' | 'signals' | 'vehicles' | 'full';
 
@@ -59,9 +40,22 @@ export interface LoadUpdate {
   stats?: any;
 }
 
+/**
+ * Loads the road network piece by piece: at start only the signals and the main roads
+ * (small), then the ~2 km cells around what's on screen (plus a 10% margin) as the map
+ * moves. Cells have fixed URLs, so the browser and CDN keep them; nothing is sent twice.
+ * The whole network is downloaded only for offline use.
+ */
 export class ProgressiveLoader {
   private updateCallbacks: Set<(update: LoadUpdate) => void> = new Set();
   private currentPhase: LoadPhase = 'empty';
+  private graph: RoadGraph = { nodes: new Map(), edges: new Map(), adjacency: new Map() };
+  private signals = new Map<string, TrafficSignal>();
+  private version = '';
+  private source = '';
+  private cells = new Set<string>();
+  private view: { bbox: [number, number, number, number]; zoom: number } | null = null;
+  private notifyTimer: ReturnType<typeof setTimeout> | null = null;
 
   onUpdate(callback: (update: LoadUpdate) => void): void {
     this.updateCallbacks.add(callback);
@@ -76,43 +70,104 @@ export class ProgressiveLoader {
     for (const callback of this.updateCallbacks) callback(update);
   }
 
-  /**
-   * Loads Bangalore's road network from the server (the browser's HTTP cache keeps it
-   * for an hour; it's too big for localStorage).
-   */
+  /** Adds roads to the graph (the same Map objects, so the app keeps one graph). */
+  private merge(raw: RawRoads): void {
+    const { nodes, edges, adjacency } = this.graph;
+    for (const [id, lat, lng] of raw.nodes) if (!nodes.has(id)) nodes.set(id, { id, lat, lng, isIntersection: true } as RoadNode);
+    const shapes = new Map<string, GeoPoint[]>();
+    for (const e of raw.edges) if (e[9]) shapes.set(e[0], e[9].map(([lat, lng]) => ({ lat, lng })));
+    for (const [id, from, to, name, roadType, speedLimit, lanes, length, bearing, , oneway] of raw.edges) {
+      if (edges.has(id)) continue;
+      const reverse = edges.get(`${to}-${from}`);
+      const geometry = shapes.get(id) ?? (reverse ? [...reverse.geometry].reverse() : [...(shapes.get(`${to}-${from}`) ?? [])].reverse());
+      const edge = {
+        id, from, to, name, roadType: roadType as RoadType, speedLimit, lanes, length, bearing,
+        geometry: geometry.length >= 2 ? geometry : [nodes.get(from)!, nodes.get(to)!],
+        congestionWeight: 0,
+        oneway: oneway === undefined ? false : oneway === 1,
+      };
+      edges.set(id, edge);
+      (adjacency.get(from) ?? adjacency.set(from, []).get(from)!).push(edge);
+    }
+    // Older full-graph format without the one-way flag: a road is one-way when no reverse exists
+    if (raw.edges.length && raw.edges[0][10] === undefined) {
+      for (const e of edges.values()) e.oneway = !edges.has(`${e.to}-${e.from}`);
+    }
+  }
+
+  /** Tells the app the graph grew (batched: several cells arriving together → one redraw). */
+  private changed(): void {
+    if (this.notifyTimer) return;
+    this.notifyTimer = setTimeout(() => {
+      this.notifyTimer = null;
+      this.notify({ phase: 'full', source: this.source, graph: this.graph }); // more roads, not a loading step
+    }, 50);
+  }
+
+  private async getJson<T>(path: string): Promise<T> {
+    return serverClient.fetchRoads(path) as Promise<T>;
+  }
+
   async load(): Promise<void> {
     this.notify({ phase: 'map', source: 'tiles' });
     dataCache.remove('graph'); // drop graphs cached by older versions (could be the demo grid)
-
     try {
-      let raw: RawGraphData;
-      let source: string;
-      try {
-        raw = await serverClient.fetchGraph() as RawGraphData;
-        if (raw.format !== 2) throw new Error('Unexpected graph format — reload after the server updates');
-        source = raw.source;
-        // Keep a copy on the device for offline use
-        saveToIndexedDB(GRAPH_KEY, { data: raw, timestamp: Date.now() }).catch(() => {});
-      } catch (err) {
-        const saved = await loadFromIndexedDB<RawGraphData>(GRAPH_KEY).catch(() => null);
-        if (!saved || saved.data.format !== 2) throw err;
-        console.warn('[ProgressiveLoader] Server unreachable — using the road network saved on this device');
-        raw = saved.data;
-        source = `${raw.source} (saved ${new Date(saved.timestamp).toLocaleDateString()})`;
-      }
-      const { graph, signals } = hydrate(raw);
-      this.notify({ phase: 'roads', source, graph, signals });
-      this.notify({ phase: 'signals', source, signals });
-      this.notify({ phase: 'full', source });
+      const meta = await this.getJson<{ version: string; source: string }>('/api/roads/meta');
+      this.version = meta.version;
+      this.source = meta.source;
+      const [signals, main] = await Promise.all([
+        this.getJson<TrafficSignal[]>(`/api/roads/${this.version}/signals`),
+        this.getJson<RawRoads>(`/api/roads/${this.version}/main`),
+      ]);
+      this.signals = new Map(signals.map(s => [s.id, { ...s, approaches: s.approaches ?? [] }]));
+      this.merge(main);
     } catch (err) {
-      console.error('[ProgressiveLoader] Failed to load from server:', err);
-      this.notify({
-        phase: 'full',
-        source: 'error',
-        graph: { nodes: new Map(), edges: new Map(), adjacency: new Map() },
-        signals: new Map(),
-      });
+      // Server unreachable: the full network saved for offline use, if any
+      const saved = await loadFromIndexedDB<RawGraphData>(GRAPH_KEY).catch(() => null);
+      if (!saved || saved.data.format !== 2) {
+        console.error('[ProgressiveLoader] Failed to load roads:', err);
+        this.notify({ phase: 'full', source: 'error', graph: this.graph, signals: this.signals });
+        return;
+      }
+      console.warn('[ProgressiveLoader] Server unreachable — using the road network saved on this device');
+      this.merge(saved.data);
+      this.signals = new Map(saved.data.signals.map(s => [s.id, { ...s, approaches: s.approaches ?? [] }]));
+      this.source = `${saved.data.source} (saved ${new Date(saved.timestamp).toLocaleDateString()})`;
     }
+    this.notify({ phase: 'roads', source: this.source, graph: this.graph, signals: this.signals });
+    this.notify({ phase: 'signals', source: this.source, signals: this.signals });
+    this.notify({ phase: 'full', source: this.source });
+    if (this.view) this.loadView(this.view.bbox, this.view.zoom);
+  }
+
+  /** Loads the road cells covering the view plus a 10% margin (zoomed in only). */
+  loadView(bbox: [number, number, number, number], zoom: number): void {
+    this.view = { bbox, zoom };
+    if (!this.version || zoom < CELL_MIN_ZOOM) return;
+    const [w, s, e, n] = bbox;
+    const dx = (e - w) * VIEW_MARGIN, dy = (n - s) * VIEW_MARGIN;
+    const x0 = Math.floor((w - dx) / CELL_DEG), x1 = Math.floor((e + dx) / CELL_DEG);
+    const y0 = Math.floor((s - dy) / CELL_DEG), y1 = Math.floor((n + dy) / CELL_DEG);
+    if ((x1 - x0 + 1) * (y1 - y0 + 1) > MAX_CELLS) return;
+    for (let x = x0; x <= x1; x++) {
+      for (let y = y0; y <= y1; y++) {
+        const key = `${x}_${y}`;
+        if (this.cells.has(key)) continue;
+        this.cells.add(key);
+        this.getJson<RawRoads>(`/api/roads/${this.version}/cell/${x}/${y}`)
+          .then(raw => { this.merge(raw); this.changed(); })
+          .catch(() => this.cells.delete(key)); // try again next time the view moves
+      }
+    }
+  }
+
+  /** The whole road network, saved on this device for offline use (~4 MB compressed). */
+  async downloadForOffline(): Promise<void> {
+    const raw = await serverClient.fetchGraph() as RawGraphData;
+    if (raw.format !== 2) throw new Error('Unexpected road network format');
+    await saveToIndexedDB(GRAPH_KEY, { data: raw, timestamp: Date.now() });
+    this.merge(raw);
+    this.changed();
   }
 
   getCurrentPhase(): LoadPhase {

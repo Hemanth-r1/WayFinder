@@ -710,7 +710,7 @@ function AppContent() {
           traffic={traffic}
           focus={mapFocus}
           onSelectJunction={setSelectedJunction}
-          onViewportChange={(bbox, zoom) => serverClient.setViewport(bbox, zoom)}
+          onViewportChange={(bbox, zoom) => { serverClient.setViewport(bbox, zoom); progressiveLoader.loadView(bbox, zoom); }}
         />
       </div>
 

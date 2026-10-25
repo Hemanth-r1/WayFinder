@@ -1,7 +1,8 @@
 import express from 'express';
 import { createServer } from 'http';
 import { initFirebase } from './firebaseClient.js';
-import { getGraph, getClientGraph } from './graphService.js';
+import { getGraph, getClientGraph, getRoadTiles, type Piece } from './graphService.js';
+import { gzipSync } from 'node:zlib';
 import { activeNavigatorCount, getGraphIndex, nearestRoadSegment } from './pathfindingService.js';
 import {
   getConditions, setWeatherMode, setTrafficLevel, startWeatherPolling,
@@ -82,6 +83,40 @@ app.get('/api/graph', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// Road tiles: the map loads only the roads around what's on screen (see getRoadTiles).
+// /api/roads/meta says the current version; the other URLs include it and never change.
+function sendPiece(req: express.Request, res: express.Response, p: Piece | undefined, cache: string) {
+  if (!p) return res.status(404).json({ error: 'No roads there' });
+  res.set('Cache-Control', cache).set('Vary', 'Accept-Encoding').type('application/json');
+  if (/\bgzip\b/.test(String(req.headers['accept-encoding'] ?? ''))) res.set('Content-Encoding', 'gzip').send(p.gzip);
+  else res.send(p.json);
+}
+const FOREVER = 'public, max-age=31536000, immutable';
+app.get('/api/roads/meta', async (req, res) => {
+  try { sendPiece(req, res, (await getRoadTiles()).meta, 'public, max-age=0, s-maxage=300'); }
+  catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+app.get('/api/roads/:version/:part', async (req, res) => {
+  try {
+    const t = await getRoadTiles();
+    if (req.params.version !== t.version) return res.status(409).json({ error: 'Road network updated — reload', version: t.version });
+    const part = req.params.part === 'signals' ? t.signals : req.params.part === 'main' ? t.main : undefined;
+    sendPiece(req, res, part, FOREVER);
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+app.get('/api/roads/:version/cell/:x/:y', async (req, res) => {
+  try {
+    const t = await getRoadTiles();
+    if (req.params.version !== t.version) return res.status(409).json({ error: 'Road network updated — reload', version: t.version });
+    const x = Number(req.params.x), y = Number(req.params.y);
+    if (!Number.isInteger(x) || !Number.isInteger(y)) return res.status(400).json({ error: 'cell x and y must be integers' });
+    // An empty cell is cached too (an empty list), so the map doesn't keep asking
+    const p = t.cells.get(`${x}_${y}`) ?? EMPTY_CELL;
+    sendPiece(req, res, p, FOREVER);
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+const EMPTY_CELL: Piece = { json: '{"format":2,"nodes":[],"edges":[]}', gzip: gzipSync('{"format":2,"nodes":[],"edges":[]}') };
 
 // Live map for many viewers: the same for everyone, so Firebase Hosting's CDN serves it
 // (s-maxage) and the server builds each piece once per second however many people watch
@@ -451,7 +486,7 @@ async function initializeServer() {
     const { graph, signals } = await getGraph();
     initReports(getGraphIndex(graph, signals));
     initJunctions(getGraphIndex(graph, signals), signals, (await getGraph()).places);
-    getClientGraph().catch(() => {}); // serialise once, now that signals carry their directions
+    getRoadTiles().catch(() => {}); // serialise once (road tiles + full graph), now that signals carry their directions
     const engine = initSimulationEngine(graph, signals);
     initRouteWorkers(graph, signals); // route searches on the other CPU cores
     nearestRoadSegment(getGraphIndex(graph, signals), 12.97, 77.59, 1); // build the nearest-road grid now

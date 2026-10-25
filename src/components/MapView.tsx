@@ -119,6 +119,19 @@ function pinElement(color: string, label: string): HTMLElement {
 }
 
 
+/**
+ * Roads layers for what's on screen plus 10% (not the whole city: drawing ~100k roads
+ * made the map stutter). Rebuilt when the view moves or more roads arrive.
+ */
+function refreshRoads(map: MLMap, graph: RoadGraph): void {
+  if (!map.getSource(SRC.trafficBase)) return;
+  const b = map.getBounds();
+  const dx = (b.getEast() - b.getWest()) * 0.1, dy = (b.getNorth() - b.getSouth()) * 0.1;
+  const bbox: [number, number, number, number] = [b.getWest() - dx, b.getSouth() - dy, b.getEast() + dx, b.getNorth() + dy];
+  setSourceData(map, SRC.trafficBase, trafficBaseData(graph, bbox, map.getZoom()));
+  if (map.getLayoutProperty('wf-roads', 'visibility') === 'visible') setSourceData(map, SRC.roads, roadsData(graph, bbox));
+}
+
 /** Lane markings for the roads on screen, only when zoomed in close (they are many). */
 let markingsShown = false;
 function refreshMarkings(map: MLMap, graph: RoadGraph): void {
@@ -200,6 +213,10 @@ export default function MapView({
         attributionControl: { compact: true },
         // Map position in the URL (#zoom/lat/lng): shareable views, kept on reload
         hash: true,
+        // Phones: draw at most 2× (3× screens look the same and cost 2.25× the pixels)
+        pixelRatio: Math.min(window.devicePixelRatio || 1, 2),
+        // No label fade: every data update would otherwise animate ~20 extra frames
+        fadeDuration: 0,
       });
     } catch (err) {
       // No WebGL (very old browser or GPU blocked)
@@ -277,6 +294,7 @@ export default function MapView({
       viewTimer = window.setTimeout(() => {
         const b = map.getBounds();
         onViewportChangeRef.current?.([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()], map.getZoom());
+        refreshRoads(map, graphRef.current);
         refreshMarkings(map, graphRef.current);
       }, 200);
     };
@@ -328,8 +346,7 @@ export default function MapView({
     const map = loadedMap();
     if (!map || graphVersion === lastGraphVersion.current) return;
     lastGraphVersion.current = graphVersion;
-    setSourceData(map, SRC.roads, roadsData(graph));
-    setSourceData(map, SRC.trafficBase, trafficBaseData(graph));
+    refreshRoads(map, graph);
     refreshMarkings(map, graph);
 
     // Show the whole network first, unless the URL already says where to look
@@ -389,10 +406,24 @@ export default function MapView({
   }, [selectedSource, selectedDest]);
 
   // ── Live layers ───────────────────────────────────────────────────────────
+  // Signals: re-send the layer only when a light changes colour (timers tick every second,
+  // colours change every few tens of seconds; each re-send redraws the map)
+  const signalColours = useRef('');
+  const signalsSentAt = useRef(0);
   useEffect(() => {
     signalsAt.current = Date.now();
     const map = loadedMap();
-    if (map) setSourceData(map, SRC.signals, signalsData(signals, graph));
+    if (!map) return;
+    const data = signalsData(signals, graph);
+    const key = loadCount + ':' + data.features.length + ':' + data.features.map(f => f.properties.color).join('');
+    if (key === signalColours.current) return;
+    // Zoomed out, hundreds of lights are on screen and one changes almost every second:
+    // refresh the dots every 5 s there (close up, at once)
+    const now = Date.now();
+    if (map.getZoom() < 14 && now - signalsSentAt.current < 5000 && signalColours.current.startsWith(loadCount + ':')) return;
+    signalsSentAt.current = now;
+    signalColours.current = key;
+    setSourceData(map, SRC.signals, data);
   }, [signals, graph, loadCount]);
 
   // Vehicles glide between server updates (sent every ~0.5 s) instead of jumping
@@ -421,13 +452,29 @@ export default function MapView({
   }, [vehicles, vehicleVersion]);
 
   useEffect(() => {
-    let raf = 0, last = 0;
+    let raf = 0, last = 0, drewEmpty = false, settledAt = -1;
+    // Weaker phones (few cores or little memory) animate at 10 fps instead of 20
+    const nav = navigator as Navigator & { deviceMemory?: number };
+    const lowEnd = (nav.hardwareConcurrency ?? 8) <= 4 || (nav.deviceMemory ?? 8) <= 4;
     const frame = (t: number) => {
       raf = requestAnimationFrame(frame);
       const map = loadedMap();
-      if (!map || t - last < 50 || document.hidden) return; // ~20 fps, paused in background tabs
-      last = t;
       const anim = animRef.current;
+      // Many vehicles in view: fewer frames, the glide still looks smooth
+      const step = lowEnd || anim.vehicles.size > 1500 ? 100 : 50;
+      if (!map || t - last < step || document.hidden) return; // paused in background tabs
+      // Only redraw while something moves: re-sending the layer makes MapLibre re-cut and
+      // redraw it, which made the whole map stutter when done 20× a second for nothing
+      if (anim.vehicles.size === 0) {
+        if (!drewEmpty) { setSourceData(map, SRC.vehicles, vehiclesData([], followRef.current)); drewEmpty = true; }
+        return;
+      }
+      drewEmpty = false;
+      let moving = false;
+      for (const a of anim.vehicles.values()) if (t < a.t0 + a.duration) { moving = true; break; }
+      if (!moving && settledAt === anim.lastUpdate) return;
+      settledAt = moving ? -1 : anim.lastUpdate;
+      last = t;
       const shown: Vehicle[] = [];
       for (const a of anim.vehicles.values()) {
         const p = interpolate(a, t);

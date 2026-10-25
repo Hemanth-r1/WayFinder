@@ -30,3 +30,6 @@ dist-ssr
 
 # Generated code graph
 graphify-out/
+
+# Firebase CLI deploy cache
+.firebase/

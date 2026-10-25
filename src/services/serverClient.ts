@@ -355,6 +355,13 @@ class ServerClient {
     this.pollNow?.(); // vehicles for the new area without waiting for the next poll
   }
 
+  /** Road tiles (/api/roads/…): plain GETs with fixed URLs, so the browser and CDN cache them. */
+  async fetchRoads(path: string): Promise<unknown> {
+    const response = await fetch(`${SERVER_URL}${path}`);
+    if (!response.ok) throw new Error(`Failed to load roads: ${response.status}`);
+    return response.json();
+  }
+
   async fetchGraph() {
     const response = await fetch(`${SERVER_URL}/api/graph`);
     if (!response.ok) throw new Error(`Failed to fetch graph: ${response.statusText}`);

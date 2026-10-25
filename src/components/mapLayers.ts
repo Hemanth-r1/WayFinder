@@ -232,7 +232,9 @@ const VEHICLE_SIZE = ['interpolate', ['exponential', 2], ['zoom'],
   22, ['*', ['get', 'k'], ICON_PX_PER_M_Z16 * 64]] as unknown as ExpressionSpecification;
 
 export function addOverlayLayers(map: MLMap, opts: { showRoads: boolean }): void {
-  for (const id of Object.values(SRC)) map.addSource(id, { type: 'geojson', data: EMPTY });
+  // maxzoom 15: MapLibre cuts tiles up to zoom 15 and over-zooms beyond (default 18 re-cuts
+  // at every level — slower, and the ~0.1 m precision at 15 is plenty)
+  for (const id of Object.values(SRC)) map.addSource(id, { type: 'geojson', data: EMPTY, maxzoom: 15 });
 
   const round = { 'line-join': 'round', 'line-cap': 'round' } as const;
 
@@ -438,10 +440,19 @@ export function markingsData(graph: RoadGraph, bbox: [number, number, number, nu
   return fc(features);
 }
 
-export function roadsData(graph: RoadGraph): FC {
+type BBox = [number, number, number, number];
+
+/** True if any point of the shape lies in the box. */
+function inBox(g: { lat: number; lng: number }[], [w, s, e, n]: BBox): boolean {
+  for (const p of g) if (p.lng >= w && p.lng <= e && p.lat >= s && p.lat <= n) return true;
+  return false;
+}
+
+export function roadsData(graph: RoadGraph, bbox: BBox): FC {
   const drawn = new Set<string>();
   const features: Feature<Geometry, Props>[] = [];
   for (const edge of graph.edges.values()) {
+    if (!edge.geometry || !inBox(edge.geometry, bbox)) continue;
     const key = edge.from < edge.to ? `${edge.from}|${edge.to}` : `${edge.to}|${edge.from}`;
     if (drawn.has(key)) continue;
     drawn.add(key);
@@ -452,13 +463,16 @@ export function roadsData(graph: RoadGraph): FC {
 }
 
 /**
- * Every road in the browser graph, each direction (`tw` = 1 on two-way roads so each direction sits on its
+ * Roads in the view (plus margin), each direction (`tw` = 1 on two-way roads so each direction sits on its
  * own side). Built once per road network: this is the green "flowing" layer.
  */
-export function trafficBaseData(graph: RoadGraph): FC {
+export function trafficBaseData(graph: RoadGraph, bbox: BBox, zoom: number): FC {
   const features: Feature<Geometry, Props>[] = [];
   for (const edge of graph.edges.values()) {
     if (!edge.geometry || edge.geometry.length < 2) continue;
+    // Zoomed out: main roads only (smaller ones are hidden there anyway)
+    if (zoom < 13 && !MAJOR.has(edge.roadType)) continue;
+    if (!inBox(edge.geometry, bbox)) continue;
     features.push(lineFeature(edge.geometry.map(p => [p.lat, p.lng]), { tw: edge.oneway ? 0 : 1, mn: MAJOR.has(edge.roadType) ? 0 : 1 }));
   }
   return fc(features);

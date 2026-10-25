@@ -56,6 +56,19 @@ async function call(method, path, user, role, body) {
   check('live/cell bad coords → 400', (await call('GET', '/api/live/cell/a/1')).status === 400);
   check('live/cell far outside → empty', JSON.stringify((await call('GET', '/api/live/cell/0/0')).json) === '[]');
 
+  // 2b. Road tiles (the map loads only the roads in view)
+  const meta = await call('GET', '/api/roads/meta');
+  check('roads/meta has version', meta.status === 200 && typeof meta.json?.version === 'string');
+  const roadsV = meta.json?.version;
+  const main = await call('GET', `/api/roads/${roadsV}/main`);
+  check('roads/main: main roads with one-way flag', main.status === 200 && main.json.edges.length > 1000 && main.json.edges[0].length === 11);
+  check('roads/main cached for good', /immutable/.test(main.headers.get('cache-control') ?? ''));
+  const rcell = await call('GET', `/api/roads/${roadsV}/cell/${cx}/${cy}`);
+  check('roads/cell has roads', rcell.status === 200 && rcell.json.edges.length > 10 && rcell.json.nodes.length > 10);
+  check('roads/cell outside city → empty', (await call('GET', `/api/roads/${roadsV}/cell/0/0`)).json?.edges?.length === 0);
+  check('roads: old version → 409', (await call('GET', '/api/roads/oldversion/main')).status === 409);
+  check('roads/signals', ((await call('GET', `/api/roads/${roadsV}/signals`)).json ?? []).length > 100);
+
   // 3. Routes
   let route; for (let i = 0; i < 5; i++) { route = await call('POST', '/api/route', 'demo-route', 'user', { sourceId: A, destId: B }); if (route.status !== 503) break; check('route: busy answer says plan on device', route.json?.planOnDevice === true); await new Promise(r => setTimeout(r, 1500)); }
   check('route: options', route.status === 200 && route.json.routes.length >= 1, `→ ${route.status} ${JSON.stringify(route.json)?.slice(0, 120)}`);
