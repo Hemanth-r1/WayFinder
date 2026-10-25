@@ -1,7 +1,10 @@
+import { saveToIndexedDB, loadFromIndexedDB } from '../data/indexedDBCache';
 // Production is served by Firebase Hosting, which forwards /api/** to Cloud Run on the same origin.
 const SERVER_URL: string = import.meta.env.VITE_SERVER_URL ?? (import.meta.env.DEV ? 'http://localhost:8080' : '');
 /** Matches the CDN cache time of /api/live/* (1 s) */
 const POLL_INTERVAL_MS = 1000;
+/** Signal states are fetched every this many polls; the device advances countdowns in between */
+const SIGNAL_EVERY = 5;
 /** Same grid as the server's liveSnapshot.ts */
 const CELL_DEG = 0.02;
 const VEHICLE_MIN_ZOOM = 13.5;
@@ -250,6 +253,21 @@ export interface RoadReport {
   confirmSource: 'people' | 'operator' | 'gps' | null;
   createdAt: number;
   expiresAt: number;
+  /** Photo attached by the reporter or an operator */
+  photoId?: string;
+}
+
+export type FilePurpose = 'report-photo' | 'profile' | 'document';
+/** A file the user stored (server/src/fileService.ts). */
+export interface FileMeta {
+  id: string;
+  owner: string;
+  name: string;
+  type: string;
+  size: number;
+  purpose: FilePurpose;
+  reportId?: string;
+  createdAt: number;
 }
 
 export interface ReportPrompt {
@@ -426,6 +444,11 @@ class ServerClient {
   /** Map area on screen ([west, south, east, north]) and zoom; vehicles are sent only for it */
   private view: { bbox: [number, number, number, number]; zoom: number } | null = null;
   private pollCount = 0;
+  /** Live data this device already has: signal order (by version), phases, conditions and traffic versions */
+  private liveState = {
+    sv: '', order: [] as string[], pv: '', sentPv: '', phaseSets: {} as Record<string, unknown>,
+    cv: '', ta: 0, traffic: new Map<string, number>(),
+  };
 
   /** Tells the server which part of the map is visible. */
   setViewport(bbox: [number, number, number, number], zoom: number): void {
@@ -471,6 +494,31 @@ class ServerClient {
     emergency?: EmergencyKind | null,
   ): Promise<NavigationResponse> {
     return this.post('/api/user/start', { userId, sourceNodeId, destNodeId, edgeIds, mode, emergency: emergency ?? undefined }, 'Failed to start navigation');
+  }
+
+  // ── Users' files ─────────────────────────────────────────────────────────────
+
+  async listFiles(): Promise<{ files: FileMeta[]; usedBytes: number }> {
+    return this.getJson('/api/files', 'Failed to load your files');
+  }
+
+  async uploadFile(body: Blob, name: string, purpose: FilePurpose, reportId?: string): Promise<FileMeta> {
+    const q = new URLSearchParams({ name, purpose, ...(reportId ? { reportId } : {}) });
+    const response = await this.send(`/api/files?${q}`, { method: 'POST', headers: { 'Content-Type': body.type || 'application/octet-stream' }, body });
+    if (!response.ok) throw new Error(await errorMessage(response, 'Upload failed'));
+    return (await response.json()).file;
+  }
+
+  /** A stored file's bytes (immutable: the browser cache keeps it after the first time). */
+  async fileBlob(id: string): Promise<Blob> {
+    const response = await this.send(`/api/files/${encodeURIComponent(id)}`);
+    if (!response.ok) throw new Error(await errorMessage(response, 'Could not open the file'));
+    return response.blob();
+  }
+
+  async deleteFile(id: string): Promise<void> {
+    const response = await this.send(`/api/files/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (!response.ok) throw new Error(await errorMessage(response, 'Could not delete the file'));
   }
 
   // ── Emergency corridors ──────────────────────────────────────────────────────
@@ -669,26 +717,67 @@ class ServerClient {
       const res = await fetch(`${SERVER_URL}${path}`);
       return res.ok ? res.json() : null;
     };
+    // What this device already has, so only changes are downloaded
+    const live = this.liveState;
     const poll = async () => {
       try {
-        const withTraffic = this.pollCount++ % 3 === 0; // road traffic changes slowly
+        const n = this.pollCount++;
         const cells: string[] = [];
         if (this.view && this.view.zoom >= VEHICLE_MIN_ZOOM) {
-          const [w, so, e, n] = this.view.bbox;
-          const dx = (e - w) * 0.2, dy = (n - so) * 0.2;
+          const [w, so, e, nn] = this.view.bbox;
+          const dx = (e - w) * 0.2, dy = (nn - so) * 0.2;
           const x0 = Math.floor((w - dx) / CELL_DEG), x1 = Math.floor((e + dx) / CELL_DEG);
-          const y0 = Math.floor((so - dy) / CELL_DEG), y1 = Math.floor((n + dy) / CELL_DEG);
+          const y0 = Math.floor((so - dy) / CELL_DEG), y1 = Math.floor((nn + dy) / CELL_DEG);
           if ((x1 - x0 + 1) * (y1 - y0 + 1) <= MAX_CELLS) {
             for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) cells.push(`/api/live/cell/${x}/${y}`);
           }
         }
-        const [common, traffic, ...vehicleLists] = await Promise.all([
-          getJson('/api/live/common'),
-          withTraffic ? getJson('/api/live/traffic') : Promise.resolve(null),
-          ...cells.map(getJson),
-        ]);
+        const [common, ...vehicleLists] = await Promise.all([getJson('/api/live/common'), ...cells.map(getJson)]);
         if (!common) return;
-        const data = { ...common, vehicles: decodeVehicles(vehicleLists.flatMap(l => l ?? [])), ...(traffic ? { traffic } : {}) };
+        const data: Record<string, unknown> = { stats: common.stats, at: common.at, vehicles: decodeVehicles(vehicleLists.flatMap(l => l ?? [])) };
+
+        // Signal order: once per version, kept on the device
+        if (common.sv && live.sv !== common.sv) {
+          const saved = await loadFromIndexedDB<string[]>(`signal-order-${common.sv}`).catch(() => null);
+          const order = saved?.data ?? await getJson(`/api/live/signal-order/${common.sv}`);
+          if (Array.isArray(order)) {
+            live.sv = common.sv; live.order = order;
+            if (!saved) saveToIndexedDB(`signal-order-${common.sv}`, { data: order, timestamp: Date.now() }).catch(() => {});
+          }
+        }
+        // Phases that differ from the road data, and road conditions: only when their version changes
+        if (common.pv !== live.pv) {
+          const phases = await getJson('/api/live/phases');
+          if (phases) { live.pv = common.pv; live.phaseSets = phases; }
+        }
+        if (common.cv !== live.cv) {
+          const conditions = await getJson('/api/conditions');
+          if (conditions) { live.cv = common.cv; data.conditions = conditions; }
+        }
+        // Signal states every few seconds (the device advances the countdowns in between)
+        if (live.order.length && (n % SIGNAL_EVERY === 0 || live.pv !== live.sentPv)) {
+          const states = await getJson('/api/live/signals') as [number, number][] | null;
+          if (states && states.length === live.order.length) {
+            const byId: Record<string, [number, number]> = {};
+            states.forEach(([phase, tenths], i) => { byId[live.order[i]] = [phase, tenths / 10]; });
+            data.signalStates = byId;
+            data.phaseSets = live.phaseSets;
+            live.sentPv = live.pv;
+          }
+        }
+        // Road traffic: only what changed since the copy on this device
+        if (common.ta !== live.ta) {
+          const delta = live.ta ? await getJson('/api/live/traffic-delta') as { from: number; at: number; set: [string, number][]; clear: string[] } | null : null;
+          if (delta && delta.from === live.ta) {
+            for (const [id, level] of delta.set) live.traffic.set(id, level);
+            for (const id of delta.clear) live.traffic.delete(id);
+            live.ta = delta.at;
+          } else {
+            const full = await getJson('/api/live/traffic') as [string, number][] | null;
+            if (full) { live.traffic = new Map(full); live.ta = common.ta; }
+          }
+          data.traffic = [...live.traffic];
+        }
         this.notifyCallbacks({ type: 'update', data });
       } catch { /* server unreachable; keep trying */ }
     };

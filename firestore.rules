@@ -16,6 +16,14 @@ service cloud.firestore {
         && request.resource.data.role == 'user';
       allow update: if signedIn() && request.auth.uid == userId
         && request.resource.data.role == resource.data.role;
+      // Saved places (home, work, favourites) and app settings: the user's own, nobody else's
+      match /places/{placeId} {
+        allow read, write: if signedIn() && request.auth.uid == userId
+          && (request.resource == null || request.resource.data.keys().hasOnly(['name', 'lat', 'lng', 'kind', 'updatedAt']));
+      }
+      match /settings/{docId} {
+        allow read, write: if signedIn() && request.auth.uid == userId;
+      }
     }
     match /routes/{routeId} {
       allow read, delete: if signedIn() && request.auth.uid == resource.data.userId;
@@ -32,6 +40,7 @@ service cloud.firestore {
       allow read: if signedIn();
       allow write: if signedIn() && roleOf(request.auth.uid) == 'controller';
     }
-    // Everything else (server `commands`, `junctionCounts`, `signalControlLog`) is Admin SDK only.
+    // Everything else (server `commands`, `junctionCounts`, `signalControlLog`, `junctionRules`,
+    // `tripRoutes`, `userFiles`) is Admin SDK only.
   }
 }

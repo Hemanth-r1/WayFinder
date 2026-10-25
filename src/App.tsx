@@ -12,6 +12,8 @@ import UserPanel, { type RecentTrip } from './roles/UserPanel';
 import SupporterPanel from './roles/SupporterPanel';
 import JunctionPanel from './roles/JunctionPanel';
 import EmergencyPanel from './roles/EmergencyPanel';
+import MyDataCard from './components/MyDataCard';
+import { keepDataOnDevice } from './services/userData';
 import OfflineCard from './components/OfflineCard';
 import { offlineRoute } from './utils/offlineRoute';
 import NavigationGuide from './components/NavigationGuide';
@@ -56,6 +58,24 @@ function AppContent() {
   const [loadSource, setLoadSource] = useState('none');
   const [graph, setGraph] = useState<RoadGraph>({ nodes: new Map(), edges: new Map(), adjacency: new Map() });
   const [signals, setSignals] = useState<Map<string, TrafficSignal>>(new Map());
+  // Signal states arrive every few seconds; the device runs the cycle in between
+  useEffect(() => {
+    const t = window.setInterval(() => setSignals(prev => {
+      if (prev.size === 0) return prev;
+      const next = new Map<string, TrafficSignal>();
+      for (const [id, s] of prev) {
+        if (!s.phases.length) { next.set(id, s); continue; }
+        let i = s.currentPhaseIndex % s.phases.length, timer = s.timer + 1;
+        for (let guard = 0; timer >= s.phases[i].duration && guard < s.phases.length; guard++) {
+          timer -= s.phases[i].duration;
+          i = (i + 1) % s.phases.length;
+        }
+        next.set(id, i === s.currentPhaseIndex && timer === s.timer ? s : { ...s, currentPhaseIndex: i, timer });
+      }
+      return next;
+    }), 1000);
+    return () => window.clearInterval(t);
+  }, []);
   const [vehicles, setVehicles] = useState<Map<string, Vehicle>>(new Map());
   const [traffic, setTraffic] = useState<Map<string, number>>(new Map());
   const [online, setOnline] = useState(() => navigator.onLine);
@@ -83,6 +103,10 @@ function AppContent() {
   const [selectedDest, setSelectedDest] = useState<string | null>(null);
   const [sourceLabel, setSourceLabel] = useState<string | null>(null);
   const [destLabel, setDestLabel] = useState<string | null>(null);
+  // The user's latest road report (a photo can be added to it) and the destination's position
+  const [lastReportId, setLastReportId] = useState<string | null>(null);
+  // Ask the browser to keep WayFinder's maps and roads on this device (not cleared when space is low)
+  useEffect(() => { keepDataOnDevice(); }, []);
   const [locating, setLocating] = useState(false);
   const [starting, setStarting] = useState(false);
   const [conditions, setConditions] = useState<Conditions | null>(null);
@@ -398,6 +422,7 @@ function AppContent() {
     const { label } = REPORT_LABEL[type];
     try {
       const { report, merged } = await serverClient.report(type, lat, lng, radiusMetres);
+      if (!merged) setLastReportId(report.id);
       const where = report.roadName ? ` on ${report.roadName}` : '';
       pushToast(
         report.status === 'confirmed'
@@ -685,6 +710,14 @@ function AppContent() {
               onSelect={setSelectedJunction}
               onFocus={(lat, lng) => setMapFocus({ lat, lng, zoom: 17, key: Date.now() })}
               onPreview={setCoordPlan}
+            />
+          )}
+          {user && (
+            <MyDataCard
+              uid={user.uid}
+              current={selectedDest && graph.nodes.get(selectedDest) ? { lat: graph.nodes.get(selectedDest)!.lat, lng: graph.nodes.get(selectedDest)!.lng, name: destLabel ?? 'Destination' } : null}
+              onGo={p => handlePickDest({ label: p.name, detail: '', lat: p.lat, lng: p.lng, source: 'map' })}
+              lastReportId={lastReportId}
             />
           )}
           <OfflineCard online={online} />

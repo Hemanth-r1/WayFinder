@@ -46,7 +46,13 @@ async function call(method, path, user, role, body) {
 
   // 2. Live endpoints
   const common = await call('GET', '/api/live/common');
-  check('live/common ok', common.status === 200 && common.json?.signalStates && common.json?.stats, `→ ${common.status}`);
+  check('live/common ok', common.status === 200 && common.json?.stats && common.json?.sv && common.json?.cv && common.json?.pv !== undefined, `→ ${common.status}`);
+  const order = await call('GET', `/api/live/signal-order/${common.json?.sv}`);
+  const states = await call('GET', '/api/live/signals');
+  check('live/signals match the signal order', order.status === 200 && states.status === 200 && states.json.length === order.json.length && states.json.length > 0);
+  check('live/signal-order unknown version → 404', (await call('GET', '/api/live/signal-order/nope')).status === 404);
+  const delta = await call('GET', '/api/live/traffic-delta');
+  check('live/traffic-delta has set and clear', delta.status === 200 && Array.isArray(delta.json?.set) && Array.isArray(delta.json?.clear));
   check('live/common CDN header', /s-maxage=1/.test(common.headers.get('cache-control') ?? ''));
   const traffic = await call('GET', '/api/live/traffic');
   check('live/traffic is a list', traffic.status === 200 && Array.isArray(traffic.json));
@@ -154,6 +160,31 @@ async function call(method, path, user, role, body) {
   check('emergency: normal user cannot start an emergency trip', emRoute.length > 1 && (await call('POST', '/api/user/start', 'demo-u9', 'user', { sourceNodeId: emRoute[0].split('-')[0], destNodeId: emRoute[emRoute.length - 1].split('-')[1], emergency: 'ambulance' })).status === 403);
   check('emergency: listed for operators', ((await call('GET', '/api/emergency', 'demo-op', 'controller')).json?.corridors ?? []).some(c => c.id === em.json?.corridor?.id));
   check('emergency: cancelled', (await call('DELETE', `/api/emergency/${em.json?.corridor?.id}`, 'demo-op', 'controller')).status === 200);
+
+  // 11. Users' files: upload, owner-only access, report photo, delete
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+  const raw = async (method, path, user, role, body, type) => {
+    const r = await fetch(BASE + path, { method, headers: { 'X-Demo-User': user, 'X-Demo-Role': role, ...(type ? { 'Content-Type': type } : {}) }, body });
+    let json = null; try { json = await r.clone().json(); } catch { /* binary */ }
+    return { status: r.status, json, bytes: json ? 0 : (await r.arrayBuffer()).byteLength, cache: r.headers.get('cache-control') };
+  };
+  const up = await raw('POST', '/api/files?name=test.png&purpose=document', 'demo-f1', 'user', png, 'image/png');
+  check('files: upload', up.status === 200 && up.json?.file?.size === png.length, `→ ${up.status} ${JSON.stringify(up.json)?.slice(0, 100)}`);
+  const fid = up.json?.file?.id;
+  check('files: listed for the owner', ((await call('GET', '/api/files', 'demo-f1', 'user')).json?.files ?? []).some(f => f.id === fid));
+  const got = await raw('GET', `/api/files/${fid}`, 'demo-f1', 'user');
+  check('files: owner downloads, cached for good', got.status === 200 && got.bytes === png.length && /immutable/.test(got.cache ?? ''));
+  check('files: others cannot open it', (await raw('GET', `/api/files/${fid}`, 'demo-f2', 'user')).status === 404);
+  check('files: wrong type → 415/400', [400, 415].includes((await raw('POST', '/api/files?name=x.txt', 'demo-f1', 'user', 'hello', 'text/plain')).status));
+  const rp = await call('POST', '/api/reports', 'demo-f1', 'user', { type: 'tree', lat: 12.9716, lng: 77.5946 });
+  const rid = rp.json?.report?.id;
+  check('files: someone else cannot add a photo to my report', (await raw('POST', `/api/files?purpose=report-photo&reportId=${rid}`, 'demo-f2', 'user', png, 'image/png')).status === 403);
+  const photo = await raw('POST', `/api/files?purpose=report-photo&reportId=${rid}`, 'demo-f1', 'user', png, 'image/png');
+  const withPhoto = ((await call('GET', '/api/conditions')).json?.reports ?? []).find(r => r.id === rid);
+  check('files: report photo attached', photo.status === 200 && withPhoto?.photoId === photo.json?.file?.id, `→ ${photo.status}`);
+  check('files: operators open report photos', (await raw('GET', `/api/files/${photo.json?.file?.id}`, 'demo-op', 'controller')).status === 200);
+  check('files: deleted', (await call('DELETE', `/api/files/${fid}`, 'demo-f1', 'user')).status === 200 && (await call('DELETE', `/api/files/${photo.json?.file?.id}`, 'demo-f1', 'user')).status === 200);
+  await call('DELETE', `/api/reports/${rid}`, 'demo-op', 'controller');
 
   // 10. Trip model
   const ts = await call('GET', '/api/trips/stats', 'demo-op', 'controller');

@@ -55,6 +55,24 @@ export async function loadFromIndexedDB<T>(key: string): Promise<{ data: T; time
   });
 }
 
+/** Deletes every entry whose key starts with `prefix` and doesn't start with `keep` (old road tile versions). */
+export async function clearIndexedDBPrefix(prefix: string, keep: string): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    const req = tx.objectStore(STORE_NAME).openKeyCursor();
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) return;
+      const key = String(cursor.key);
+      if (key.startsWith(prefix) && !key.startsWith(keep)) tx.objectStore(STORE_NAME).delete(cursor.key);
+      cursor.continue();
+    };
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); resolve(); };
+  });
+}
+
 export async function clearIndexedDB(key: string): Promise<void> {
   const db = await openDB();
   return new Promise((resolve, reject) => {

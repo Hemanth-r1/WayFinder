@@ -33,3 +33,6 @@ graphify-out/
 
 # Firebase CLI deploy cache
 .firebase/
+
+# Users' files stored locally when running without Cloud Storage
+server/.files/

@@ -35,6 +35,8 @@ interface ReportRecord {
   confirmSource: 'people' | 'operator' | 'gps' | null;
   createdAt: number;
   expiresAt: number;
+  /** Photo the reporter (or an operator) attached (fileService id) */
+  photoId?: string;
 }
 
 /** What clients see — no voter identities. */
@@ -52,6 +54,7 @@ export interface PublicReport {
   confirmSource: ReportRecord['confirmSource'];
   createdAt: number;
   expiresAt: number;
+  photoId?: string;
 }
 
 interface TypeRules {
@@ -164,7 +167,19 @@ function toPublic(r: ReportRecord): PublicReport {
     roadName: r.roadName, edgeIds: r.edgeIds,
     confirmations: r.confirmedBy.size, clears: r.clearedBy.size, confirmSource: r.confirmSource,
     createdAt: r.createdAt, expiresAt: r.expiresAt,
+    ...(r.photoId ? { photoId: r.photoId } : {}),
   };
+}
+
+/** The reporter, or an operator, may attach a photo to a live report. */
+export function canAttachPhoto(id: string, uid: string, trusted: boolean): boolean {
+  const r = reports.get(id);
+  return !!r && (trusted || r.reportedBy === uid);
+}
+
+export function attachPhoto(id: string, fileId: string | undefined): void {
+  const r = reports.get(id);
+  if (r) r.photoId = fileId;
 }
 
 function confirm(r: ReportRecord, source: NonNullable<ReportRecord['confirmSource']>): void {

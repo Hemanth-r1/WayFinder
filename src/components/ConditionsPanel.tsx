@@ -1,6 +1,7 @@
 import type { CSSProperties } from 'react';
 import type { Conditions, WeatherMode, TrafficMode, Behaviour, Jam } from '../services/serverClient';
 import { REPORT_LABEL } from '../utils/reports';
+import { fileUrl } from '../services/userData';
 
 interface Props {
   conditions: Conditions | null;
@@ -104,6 +105,7 @@ export default function ConditionsPanel({ conditions, onWeather, onTraffic, onRe
               {' · '}until {new Date(r.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
             </div>
           </div>
+          {r.photoId && <button onClick={() => fileUrl(r.photoId!).then(u => window.open(u, '_blank', 'noopener')).catch(() => {})} style={styles.small} title="Photo from the reporter">📷</button>}
           <button onClick={() => onRemoveReport(r.id)} style={styles.small}>Remove</button>
         </div>
       ))}

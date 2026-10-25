@@ -1,6 +1,6 @@
 import { serverClient } from './serverClient.ts';
 import { dataCache } from './dataCache.ts';
-import { saveToIndexedDB, loadFromIndexedDB } from '../data/indexedDBCache';
+import { saveToIndexedDB, loadFromIndexedDB, clearIndexedDBPrefix } from '../data/indexedDBCache';
 import type { RoadGraph, RoadNode, TrafficSignal, RoadType, GeoPoint } from '../types';
 
 /**
@@ -21,6 +21,10 @@ interface RawGraphData extends RawRoads {
 
 /** IndexedDB key for the full road network saved for offline use. */
 const GRAPH_KEY = 'bangalore-graph-v2';
+/** Road tiles kept on the device: 'roads:/api/roads/<version>/…' (dropped when the version changes) */
+const TILE_PREFIX = 'roads:';
+/** The last road version seen, to open from the device when the server is slow */
+const LAST_META_KEY = 'roads-meta-last';
 /** Same grid as the server's road tiles (degrees). */
 const CELL_DEG = 0.02;
 /** Below this zoom only the main roads are needed (they come with the first load). */
@@ -58,6 +62,8 @@ export class ProgressiveLoader {
   private version = '';
   private source = '';
   private cells = new Set<string>();
+  /** The whole network for this version is on the device: no road tiles are needed */
+  private fullLocal = false;
   private view: { bbox: [number, number, number, number]; zoom: number } | null = null;
   private notifyTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -112,12 +118,33 @@ export class ProgressiveLoader {
     return serverClient.fetchRoads(path) as Promise<T>;
   }
 
+  /**
+   * A versioned road tile: from this device if saved before, else from the server (then
+   * saved). Versioned tiles never change, so each is downloaded once per device.
+   */
+  private async tile<T>(path: string): Promise<T> {
+    const saved = await loadFromIndexedDB<T>(TILE_PREFIX + path).catch(() => null);
+    if (saved) return saved.data;
+    const data = await this.getJson<T>(path);
+    saveToIndexedDB(TILE_PREFIX + path, { data, timestamp: Date.now() }).catch(() => { /* storage full: still works online */ });
+    return data;
+  }
+
   /** Roads from the server: version, signals and main roads. Resolves once all have arrived. */
-  private async loadOnline(): Promise<{ version: string; source: string; signals: TrafficSignal[]; main: RawRoads }> {
+  private async loadOnline(): Promise<{ version: string; source: string; signals: TrafficSignal[]; main: RawRoads | null }> {
     const meta = await this.getJson<{ version: string; source: string }>('/api/roads/meta');
+    saveToIndexedDB(LAST_META_KEY, { data: meta, timestamp: Date.now() }).catch(() => {});
+    clearIndexedDBPrefix(TILE_PREFIX, `${TILE_PREFIX}/api/roads/${meta.version}/`).catch(() => {});
+    // The full network of this very version is saved (offline download): roads come from it
+    const saved = await loadFromIndexedDB<RawGraphData>(GRAPH_KEY).catch(() => null);
+    if (saved?.data.format === 2 && saved.data.version === meta.version) {
+      if (!this.fullLocal) this.merge(saved.data);
+      this.fullLocal = true;
+      return { ...meta, signals: saved.data.signals, main: null };
+    }
     const [signals, main] = await Promise.all([
-      this.getJson<TrafficSignal[]>(`/api/roads/${meta.version}/signals`),
-      this.getJson<RawRoads>(`/api/roads/${meta.version}/main`),
+      this.tile<TrafficSignal[]>(`/api/roads/${meta.version}/signals`),
+      this.tile<RawRoads>(`/api/roads/${meta.version}/main`),
     ]);
     return { ...meta, signals, main };
   }
@@ -125,10 +152,26 @@ export class ProgressiveLoader {
   /** The full network saved on this device (offline download), if any. */
   private async loadSaved(): Promise<boolean> {
     const saved = await loadFromIndexedDB<RawGraphData>(GRAPH_KEY).catch(() => null);
-    if (!saved || saved.data.format !== 2) return false;
+    if (!saved || saved.data.format !== 2) return this.loadSavedTiles();
     this.merge(saved.data);
     this.signals = new Map(saved.data.signals.map(s => [s.id, { ...s, approaches: s.approaches ?? [] }]));
     this.source = `${saved.data.source} (saved on this device)`;
+    return true;
+  }
+
+  /** No full download: the signals and main roads of the last version, if this device has them. */
+  private async loadSavedTiles(): Promise<boolean> {
+    const meta = await loadFromIndexedDB<{ version: string; source: string }>(LAST_META_KEY).catch(() => null);
+    if (!meta) return false;
+    const base = `${TILE_PREFIX}/api/roads/${meta.data.version}/`;
+    const [signals, main] = await Promise.all([
+      loadFromIndexedDB<TrafficSignal[]>(base + 'signals').catch(() => null),
+      loadFromIndexedDB<RawRoads>(base + 'main').catch(() => null),
+    ]);
+    if (!signals || !main) return false;
+    this.merge(main.data);
+    this.signals = new Map(signals.data.map(s => [s.id, { ...s, approaches: s.approaches ?? [] }]));
+    this.source = `${meta.data.source} (main roads saved on this device)`;
     return true;
   }
 
@@ -168,7 +211,7 @@ export class ProgressiveLoader {
         this.version = r.version;
         this.source = r.source;
         this.signals = new Map(r.signals.map(s => [s.id, { ...s, approaches: s.approaches ?? [] }]));
-        this.merge(r.main);
+        if (r.main) this.merge(r.main);
         this.ready();
         return;
       } catch (err) {
@@ -186,7 +229,7 @@ export class ProgressiveLoader {
   /** Loads the road cells covering the view plus a 10% margin (zoomed in only). */
   loadView(bbox: [number, number, number, number], zoom: number): void {
     this.view = { bbox, zoom };
-    if (!this.version || zoom < CELL_MIN_ZOOM) return;
+    if (!this.version || this.fullLocal || zoom < CELL_MIN_ZOOM) return;
     const [w, s, e, n] = bbox;
     const dx = (e - w) * VIEW_MARGIN, dy = (n - s) * VIEW_MARGIN;
     const x0 = Math.floor((w - dx) / CELL_DEG), x1 = Math.floor((e + dx) / CELL_DEG);
@@ -197,7 +240,7 @@ export class ProgressiveLoader {
         const key = `${x}_${y}`;
         if (this.cells.has(key)) continue;
         this.cells.add(key);
-        this.getJson<RawRoads>(`/api/roads/${this.version}/cell/${x}/${y}`)
+        this.tile<RawRoads>(`/api/roads/${this.version}/cell/${x}/${y}`)
           .then(raw => { this.merge(raw); this.changed(); })
           .catch(() => this.cells.delete(key)); // try again next time the view moves
       }
@@ -210,6 +253,7 @@ export class ProgressiveLoader {
     if (raw.format !== 2) throw new Error('Unexpected road network format');
     await saveToIndexedDB(GRAPH_KEY, { data: raw, timestamp: Date.now() });
     this.merge(raw);
+    if (raw.version && raw.version === this.version) this.fullLocal = true; // no more road tiles needed
     this.changed();
   }
 

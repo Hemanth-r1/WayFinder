@@ -10,7 +10,8 @@ import {
   setBehaviour,
 } from './conditionsService.js';
 import { createJam, listJams, removeJam } from './jamService.js';
-import { initReports, createReport, vote, withdraw, SEGMENT_TYPES, type ReportType } from './reportsService.js';
+import { initReports, createReport, vote, withdraw, SEGMENT_TYPES, type ReportType, canAttachPhoto, attachPhoto,
+} from './reportsService.js';
 import {
   requireUser, requireSelf, pace, requireOperator, requireController, rateLimit, caller, authMode,
 } from './auth.js';
@@ -28,8 +29,9 @@ import { initRouteWorkers, routeQueuePerWorker } from './routeWorkers.js';
 import { initTurnRules, loadSavedRules, setRules, turnsView, RuleError } from './turnRules.js';
 import { initEmergency, dispatchEmergency, cancelCorridor, listCorridors, EmergencyError } from './emergencyService.js';
 import { initTrips, tripStats, loadTripCache } from './tripService.js';
+import { saveFile, listFiles, getFileMeta, readFile, deleteFile, FileError, FILE_TYPES, MAX_FILE_BYTES, type FilePurpose } from './fileService.js';
 import { planCoordination, applyCoordination } from './coordinationService.js';
-import { commonJson, trafficJson, cellJson } from './liveSnapshot.js';
+import { commonJson, signalsJson, signalOrderJson, phasesJson, trafficJson, trafficDeltaJson, cellJson } from './liveSnapshot.js';
 
 const app = express();
 app.use(express.json());
@@ -128,10 +130,21 @@ function sendLive(res: express.Response, json: string | null, cdnSeconds: number
   if (!json) return res.status(503).json({ error: 'Simulation engine not running' });
   res.set('Cache-Control', `public, max-age=0, s-maxage=${cdnSeconds}`).type('json').send(json);
 }
-/** Signal phases, stats and conditions */
+/** Stats and the versions of the slower parts (signal order, conditions, phases, traffic) */
 app.get('/api/live/common', (_req, res) => sendLive(res, commonJson(), 1));
-/** Road traffic levels [[edgeId, level], …] */
+/** [phase index, tenths of a second] per signal, in signal-order/<sv> order */
+app.get('/api/live/signals', (_req, res) => sendLive(res, signalsJson(), 2));
+/** Signal ids for a signal-state version: fixed for that version, cached for a day */
+app.get('/api/live/signal-order/:sv', (req, res) => {
+  const json = signalOrderJson(String(req.params.sv));
+  if (!json) return res.status(404).json({ error: 'Unknown signal list version' });
+  res.set('Cache-Control', 'public, max-age=86400, immutable').type('json').send(json);
+});
+/** Signals whose phases differ from the cached road data */
+app.get('/api/live/phases', (_req, res) => sendLive(res, phasesJson(), 2));
+/** Road traffic levels [[edgeId, level], …], and the change since the previous snapshot */
 app.get('/api/live/traffic', (_req, res) => sendLive(res, trafficJson(), 3));
+app.get('/api/live/traffic-delta', (_req, res) => sendLive(res, trafficDeltaJson(), 3));
 /** Vehicles in one ~2 km cell (x = floor(lng / 0.02), y = floor(lat / 0.02)) */
 app.get('/api/live/cell/:x/:y', (req, res) => {
   const x = Number(req.params.x), y = Number(req.params.y);
@@ -150,7 +163,8 @@ function sendError(res: express.Response, err: any) {
 }
 
 app.get('/api/conditions', (_req, res) => {
-  res.json(getConditions());
+  // Fetched by devices only when the live feed's conditions version changes; the CDN shares it
+  res.set('Cache-Control', 'public, max-age=0, s-maxage=2').json(getConditions());
 });
 
 // City-wide weather override and simulated traffic level: operators only
@@ -435,6 +449,59 @@ app.post('/api/junctions/:id/reset', requireUser, requireController, (req, res) 
   try {
     res.json({ changes: resetJunction(String(req.params.id), caller(res).uid) });
   } catch (err) { sendControlError(res, err); }
+});
+
+// ── Users' files: report photos, profile pictures, documents ────────────────
+
+/** Upload: raw body (image/jpeg, png, webp or PDF, ≤ 5 MB), ?purpose=report-photo|profile|document&name=…&reportId=… */
+app.post('/api/files', requireUser, rateLimit('uploads', 30, 10 * 60 * 1000),
+  express.raw({ type: Object.keys(FILE_TYPES), limit: MAX_FILE_BYTES }), async (req, res) => {
+    const { uid, trusted } = caller(res);
+    const type = String(req.headers['content-type'] ?? '').split(';')[0].trim();
+    const purpose = String(req.query.purpose ?? 'document') as FilePurpose;
+    const reportId = req.query.reportId ? String(req.query.reportId) : undefined;
+    if (!Buffer.isBuffer(req.body)) return res.status(400).json({ error: `Send the file as the request body (${Object.keys(FILE_TYPES).join(', ')})` });
+    if (purpose === 'report-photo' && (!reportId || !canAttachPhoto(reportId, uid, trusted))) {
+      return res.status(403).json({ error: 'Only the reporter or an operator can add a photo to that report' });
+    }
+    try {
+      const file = await saveFile(uid, { name: String(req.query.name ?? 'file'), type, purpose, reportId, data: req.body });
+      if (purpose === 'report-photo' && reportId) attachPhoto(reportId, file.id);
+      res.json({ file });
+    } catch (err: any) {
+      res.status(err instanceof FileError ? err.status : 500).json({ error: err.message });
+    }
+  });
+
+/** The caller's files and storage used. */
+app.get('/api/files', requireUser, async (_req, res) => {
+  try {
+    const files = await listFiles(caller(res).uid);
+    res.json({ files, usedBytes: files.reduce((t, f) => t + f.size, 0) });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
+/** A file: its owner, or operators for report photos. Never changes, so devices keep it for a year. */
+app.get('/api/files/:id', requireUser, async (req, res) => {
+  const { uid, trusted } = caller(res);
+  try {
+    const meta = await getFileMeta(String(req.params.id));
+    if (!meta || !(meta.owner === uid || (meta.purpose === 'report-photo' && trusted))) return res.status(404).json({ error: 'No such file' });
+    res.set('Cache-Control', 'private, max-age=31536000, immutable').type(meta.type).send(await readFile(meta));
+  } catch (err: any) {
+    res.status(err instanceof FileError ? err.status : 500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/files/:id', requireUser, async (req, res) => {
+  const { uid, role } = caller(res);
+  try {
+    const meta = await getFileMeta(String(req.params.id));
+    if (!meta || !(meta.owner === uid || role === 'controller')) return res.status(404).json({ error: 'No such file' });
+    await deleteFile(meta);
+    if (meta.reportId) attachPhoto(meta.reportId, undefined);
+    res.json({ deleted: meta.id });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
 /** Operators: the trip model (zones, cached routes, trips started / arrived, demand mix). */
