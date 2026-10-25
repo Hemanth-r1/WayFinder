@@ -112,7 +112,7 @@ export default function UserPanel(p: Props) {
           disabled={!p.sourceLabel && !p.destLabel}
           title="Swap origin and destination"
           style={{
-            width: 34, height: 34, borderRadius: 17, border: '1px solid #333', background: '#1a1a2e',
+            width: 34, height: 34, borderRadius: 17, border: '1px solid #333', background: '#0a0a0d',
             color: '#aaa', cursor: 'pointer', fontSize: 16, flexShrink: 0,
           }}
         >⇅</button>
@@ -134,7 +134,7 @@ export default function UserPanel(p: Props) {
               <button key={r.edgeIds.join()} onClick={() => p.onSelectRoute(i)} style={{
                 ...styles.option,
                 background: isSel ? '#4488FF1f' : '#ffffff06',
-                border: `1px solid ${isSel ? '#4488FF' : '#2a2a40'}`,
+                border: `1px solid ${isSel ? '#4f8ef7' : '#26262e'}`,
               }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
                   <span style={{ fontSize: 18, fontWeight: 'bold', color: i === 0 ? '#4CAF50' : '#fff' }}>
@@ -162,9 +162,9 @@ export default function UserPanel(p: Props) {
                     {EMERGENCY_CHOICES.map(c => (
                       <button key={c.label} onClick={() => p.onEmergencyKind!(c.kind)} style={{
                         flex: 1, minWidth: 0, padding: '7px 4px', fontSize: 12, borderRadius: 8, cursor: 'pointer', whiteSpace: 'nowrap',
-                        background: p.emergencyKind === c.kind ? (c.kind ? '#FF174433' : '#4488FF33') : '#1a1a2e',
+                        background: p.emergencyKind === c.kind ? (c.kind ? '#FF174433' : '#4488FF33') : '#0a0a0d',
                         color: p.emergencyKind === c.kind ? '#fff' : '#aaa',
-                        border: `1px solid ${p.emergencyKind === c.kind ? (c.kind ? '#FF1744' : '#4488FF') : '#2a2a40'}`,
+                        border: `1px solid ${p.emergencyKind === c.kind ? (c.kind ? '#FF1744' : '#4f8ef7') : '#26262e'}`,
                       }}>{c.label}</button>
                     ))}
                   </div>
@@ -208,7 +208,7 @@ const styles: Record<string, CSSProperties> = {
     color: '#ccc', cursor: 'pointer', borderRadius: 8,
   },
   primary: {
-    width: '100%', height: 46, marginTop: 4, background: '#4488FF', color: '#fff', border: 'none',
+    width: '100%', height: 46, marginTop: 4, background: '#4f8ef7', color: '#fff', border: 'none',
     borderRadius: 23, cursor: 'pointer', fontSize: 15, fontWeight: 'bold',
   },
   secondary: {

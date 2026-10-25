@@ -1,4 +1,5 @@
 import type { CSSProperties } from 'react';
+import { BrandLockup } from './BrandMark';
 
 interface LoadingSpinnerProps {
   size?: 'small' | 'medium' | 'large';
@@ -36,9 +37,9 @@ export function LoadingSpinner({
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    background: '#0a0a14',
+    background: '#000000',
     color: '#fff',
-    fontFamily: 'system-ui',
+    fontFamily: 'inherit',
     flexDirection: 'column' as const,
     gap: 16,
   } : {
@@ -79,7 +80,7 @@ export function LoadingOverlay({ message = 'Initializing simulation...' }: { mes
       left: 0,
       right: 0,
       bottom: 0,
-      background: 'rgba(10,10,20,0.95)',
+      background: '#000',
       zIndex: 9999,
       display: 'flex',
       flexDirection: 'column',
@@ -87,10 +88,10 @@ export function LoadingOverlay({ message = 'Initializing simulation...' }: { mes
       justifyContent: 'center',
       gap: 20,
       color: '#fff',
-      fontFamily: 'system-ui',
+      fontFamily: 'inherit',
     }}>
-      <LoadingSpinner size="large" color="#FF6D00" text="" />
-      <div style={{ fontSize: 18, fontWeight: 'bold' }}>WayFinder</div>
+      <BrandLockup size={44} />
+      <LoadingSpinner size="large" color="#2fe4cc" text="" />
       <div style={{ fontSize: 14, color: '#888', textAlign: 'center' }}>{message}</div>
     </div>
   );

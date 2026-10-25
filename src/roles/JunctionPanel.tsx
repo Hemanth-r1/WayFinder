@@ -168,7 +168,7 @@ export default function JunctionPanel({ canControl, selectedId, onSelect, onFocu
                     {filter === 'near' && me ? `${Math.round(metresBetween(me, j))} m · ` : ''}{j.id} · {j.queueVehicles} queued · cycle {j.cycle}s{j.controlled ? ' · ● controlled' : ''}
                   </span>
                 </span>
-                <span style={{ color: '#4FC3F7', fontSize: 12 }}>›</span>
+                <span style={{ color: '#2fe4cc', fontSize: 12 }}>›</span>
               </button>
             ))}
           </div>
@@ -198,13 +198,13 @@ const styles: Record<string, CSSProperties> = {
   },
   // minWidth 0 + ellipsis: three tabs must fit a phone's width
   tab: {
-    flex: 1, minWidth: 0, padding: '6px 4px', fontSize: 11, borderRadius: 6, background: '#1a1a2e', color: '#aaa',
-    border: '1px solid #2a2a40', cursor: 'pointer', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minHeight: 36,
+    flex: 1, minWidth: 0, padding: '6px 4px', fontSize: 11, borderRadius: 6, background: '#0a0a0d', color: '#aaa',
+    border: '1px solid #26262e', cursor: 'pointer', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minHeight: 36,
   },
-  tabOn: { background: '#4488FF33', color: '#fff', borderColor: '#4488FF' },
+  tabOn: { background: '#4488FF33', color: '#fff', borderColor: '#4f8ef7' },
   row: {
     display: 'flex', gap: 8, alignItems: 'center', width: '100%', padding: '8px 4px', background: 'none',
-    border: 'none', borderBottom: '1px solid #1a1a2e', cursor: 'pointer', textAlign: 'left', minHeight: 44,
+    border: 'none', borderBottom: '1px solid #0a0a0d', cursor: 'pointer', textAlign: 'left', minHeight: 44,
   },
-  link: { background: 'none', border: 'none', color: '#4FC3F7', cursor: 'pointer', padding: 0, fontSize: 11 },
+  link: { background: 'none', border: 'none', color: '#2fe4cc', cursor: 'pointer', padding: 0, fontSize: 11 },
 };

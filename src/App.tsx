@@ -12,6 +12,11 @@ import UserPanel, { type RecentTrip } from './roles/UserPanel';
 import SupporterPanel from './roles/SupporterPanel';
 import JunctionPanel from './roles/JunctionPanel';
 import EmergencyPanel from './roles/EmergencyPanel';
+import AdminPanel from './roles/AdminPanel';
+import AboutCompany from './components/AboutCompany';
+import { BrandLockup } from './components/BrandMark';
+import { BRAND } from './brand';
+import { isDriver, canControl } from './types/roles';
 import MyDataCard from './components/MyDataCard';
 import { keepDataOnDevice } from './services/userData';
 import OfflineCard from './components/OfflineCard';
@@ -21,7 +26,7 @@ import { progressiveLoader, type LoadUpdate, type LoadPhase } from './services/p
 import { serverClient } from './services/serverClient';
 import type { RoadGraph, TrafficSignal, Vehicle } from './types';
 import type {
-  ServerStats, RouteOption, NavigationResponse, Conditions, WeatherMode, TrafficMode, ReportType, ReportVote, Behaviour, Jam, JamSeverity, CoordinationPlan, Corridor, EmergencyKind,
+  ServerStats, RouteOption, NavigationResponse, Conditions, WeatherMode, TrafficMode, ReportType, ReportVote, Behaviour, Jam, JamSeverity, CoordinationPlan, Corridor, EmergencyKind, Announcement,
 } from './services/serverClient';
 import { REPORT_LABEL } from './utils/reports';
 import ConditionsPanel from './components/ConditionsPanel';
@@ -88,6 +93,15 @@ function AppContent() {
   /** Junction open in the police panel, and where the map should move to */
   const [selectedJunction, setSelectedJunction] = useState<string | null>(null);
   const [mapFocus, setMapFocus] = useState<{ lat: number; lng: number; zoom: number; key: number } | null>(null);
+  // About panel (company info) and the admins' announcement banner (checked every 5 min)
+  const [showAbout, setShowAbout] = useState(false);
+  const [announcement, setAnnouncement] = useState<Announcement | null>(null);
+  useEffect(() => {
+    const load = () => serverClient.announcement().then(setAnnouncement).catch(() => {});
+    load();
+    const t = window.setInterval(load, 5 * 60 * 1000);
+    return () => window.clearInterval(t);
+  }, []);
   // Police: coordination preview drawn on the map while the console shows it
   const [coordPlan, setCoordPlan] = useState<CoordinationPlan | null>(null);
   // Emergency runs: responders choose one for their trip; operators see all, controllers dispatch
@@ -114,7 +128,7 @@ function AppContent() {
   const [rerouting, setRerouting] = useState(false);
   const isMobile = useIsMobile();
   // Responders (ambulance, fire, police drivers) use the driver view, with emergency runs
-  const driverView = role === 'user' || role === 'responder';
+  const driverView = isDriver(role);
   const simpleView = driverView;
   const [graphVersion, setGraphVersion] = useState(0);
   const [routeOptions, setRouteOptions] = useState<RouteOption[]>([]);
@@ -632,17 +646,18 @@ function AppContent() {
           ? { width: '100%', maxHeight: '52%', borderTop: '1px solid #222', borderRadius: '14px 14px 0 0' }
           : { width: 340, minWidth: 340, height: '100%', borderRight: '1px solid #222' }),
         background: 'rgba(8,8,18,0.99)', zIndex: 1001,
-        fontFamily: 'system-ui, sans-serif',
+        fontFamily: 'inherit',
       }}>
         {/* Header */}
         <div style={{
           padding: isMobile ? '8px 14px' : '10px 14px', borderBottom: '1px solid #222',
           display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8,
-          background: 'rgba(15,15,28,0.98)', borderRadius: isMobile ? '14px 14px 0 0' : 0,
+          background: 'rgba(10,10,13,0.97)', borderRadius: isMobile ? '14px 14px 0 0' : 0,
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: 18 }}>🧭</span>
-            <span style={{ fontSize: 15, fontWeight: 'bold', color: '#fff' }}>WayFinder</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+            <button onClick={() => setShowAbout(true)} title="About WayFinder and TUFF Foundation" style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}>
+              <BrandLockup size={isMobile ? 26 : 30} />
+            </button>
             {loadingPhase !== 'full' && (
               <span style={{ fontSize: 10, color: '#FF9800' }}>{PHASE_LABEL[loadingPhase]}</span>
             )}
@@ -650,6 +665,16 @@ function AppContent() {
           <RoleSelector />
         </div>
 
+        {/* Announcement from the admins */}
+        {announcement && (
+          <div role="status" style={{
+            padding: '8px 14px', fontSize: 12, lineHeight: 1.45, borderBottom: '1px solid #222',
+            color: announcement.level === 'warning' ? '#fbbf24' : '#2fe4cc',
+            background: announcement.level === 'warning' ? '#fbbf2414' : '#2fe4cc12',
+          }}>
+            {announcement.level === 'warning' ? '⚠️ ' : '📢 '}{announcement.text}
+          </div>
+        )}
         {loadingPhase === 'full' && conditionBadges.length > 0 && (
           <div title="Current road conditions" style={{
             padding: '6px 14px', fontSize: 12, color: '#64B5F6', background: '#64B5F60d', borderBottom: '1px solid #222',
@@ -660,7 +685,7 @@ function AppContent() {
 
         {!loading && loadSource === 'error' && (
           <div style={{ margin: '8px 14px', fontSize: 11, color: '#F44336' }}>
-            Could not reach the WayFinder server. <button onClick={handleRefresh} style={{ background: 'none', border: 'none', color: '#4488FF', cursor: 'pointer', padding: 0 }}>Retry</button>
+            Could not reach the WayFinder server. <button onClick={handleRefresh} style={{ background: 'none', border: 'none', color: '#4f8ef7', cursor: 'pointer', padding: 0 }}>Retry</button>
           </div>
         )}
 
@@ -696,7 +721,7 @@ function AppContent() {
           {!driverView && (
             <EmergencyPanel
               corridors={corridors}
-              canControl={role === 'controller'}
+              canControl={canControl(role)}
               picking={ambulanceFrom !== null}
               onCancel={async id => { try { await serverClient.cancelEmergency(id); setCorridors(await serverClient.listEmergency()); } catch (err) { pushToast((err as Error).message, 'error'); } }}
               onFocus={(lat, lng) => setMapFocus({ lat, lng, zoom: 15, key: Date.now() })}
@@ -705,7 +730,7 @@ function AppContent() {
           {/* Police view first: junction control console */}
           {!driverView && (
             <JunctionPanel
-              canControl={role === 'controller'}
+              canControl={canControl(role)}
               selectedId={selectedJunction}
               onSelect={setSelectedJunction}
               onFocus={(lat, lng) => setMapFocus({ lat, lng, zoom: 17, key: Date.now() })}
@@ -730,9 +755,17 @@ function AppContent() {
               onRemoveReport={handleRemoveReport}
               onBehaviour={handleBehaviour}
               jams={jams}
-              onRemoveJam={role === 'controller' ? handleRemoveJam : undefined}
+              onRemoveJam={canControl(role) ? handleRemoveJam : undefined}
             />
           )}
+          {role === 'admin' && user && <AdminPanel myUid={user.uid} />}
+          {/* Company info */}
+          <div style={{ padding: '14px', borderTop: '1px solid #1a1a22', fontSize: 11, color: '#7a95b0', lineHeight: 1.6 }}>
+            <button onClick={() => setShowAbout(true)} style={{ background: 'none', border: 'none', padding: 0, color: '#2fe4cc', cursor: 'pointer', fontSize: 11 }}>About WayFinder</button>
+            {' · '}A {BRAND.parent.name} company{' · '}
+            <a href={BRAND.companies[1].url} target="_blank" rel="noopener" style={{ color: '#7a95b0' }}>{BRAND.companies[1].name}</a>
+            <div>© {new Date().getFullYear()} {BRAND.parent.name}</div>
+          </div>
           {role === 'supporter' && (
             <SupporterPanel
               graph={graph}
@@ -743,12 +776,12 @@ function AppContent() {
 
         {/* Footer: operator tools (hidden for drivers) */}
         {!simpleView && (
-          <div style={{ padding: '8px 14px', borderTop: '1px solid #1a1a2e', background: 'rgba(15,15,28,0.98)' }}>
+          <div style={{ padding: '8px 14px', borderTop: '1px solid #0a0a0d', background: 'rgba(10,10,13,0.97)' }}>
             <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
-              <button onClick={handleRefresh} style={{ flex: 1, padding: '9px', background: '#1565C0', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 'bold' }}>
+              <button onClick={handleRefresh} style={{ flex: 1, padding: '9px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 'bold' }}>
                 🔄 Refresh
               </button>
-              <button onClick={() => setShowHeatmap(p => !p)} style={{ flex: 1, padding: '9px', background: showHeatmap ? 'rgba(68,136,255,0.25)' : '#222', color: '#fff', border: `1px solid ${showHeatmap ? '#4488FF' : '#444'}`, borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 'bold' }}>
+              <button onClick={() => setShowHeatmap(p => !p)} style={{ flex: 1, padding: '9px', background: showHeatmap ? 'rgba(68,136,255,0.25)' : '#222', color: '#fff', border: `1px solid ${showHeatmap ? '#4f8ef7' : '#444'}`, borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 'bold' }}>
                 🔥 Heatmap
               </button>
             </div>
@@ -764,6 +797,7 @@ function AppContent() {
         )}
       </div>
 
+      {showAbout && <AboutCompany onClose={() => setShowAbout(false)} />}
       {/* Map */}
       <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
         <MapView
@@ -806,7 +840,7 @@ function AppContent() {
           onReport={handleReport}
           onVoteReport={handleVoteReport}
           onRemoveReport={handleRemoveReport}
-          onCreateJam={role === 'controller' ? handleCreateJam : undefined}
+          onCreateJam={canControl(role) ? handleCreateJam : undefined}
           canRemoveReports={!driverView}
           followVehicleId={simpleView && navigation?.vehicleId ? navigation.vehicleId : undefined}
           traffic={traffic}
@@ -814,7 +848,7 @@ function AppContent() {
           onSelectJunction={setSelectedJunction}
           coordination={!driverView ? coordPlan : null}
           emergencyCorridors={corridors}
-          onAmbulance={role === 'controller' ? handleAmbulance : undefined}
+          onAmbulance={canControl(role) ? handleAmbulance : undefined}
           ambulanceFromSet={ambulanceFrom !== null}
           onViewportChange={(bbox, zoom) => { serverClient.setViewport(bbox, zoom); progressiveLoader.loadView(bbox, zoom); }}
         />
@@ -824,7 +858,7 @@ function AppContent() {
         <div style={{
           position: 'fixed', top: 10, left: '50%', transform: 'translateX(-50%)', zIndex: 1500,
           background: 'rgba(20,24,38,0.95)', color: '#cfe0ff', border: '1px solid #2c4a7a', borderRadius: 16,
-          padding: '6px 14px', fontSize: 12, fontFamily: 'system-ui, sans-serif', whiteSpace: 'nowrap',
+          padding: '6px 14px', fontSize: 12, fontFamily: 'inherit', whiteSpace: 'nowrap',
         }}>⏳ Connecting to live traffic… (map ready)</div>
       )}
 

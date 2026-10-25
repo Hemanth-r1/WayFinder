@@ -23,7 +23,7 @@ export default function ControlPanel() {
       background: 'rgba(10,10,20,0.92)', border: '1px solid #333',
       borderRadius: 8, padding: 10,
       maxHeight: 'calc(100vh - 24px)', overflowY: 'auto',
-      fontFamily: 'system-ui, sans-serif', fontSize: 11, color: '#ccc',
+      fontFamily: 'inherit', fontSize: 11, color: '#ccc',
       backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
       minWidth: 160,
     }}>

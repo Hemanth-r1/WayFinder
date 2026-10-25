@@ -76,7 +76,7 @@ export default function ConditionsPanel({ conditions, onWeather, onTraffic, onRe
 
       <div style={styles.label}>Test jams ({jams.length}) <span style={{ color: '#666' }}>· right-click a road → Jam this road</span></div>
       {jams.map(j => (
-        <div key={j.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0', borderBottom: '1px solid #1a1a2e' }}>
+        <div key={j.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0', borderBottom: '1px solid #0a0a0d' }}>
           <span>{j.severity === 'stopped' ? '🛑' : '🐢'}</span>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 12, color: '#ddd' }}>{j.road}</div>
@@ -95,7 +95,7 @@ export default function ConditionsPanel({ conditions, onWeather, onTraffic, onRe
         <div style={{ fontSize: 11, color: '#666' }}>None right now. Drivers report by tapping a road on the map.</div>
       )}
       {conditions.reports.map(r => (
-        <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0', borderBottom: '1px solid #1a1a2e' }}>
+        <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0', borderBottom: '1px solid #0a0a0d' }}>
           <span style={{ opacity: r.status === 'confirmed' ? 1 : 0.6 }}>{REPORT_LABEL[r.type].icon}</span>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 12, color: '#ddd' }}>{REPORT_LABEL[r.type].label} · {r.roadName || 'Unnamed road'}</div>
@@ -121,8 +121,8 @@ function Segmented<T extends string>({ options, value, onChange }: {
       {options.map(o => (
         <button key={o.value} onClick={() => onChange(o.value)} style={{
           flex: 1, padding: '6px 4px', fontSize: 11, borderRadius: 6, cursor: 'pointer',
-          background: o.value === value ? '#4488FF33' : '#1a1a2e',
-          border: `1px solid ${o.value === value ? '#4488FF' : '#2a2a40'}`,
+          background: o.value === value ? '#4488FF33' : '#0a0a0d',
+          border: `1px solid ${o.value === value ? '#4f8ef7' : '#26262e'}`,
           color: o.value === value ? '#fff' : '#aaa',
         }}>{o.label}</button>
       ))}

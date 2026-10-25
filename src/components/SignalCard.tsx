@@ -42,8 +42,8 @@ export default function SignalCard({ signal, updatedAt, onClose, compact }: Prop
     <div style={{
       position: 'absolute', zIndex: 1600,
       ...(compact ? { left: 8, right: 8, top: 8 } : { top: 12, right: 12, width: 340 }),
-      background: 'rgba(8,8,18,0.96)', border: '1px solid #2a2a40', borderRadius: 12,
-      padding: 12, color: '#ccc', fontFamily: 'system-ui, sans-serif', boxShadow: '0 6px 24px rgba(0,0,0,0.5)',
+      background: 'rgba(10,10,13,0.96)', border: '1px solid #26262e', borderRadius: 12,
+      padding: 12, color: '#ccc', fontFamily: 'inherit', boxShadow: '0 6px 24px rgba(0,0,0,0.5)',
     }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
         <div style={{ flex: 1, minWidth: 0 }}>
@@ -62,7 +62,7 @@ export default function SignalCard({ signal, updatedAt, onClose, compact }: Prop
           const main = turns.includes('straight') ? 'straight' : turns[0];
           const t = groupTiming(signal, r.group, elapsed, main ? `${r.key}:${main}` : undefined);
           return (
-            <div key={r.key} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '7px 0', borderTop: '1px solid #1a1a2e' }}>
+            <div key={r.key} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '7px 0', borderTop: '1px solid #0a0a0d' }}>
               <span style={{ width: 16, height: 16, borderRadius: 8, background: LIGHT[t.light], flexShrink: 0, boxShadow: `0 0 8px ${LIGHT[t.light]}` }} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ color: '#eee', fontSize: 12, fontWeight: 600 }}>{r.title}</div>

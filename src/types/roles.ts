@@ -1,99 +1,28 @@
 /**
- * Role System — Defines the three user roles and their capabilities.
- *
- * Roles:
- * - User: Regular app user, provides route info (source/destination)
- * - Supporter: Map contributor, adds/edits signals, fills infrastructure gaps
- * - Controller: Central signal manager, overrides signals, manages routes
+ * WayFinder roles (the server's auth.ts has the same list):
+ * - user: drivers — plan trips, navigate, report road problems
+ * - responder: ambulance / fire / police drivers — emergency runs (green corridors)
+ * - supporter: traffic wardens / volunteers — verify reports at once, map signals, view junctions
+ * - controller: traffic police — control signals, turn rules, emergency dispatch
+ * - admin: everything a controller can do, plus users, roles, announcements and the audit log
  */
+export type AppRole = 'user' | 'responder' | 'supporter' | 'controller' | 'admin';
+export const ROLES: AppRole[] = ['user', 'responder', 'supporter', 'controller', 'admin'];
 
-/** The three application roles */
-export type AppRole = 'user' | 'supporter' | 'controller';
-
-/** Permission flags for each role */
-export interface RolePermissions {
-  canViewMap: boolean;
-  canClickSignals: boolean;
-  canAddSignals: boolean;
-  canEditSignals: boolean;
-  canDeleteSignals: boolean;
-  canOverrideSignals: boolean;
-  canOverrideRoute: boolean;
-  canViewAnalytics: boolean;
-  canSubmitRoute: boolean;
-  canViewAllRoutes: boolean;
-  canManageController: boolean;
-}
-
-/** Default permissions for each role */
-export const ROLE_PERMISSIONS: Record<AppRole, RolePermissions> = {
-  user: {
-    canViewMap: true,
-    canClickSignals: true,
-    canAddSignals: false,
-    canEditSignals: false,
-    canDeleteSignals: false,
-    canOverrideSignals: false,
-    canOverrideRoute: false,
-    canViewAnalytics: false,
-    canSubmitRoute: true,
-    canViewAllRoutes: false,
-    canManageController: false,
-  },
-  supporter: {
-    canViewMap: true,
-    canClickSignals: true,
-    canAddSignals: true,
-    canEditSignals: true,
-    canDeleteSignals: true,
-    canOverrideSignals: false,
-    canOverrideRoute: false,
-    canViewAnalytics: false,
-    canSubmitRoute: true,
-    canViewAllRoutes: false,
-    canManageController: false,
-  },
-  controller: {
-    canViewMap: true,
-    canClickSignals: true,
-    canAddSignals: true,
-    canEditSignals: true,
-    canDeleteSignals: true,
-    canOverrideSignals: true,
-    canOverrideRoute: true,
-    canViewAnalytics: true,
-    canSubmitRoute: true,
-    canViewAllRoutes: true,
-    canManageController: true,
-  },
+export const ROLE_INFO: Record<AppRole, { label: string; colour: string; summary: string }> = {
+  user: { label: 'User', colour: '#2fe4cc', summary: 'Drivers: trips, navigation, road reports' },
+  responder: { label: 'Responder', colour: '#ff7a59', summary: 'Ambulance, fire and police drivers: emergency runs' },
+  supporter: { label: 'Supporter', colour: '#4f8ef7', summary: 'Wardens and volunteers: verify reports, map signals, view junctions' },
+  controller: { label: 'Controller', colour: '#fbbf24', summary: 'Traffic police: signals, turn rules, emergency dispatch' },
+  admin: { label: 'Admin', colour: '#a78bfa', summary: 'Everything, plus users, roles and announcements' },
 };
 
-/** User-submitted route information */
-export interface UserRoute {
-  id: string;
-  userId: string;
-  sourceLat: number;
-  sourceLng: number;
-  destLat: number;
-  destLng: number;
-  sourceName: string;
-  destName: string;
-  timestamp: number;
-  signalOverrides: string[]; // Signal IDs used on this route
-}
-
-/** Signal override record for controller actions */
-export interface SignalOverride {
-  id: string;
-  controllerId: string;
-  signalId: string;
-  routeId?: string; // If overriding an entire route
-  direction: string;
-  color: string;
-  timestamp: number;
-  reason: string;
-  expiresAt: number;
-}
+/** Drivers' view (trip planner): users and responders. */
+export const isDriver = (role: string) => role === 'user' || role === 'responder';
+/** Signal control: controllers and admins. */
+export const canControl = (role: string) => role === 'controller' || role === 'admin';
+/** Operators' tools (junctions, conditions, reports): supporters, controllers, admins. */
+export const isOperator = (role: string) => role === 'supporter' || canControl(role);
 
 /** Supporter-added signal data */
 export interface SupporterSignal {

@@ -68,9 +68,9 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    background: '#0a0a14',
+    background: '#000000',
     color: '#fff',
-    fontFamily: 'system-ui, sans-serif',
+    fontFamily: 'inherit',
   },
   content: {
     background: 'rgba(20,20,35,0.95)',
@@ -93,7 +93,7 @@ const styles = {
     marginBottom: 24,
   },
   errorDetails: {
-    background: '#1a1a2e',
+    background: '#0a0a0d',
     border: '1px solid #333',
     borderRadius: 8,
     padding: '16px',

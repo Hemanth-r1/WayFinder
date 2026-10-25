@@ -613,7 +613,7 @@ export default function MapView({
       {mapError && (
         <div style={{
           position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-          color: '#ccc', fontSize: 14, padding: 24, textAlign: 'center', background: '#1a1a2e',
+          color: '#ccc', fontSize: 14, padding: 24, textAlign: 'center', background: '#0a0a0d',
         }}>
           The map needs WebGL, which this browser or device has turned off. Try an up-to-date Chrome, Edge, Safari or Firefox.
         </div>

@@ -258,6 +258,25 @@ export interface RoadReport {
   photoId?: string;
 }
 
+/** Admin panel data (server/src/adminService.ts). */
+export interface AdminUser {
+  uid: string;
+  email?: string;
+  role: string;
+  requestedRole?: string;
+  disabled: boolean;
+  createdAt?: number;
+  lastSeenAt?: number;
+}
+export interface AdminLogEntry { at: number; by: string; action: string; target: string; detail: string }
+export interface AdminOverview {
+  users: { total: number; byRole: Record<string, number>; pendingRequests: number; activeToday: number; disabled: number };
+  live: { vehicles: number; navigators: number; emergencies: number };
+  trips: { started: number; done: number; avgMinutes: number | null; avgKm: number | null; routedShare: number | null; onRoad: number } | null;
+  server: { uptimeMin: number; memoryMB: number; routeQueue: number; mode: string; adminEmailsSet: boolean };
+}
+export interface Announcement { text: string; level: 'info' | 'warning'; by: string; at: number }
+
 export type FilePurpose = 'report-photo' | 'profile' | 'document';
 /** A file the user stored (server/src/fileService.ts). */
 export interface FileMeta {
@@ -495,6 +514,50 @@ class ServerClient {
     emergency?: EmergencyKind | null,
   ): Promise<NavigationResponse> {
     return this.post('/api/user/start', { userId, sourceNodeId, destNodeId, edgeIds, mode, emergency: emergency ?? undefined }, 'Failed to start navigation');
+  }
+
+  // ── Admin ────────────────────────────────────────────────────────────────────
+
+  async adminUsers(filter: { q?: string; role?: string; requested?: boolean } = {}): Promise<AdminUser[]> {
+    const q = new URLSearchParams();
+    if (filter.q) q.set('q', filter.q);
+    if (filter.role) q.set('role', filter.role);
+    if (filter.requested) q.set('requested', '1');
+    return (await this.getJson<{ users: AdminUser[] }>(`/api/admin/users?${q}`, 'Failed to load users')).users;
+  }
+
+  async adminSetRole(uid: string, role: string): Promise<void> {
+    await this.post(`/api/admin/users/${encodeURIComponent(uid)}/role`, { role }, 'Failed to change role');
+  }
+
+  async adminDecline(uid: string): Promise<void> {
+    await this.post(`/api/admin/users/${encodeURIComponent(uid)}/decline`, {}, 'Failed to decline the request');
+  }
+
+  async adminSetDisabled(uid: string, disabled: boolean): Promise<void> {
+    await this.post(`/api/admin/users/${encodeURIComponent(uid)}/disabled`, { disabled }, 'Failed to change the account');
+  }
+
+  async adminOverview(): Promise<AdminOverview> {
+    return this.getJson('/api/admin/overview', 'Failed to load the overview');
+  }
+
+  async adminLog(): Promise<{ admin: AdminLogEntry[]; control: ControlLogEntry[] }> {
+    return this.getJson('/api/admin/log', 'Failed to load the activity log');
+  }
+
+  /** The banner admins set for everyone (public). */
+  async announcement(): Promise<Announcement | null> {
+    const response = await fetch(`${SERVER_URL}/api/settings/announcement`);
+    return response.ok ? (await response.json()).announcement : null;
+  }
+
+  async setAnnouncement(text: string, level: 'info' | 'warning'): Promise<Announcement | null> {
+    const response = await this.send('/api/settings/announcement', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, level }),
+    });
+    if (!response.ok) throw new Error(await errorMessage(response, 'Failed to save the announcement'));
+    return (await response.json()).announcement;
   }
 
   // ── Users' files ─────────────────────────────────────────────────────────────

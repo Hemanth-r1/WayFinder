@@ -1,7 +1,9 @@
 /**
  * Who is calling. With Firebase configured, requests carry a Firebase ID token
  * (`Authorization: Bearer …`) that is verified here, and the role comes from Firestore
- * `users/{uid}.role`, which only admins can change. Without Firebase (demo mode) the
+ * `users/{uid}.role`, which admins change in the app (Admin panel). The first admins come
+ * from ADMIN_EMAILS (comma-separated): those accounts become admin when they sign in.
+ * A disabled account (`users/{uid}.disabled`) is refused. Without Firebase (demo mode) the
  * browser's `X-Demo-User` / `X-Demo-Role` headers are trusted so everything can be tried.
  */
 import type { Request, Response, NextFunction } from 'express';
@@ -9,8 +11,18 @@ import { getApps } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 import { getDb } from './firebaseClient.js';
 
-/** responder: ambulance / fire / police drivers, who may start emergency runs */
-export type Role = 'user' | 'supporter' | 'controller' | 'responder';
+/**
+ * user: drivers · responder: ambulance / fire / police drivers (emergency runs) ·
+ * supporter: wardens / volunteers (verify reports, map signals, view junctions) ·
+ * controller: traffic police (signal control) · admin: everything, plus users and roles
+ */
+export type Role = 'user' | 'supporter' | 'controller' | 'responder' | 'admin';
+export const ROLES: Role[] = ['user', 'responder', 'supporter', 'controller', 'admin'];
+const ADMIN_EMAILS = new Set((process.env.ADMIN_EMAILS ?? '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean));
+
+/** Operators see junctions and conditions; controllers and admins also control signals. */
+export const isOperator = (role: Role) => role === 'supporter' || role === 'controller' || role === 'admin';
+export const canControl = (role: Role) => role === 'controller' || role === 'admin';
 
 export interface Caller {
   uid: string;
@@ -19,9 +31,26 @@ export interface Caller {
   trusted: boolean;
 }
 
-const ROLES: Role[] = ['user', 'supporter', 'controller', 'responder'];
 const ROLE_CACHE_MS = 5 * 60 * 1000;
-const roleCache = new Map<string, { role: Role; at: number }>();
+const roleCache = new Map<string, { role: Role; disabled: boolean; at: number }>();
+
+/** An admin changed this user: use the new role / status on their next request. */
+export function forgetRole(uid: string): void {
+  roleCache.delete(uid);
+}
+
+/** When each user was last seen (written to their profile at most every 10 min). */
+const lastSeenWritten = new Map<string, number>();
+const LAST_SEEN_MS = 10 * 60 * 1000;
+function noteSeen(uid: string, email?: string): void {
+  const now = Date.now();
+  if (now - (lastSeenWritten.get(uid) ?? 0) < LAST_SEEN_MS) return;
+  lastSeenWritten.set(uid, now);
+  getDb()?.collection('users').doc(uid).set({ lastSeenAt: now, ...(email ? { email } : {}) }, { merge: true }).catch(() => {});
+  demoSeen.set(uid, now);
+}
+/** Demo mode: users seen recently, for the Admin panel */
+export const demoSeen = new Map<string, number>();
 // Drop expired roles, or the cache grows with every user ever seen
 setInterval(() => {
   const cutoff = Date.now() - ROLE_CACHE_MS;
@@ -32,19 +61,26 @@ export function authMode(): 'firebase' | 'demo' {
   return getApps().length > 0 ? 'firebase' : 'demo';
 }
 
-async function roleFor(uid: string): Promise<Role> {
+async function roleFor(uid: string, email?: string): Promise<{ role: Role; disabled: boolean }> {
   const cached = roleCache.get(uid);
-  if (cached && Date.now() - cached.at < ROLE_CACHE_MS) return cached.role;
-  let role: Role = 'user';
+  if (cached && Date.now() - cached.at < ROLE_CACHE_MS) return cached;
+  let role: Role = 'user', disabled = false;
   try {
-    const snap = await getDb()?.collection('users').doc(uid).get();
-    const stored = snap?.data()?.role;
-    if (ROLES.includes(stored)) role = stored;
+    const ref = getDb()?.collection('users').doc(uid);
+    const data = (await ref?.get())?.data();
+    if (ROLES.includes(data?.role)) role = data!.role;
+    disabled = data?.disabled === true;
+    // Bootstrap: accounts listed in ADMIN_EMAILS are admins (set once, then managed in the app)
+    if (email && ADMIN_EMAILS.has(email.toLowerCase()) && role !== 'admin') {
+      role = 'admin';
+      await ref?.set({ role: 'admin', roleChangedBy: 'ADMIN_EMAILS', roleChangedAt: Date.now() }, { merge: true });
+    }
   } catch (err) {
     console.warn('[Auth] Role lookup failed:', (err as Error).message);
   }
-  roleCache.set(uid, { role, at: Date.now() });
-  return role;
+  const entry = { role, disabled, at: Date.now() };
+  roleCache.set(uid, entry);
+  return entry;
 }
 
 function asRole(value: unknown): Role {
@@ -56,19 +92,26 @@ async function identify(req: Request): Promise<Caller | null> {
     const uid = req.header('x-demo-user');
     if (!uid || !/^[\w-]{1,64}$/.test(uid)) return null;
     const role = asRole(req.header('x-demo-role'));
-    return { uid, role, trusted: role === 'supporter' || role === 'controller' };
+    noteSeen(uid);
+    demoRoles.set(uid, role);
+    return { uid, role, trusted: isOperator(role) };
   }
   const header = req.header('authorization') ?? '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : '';
   if (!token) return null;
   try {
     const decoded = await getAuth().verifyIdToken(token);
-    const role = await roleFor(decoded.uid);
-    return { uid: decoded.uid, role, trusted: role === 'supporter' || role === 'controller' };
+    const { role, disabled } = await roleFor(decoded.uid, decoded.email);
+    if (disabled) return null;
+    noteSeen(decoded.uid, decoded.email);
+    return { uid: decoded.uid, role, trusted: isOperator(role) };
   } catch {
     return null;
   }
 }
+
+/** Demo mode: the role each demo user last used (headers are trusted there) */
+export const demoRoles = new Map<string, Role>();
 
 export function caller(res: Response): Caller {
   return res.locals.caller as Caller;
@@ -96,15 +139,21 @@ export function requireSelf(req: Request, res: Response, next: NextFunction) {
   next();
 }
 
-/** Supporters and controllers only. */
+/** Supporters, controllers and admins. */
 export function requireOperator(_req: Request, res: Response, next: NextFunction) {
   if (!caller(res).trusted) return res.status(403).json({ error: 'Supporter or controller role required' });
   next();
 }
 
-/** Signal control: controllers (traffic police) only. */
+/** Signal control: controllers (traffic police) and admins. */
 export function requireController(_req: Request, res: Response, next: NextFunction) {
-  if (caller(res).role !== 'controller') return res.status(403).json({ error: 'Controller role required' });
+  if (!canControl(caller(res).role)) return res.status(403).json({ error: 'Controller role required' });
+  next();
+}
+
+/** Users, roles and app settings: admins only. */
+export function requireAdmin(_req: Request, res: Response, next: NextFunction) {
+  if (caller(res).role !== 'admin') return res.status(403).json({ error: 'Admin role required' });
   next();
 }
 

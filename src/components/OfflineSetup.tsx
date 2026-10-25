@@ -96,20 +96,20 @@ const s: Record<string, CSSProperties> = {
     padding: 16, boxSizing: 'border-box', zIndex: 50,
   },
   card: {
-    width: '100%', maxWidth: 380, background: '#121826', border: '1px solid #1f2638', borderRadius: 16,
+    width: '100%', maxWidth: 380, background: '#16161a', border: '1px solid #26262e', borderRadius: 16,
     padding: '24px 20px', textAlign: 'center', boxSizing: 'border-box',
   },
   title: { color: '#fff', fontSize: 20, fontWeight: 700, margin: '8px 0' },
   text: { color: '#aab', fontSize: 13, lineHeight: 1.5, marginBottom: 12 },
   small: { color: '#99a', fontSize: 12, margin: '8px 0' },
   primary: {
-    width: '100%', padding: 14, background: '#4488FF', color: '#fff', border: 'none', borderRadius: 10,
+    width: '100%', padding: 14, background: '#4f8ef7', color: '#fff', border: 'none', borderRadius: 10,
     fontSize: 15, fontWeight: 700, cursor: 'pointer', marginTop: 8, minHeight: 48,
   },
   secondary: {
     width: '100%', padding: 10, background: 'none', color: '#8ab4ff', border: 'none', fontSize: 13,
     cursor: 'pointer', marginTop: 8, minHeight: 44,
   },
-  bar: { height: 8, background: '#1f2638', borderRadius: 4, overflow: 'hidden', marginTop: 8 },
-  fill: { height: '100%', background: '#4488FF', transition: 'width 0.3s' },
+  bar: { height: 8, background: '#26262e', borderRadius: 4, overflow: 'hidden', marginTop: 8 },
+  fill: { height: '100%', background: '#4f8ef7', transition: 'width 0.3s' },
 };

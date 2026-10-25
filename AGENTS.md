@@ -1,6 +1,6 @@
 # WayFinder
 
-Traffic simulation and adaptive signal control system for Bangalore, India.
+Traffic simulation and adaptive signal control system for Bangalore, India. A TUFF Foundation company (sister company: Avakasha Recruitment Services, avakasha.in). Brand: `src/brand.ts` (names, links, colours, fonts — the dark-theme tokens of Avakasha: black, teal #2fe4cc, blue #4f8ef7, amber #fbbf24; Inter text, Plus Jakarta Sans titles), `src/components/BrandMark.tsx` (red/amber navigation-arrow mark, same two-tone style as the Avakasha "A"), `AboutCompany.tsx`. Contact fields in brand.ts show only once filled in.
 
 ## Commands
 
@@ -54,7 +54,9 @@ Real authentication and data persistence via Firebase Auth + Firestore.
 
 - Users start with `role: "user"` on first sign-up
 - Users can only *request* a role (the app writes `requestedRole`); `firestore.rules` forbid changing your own `role`
-- To promote a user, an admin updates their Firestore document (console or Admin SDK):
+- Five roles: user (drivers), responder (ambulance/fire/police drivers: emergency runs), supporter (wardens/volunteers: verify reports at once, map signals, view junctions), controller (traffic police: signal control), admin (everything, plus users and roles). Helpers: `src/types/roles.ts`, server `auth.ts` (`isOperator`, `canControl`, `requireAdmin`).
+- Admins manage roles in the app (Admin panel, `server/src/adminService.ts`, `/api/admin/*`): approve/decline role requests, change roles, disable accounts (Firebase Auth + `users/{uid}.disabled`, refused by the API), overview, activity log (`adminLog`), announcement banner (`appSettings/public`, `GET /api/settings/announcement`). The first admins come from the server env `ADMIN_EMAILS` (comma-separated). An admin can't remove their own admin role or disable themselves.
+- Without the Admin panel, an admin can still update the Firestore document (console or Admin SDK):
   `users/{uid}` → set `role: "supporter"`, `role: "controller"` or `role: "responder"` (ambulance / fire / police drivers: driver view plus emergency runs; not an operator)
 - Role changes take effect on next page load (the server caches roles for 5 min)
 - Demo mode (no Firebase): the role badge switches role locally so every panel can be tried

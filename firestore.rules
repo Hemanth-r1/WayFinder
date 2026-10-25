@@ -8,14 +8,16 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/users/$(uid)).data.role;
     }
 
-    // Profiles: users manage their own, but only an admin (console / Admin SDK) can change
-    // `role`. Users may ask for a promotion by setting `requestedRole`.
+    // Profiles: users manage their own, but only admins (in the app, via the server) change
+    // `role` or `disabled`. Users may ask for a promotion by setting `requestedRole`.
     match /users/{userId} {
       allow read: if signedIn() && request.auth.uid == userId;
       allow create: if signedIn() && request.auth.uid == userId
-        && request.resource.data.role == 'user';
+        && request.resource.data.role == 'user'
+        && !('disabled' in request.resource.data);
       allow update: if signedIn() && request.auth.uid == userId
-        && request.resource.data.role == resource.data.role;
+        && request.resource.data.role == resource.data.role
+        && request.resource.data.get('disabled', false) == resource.data.get('disabled', false);
       // Saved places (home, work, favourites) and app settings: the user's own, nobody else's
       match /places/{placeId} {
         allow read, write: if signedIn() && request.auth.uid == userId
@@ -34,13 +36,13 @@ service cloud.firestore {
     }
     match /signals/{signalId} {
       allow read: if signedIn();
-      allow write: if signedIn() && roleOf(request.auth.uid) in ['supporter', 'controller'];
+      allow write: if signedIn() && roleOf(request.auth.uid) in ['supporter', 'controller', 'admin'];
     }
     match /overrides/{overrideId} {
       allow read: if signedIn();
-      allow write: if signedIn() && roleOf(request.auth.uid) == 'controller';
+      allow write: if signedIn() && roleOf(request.auth.uid) in ['controller', 'admin'];
     }
     // Everything else (server `commands`, `junctionCounts`, `signalControlLog`, `junctionRules`,
-    // `tripRoutes`, `userFiles`) is Admin SDK only.
+    // `tripRoutes`, `userFiles`, `adminLog`, `appSettings`) is Admin SDK only.
   }
 }

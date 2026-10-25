@@ -32,9 +32,9 @@ export default function NavigationPanel({
     position: 'absolute', top: 12, left: 12,
     zIndex: 1000,
     background: 'rgba(10,10,20,0.92)',
-    border: navigatedVehicle ? '1px solid #4488FF' : '1px solid #333',
+    border: navigatedVehicle ? '1px solid #4f8ef7' : '1px solid #333',
     borderRadius: 8,
-    fontFamily: 'system-ui, sans-serif', fontSize: 12, color: '#ccc',
+    fontFamily: 'inherit', fontSize: 12, color: '#ccc',
     backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
     transition: 'width 0.2s',
     ...(expanded
@@ -66,7 +66,7 @@ export default function NavigationPanel({
             <div style={{ fontSize: 10, color: '#888', marginBottom: 2 }}>Origin</div>
             <div style={{
               display: 'flex', alignItems: 'center', gap: 4,
-              background: '#1a1a2e', borderRadius: 4, padding: '4px 8px',
+              background: '#0a0a0d', borderRadius: 4, padding: '4px 8px',
             }}>
               <span style={{ color: '#4CAF50' }}>●</span>
               <span style={{ fontSize: 11, flex: 1, color: selectedSource ? '#ccc' : '#555' }}>
@@ -83,7 +83,7 @@ export default function NavigationPanel({
             <div style={{ fontSize: 10, color: '#888', marginBottom: 2 }}>Destination</div>
             <div style={{
               display: 'flex', alignItems: 'center', gap: 4,
-              background: '#1a1a2e', borderRadius: 4, padding: '4px 8px',
+              background: '#0a0a0d', borderRadius: 4, padding: '4px 8px',
             }}>
               <span style={{ color: '#F44336' }}>●</span>
               <span style={{ fontSize: 11, flex: 1, color: selectedDest ? '#ccc' : '#555' }}>
@@ -97,7 +97,7 @@ export default function NavigationPanel({
 
           {/* Route info */}
           {routeInfo && !navigatedVehicle && (
-            <div style={{ marginBottom: 8, padding: 6, background: '#1a1a2e', borderRadius: 4 }}>
+            <div style={{ marginBottom: 8, padding: 6, background: '#0a0a0d', borderRadius: 4 }}>
               <div style={{ fontSize: 10, color: '#aaa', marginBottom: 2 }}>Route</div>
               <div style={{ fontSize: 11, color: '#fff' }}>
                 {(routeInfo.distance / 1000).toFixed(1)} km
@@ -116,7 +116,7 @@ export default function NavigationPanel({
           {/* Navigated vehicle info */}
           {navigatedVehicle && routeInfo && (
             <div style={{ marginBottom: 8, padding: 6, background: '#0a1a2e', border: '1px solid #4488FF33', borderRadius: 4 }}>
-              <div style={{ fontSize: 11, color: '#4488FF', fontWeight: 'bold' }}>Vehicle en route</div>
+              <div style={{ fontSize: 11, color: '#4f8ef7', fontWeight: 'bold' }}>Vehicle en route</div>
               <div style={{ fontSize: 10, color: '#888' }}>
                 {(routeInfo.distance / 1000).toFixed(1)} km · ~{(routeInfo.estimatedTime / 60).toFixed(0)} min
               </div>
@@ -129,7 +129,7 @@ export default function NavigationPanel({
               <button
                 onClick={onStartNavigation}
                 style={{
-                  flex: 1, padding: '8px', background: '#4488FF', color: '#fff',
+                  flex: 1, padding: '8px', background: '#4f8ef7', color: '#fff',
                   border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11,
                   fontWeight: 'bold',
                 }}

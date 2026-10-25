@@ -114,5 +114,5 @@ export default function SupporterPanel({ graph, signals }: Props) {
 const styles: Record<string, React.CSSProperties> = {
   section: { padding: '10px 0', borderBottom: '1px solid #222' },
   sectionTitle: { fontSize: 11, color: '#888', textTransform: 'uppercase' as const, marginBottom: 8, fontWeight: 'bold' },
-  input: { width: '100%', padding: '6px 8px', background: '#1a1a2e', border: '1px solid #444', borderRadius: 4, color: '#fff', fontSize: 11, marginBottom: 6, boxSizing: 'border-box' as const },
+  input: { width: '100%', padding: '6px 8px', background: '#0a0a0d', border: '1px solid #444', borderRadius: 4, color: '#fff', fontSize: 11, marginBottom: 6, boxSizing: 'border-box' as const },
 };

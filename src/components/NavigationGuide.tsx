@@ -61,9 +61,9 @@ export default function NavigationGuide({
     // data-map-cover: the map's follow camera keeps the car above this card
     <div data-map-cover="bottom" style={{
       ...container,
-      background: 'rgba(8,8,18,0.96)', border: '1px solid #2a2a40', borderRadius: 14,
+      background: 'rgba(10,10,13,0.96)', border: '1px solid #26262e', borderRadius: 14,
       padding: 14, zIndex: 1500, boxShadow: '0 6px 24px rgba(0,0,0,0.55)',
-      fontFamily: 'system-ui, sans-serif', color: '#ccc',
+      fontFamily: 'inherit', color: '#ccc',
     }}>
       {/* An emergency vehicle close behind: make way */}
       {navigation.emergencyBehind && (
@@ -162,7 +162,7 @@ export default function NavigationGuide({
 
       {/* Next signal + traffic */}
       <div style={{ display: shortScreen ? 'none' : 'flex', gap: 8, marginTop: 12 }}>
-        <div style={{ flex: 1, background: '#1a1a2e', borderRadius: 10, padding: '8px 10px', display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ flex: 1, background: '#0a0a0d', borderRadius: 10, padding: '8px 10px', display: 'flex', alignItems: 'center', gap: 10 }}>
           {nextSignal ? (
             <>
               <span style={{ width: 22, height: 22, borderRadius: 11, background: LIGHT[nextSignal.currentState], flexShrink: 0 }} />
@@ -185,7 +185,7 @@ export default function NavigationGuide({
             <div style={{ fontSize: 12, color: '#888' }}>No signals ahead</div>
           )}
         </div>
-        <div style={{ background: '#1a1a2e', borderRadius: 10, padding: '8px 10px', minWidth: 96 }}>
+        <div style={{ background: '#0a0a0d', borderRadius: 10, padding: '8px 10px', minWidth: 96 }}>
           <div style={{ fontSize: 12, color: trafficColor, fontWeight: 'bold' }}>{trafficText}</div>
           <div style={{ fontSize: 11, color: '#888' }}>{Math.round(traffic.avgSpeed)} km/h avg</div>
         </div>

@@ -203,6 +203,21 @@ async function call(method, path, user, role, body) {
   check('files: deleted', (await call('DELETE', `/api/files/${fid}`, 'demo-f1', 'user')).status === 200 && (await call('DELETE', `/api/files/${photo.json?.file?.id}`, 'demo-f1', 'user')).status === 200);
   await call('DELETE', `/api/reports/${rid}`, 'demo-op', 'controller');
 
+  // 12. Admin: users and roles, overview, activity, announcement
+  check('admin: users list for admins', (await call('GET', '/api/admin/users', 'demo-admin', 'admin')).status === 200);
+  check('admin: controllers cannot manage users', (await call('GET', '/api/admin/users', 'demo-op', 'controller')).status === 403);
+  check('admin: role change', (await call('POST', '/api/admin/users/demo-u9/role', 'demo-admin', 'admin', { role: 'supporter' })).status === 200);
+  check('admin: unknown role → 400', (await call('POST', '/api/admin/users/demo-u9/role', 'demo-admin', 'admin', { role: 'king' })).status === 400);
+  check('admin: cannot drop own admin role', (await call('POST', '/api/admin/users/demo-admin/role', 'demo-admin', 'admin', { role: 'user' })).status === 400);
+  check('admin: admins control signals too', (await call('POST', `/api/junctions/${junction}/reset`, 'demo-admin', 'admin')).status === 200);
+  const ov = await call('GET', '/api/admin/overview', 'demo-admin', 'admin');
+  check('admin: overview', ov.status === 200 && typeof ov.json?.users?.total === 'number' && ov.json?.live?.vehicles >= 0);
+  const ann = await call('PUT', '/api/settings/announcement', 'demo-admin', 'admin', { text: 'Smoke test notice', level: 'info' });
+  check('admin: announcement published and public', ann.status === 200 && (await call('GET', '/api/settings/announcement')).json?.announcement?.text === 'Smoke test notice');
+  check('admin: users cannot publish', (await call('PUT', '/api/settings/announcement', 'demo-u9', 'user', { text: 'x' })).status === 403);
+  await call('PUT', '/api/settings/announcement', 'demo-admin', 'admin', { text: '' });
+  check('admin: activity log records it', ((await call('GET', '/api/admin/log', 'demo-admin', 'admin')).json?.admin ?? []).some(e => e.action === 'announcement'));
+
   // 10. Trip model
   const ts = await call('GET', '/api/trips/stats', 'demo-op', 'controller');
   check('trips: zones and demand mix', ts.status === 200 && ts.json.zones > 100 && Math.abs(Object.values(ts.json.mix).reduce((t, v) => t + v, 0) - 1) < 0.01, `→ ${ts.status}`);

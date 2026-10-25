@@ -41,7 +41,7 @@ export default function ToastContainer() {
   }, []);
 
   const bgColor: Record<string, string> = {
-    info: '#4488FF', success: '#4CAF50', warning: '#FF9800', error: '#f44336',
+    info: '#4f8ef7', success: '#4CAF50', warning: '#FF9800', error: '#f44336',
   };
 
   return (

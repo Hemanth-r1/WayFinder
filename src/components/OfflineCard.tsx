@@ -50,7 +50,7 @@ export default function OfflineCard({ online }: { online: boolean }) {
           Save Bangalore on this device (~55 MB, best on Wi-Fi)? The app then opens faster and
           only live traffic is downloaded each time.
           <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
-            <button onClick={start} style={{ flex: 1, padding: 6, background: '#4488FF', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 11 }}>Download</button>
+            <button onClick={start} style={{ flex: 1, padding: 6, background: '#4f8ef7', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 11 }}>Download</button>
             <button onClick={dismiss} style={{ padding: '6px 10px', background: 'none', color: '#9ab', border: '1px solid #2c4a7a', borderRadius: 6, cursor: 'pointer', fontSize: 11 }}>Not now</button>
           </div>
         </div>
@@ -58,11 +58,11 @@ export default function OfflineCard({ online }: { online: boolean }) {
       {downloading ? (
         <div style={{ marginTop: 6 }}>
           <div style={{ height: 4, background: '#222', borderRadius: 2, overflow: 'hidden' }}>
-            <div style={{ width: `${Math.round(progress.done / Math.max(1, progress.total) * 100)}%`, height: '100%', background: '#4488FF' }} />
+            <div style={{ width: `${Math.round(progress.done / Math.max(1, progress.total) * 100)}%`, height: '100%', background: '#4f8ef7' }} />
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
             <span>{progress.done} / {progress.total} files · {Math.round(progress.bytes / 1e6)} MB</span>
-            <button onClick={() => abortRef.current?.abort()} style={{ background: 'none', border: 'none', color: '#4FC3F7', cursor: 'pointer', fontSize: 11 }}>Stop</button>
+            <button onClick={() => abortRef.current?.abort()} style={{ background: 'none', border: 'none', color: '#2fe4cc', cursor: 'pointer', fontSize: 11 }}>Stop</button>
           </div>
         </div>
       ) : online && (

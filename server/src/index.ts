@@ -13,7 +13,7 @@ import { createJam, listJams, removeJam } from './jamService.js';
 import { initReports, createReport, vote, withdraw, SEGMENT_TYPES, type ReportType, canAttachPhoto, attachPhoto, onReportGone,
 } from './reportsService.js';
 import {
-  requireUser, requireSelf, pace, requireOperator, requireController, rateLimit, caller, authMode,
+  requireUser, requireSelf, pace, requireOperator, requireController, requireAdmin, canControl, rateLimit, caller, authMode,
 } from './auth.js';
 import {
   initJunctions, listJunctions, getJunction, holdGreen, applyPlan, resetJunction, controlLog, ControlError, recordControl,
@@ -29,6 +29,7 @@ import { initRouteWorkers, routeQueuePerWorker } from './routeWorkers.js';
 import { initTurnRules, loadSavedRules, setRules, turnsView, RuleError, closedTurnsVersion, bannedSteps } from './turnRules.js';
 import { initEmergency, dispatchEmergency, cancelCorridor, listCorridors, EmergencyError } from './emergencyService.js';
 import { initTrips, tripStats, loadTripCache } from './tripService.js';
+import { listUsers, setRole, declineRequest, setDisabled, adminLog, loadAnnouncement, getAnnouncement, setAnnouncement, authInfo, AdminError } from './adminService.js';
 import { saveFile, listFiles, getFileMeta, readFile, deleteFile, FileError, FILE_TYPES, MAX_FILE_BYTES, type FilePurpose } from './fileService.js';
 import { planCoordination, applyCoordination } from './coordinationService.js';
 import { commonJson, signalsJson, signalOrderJson, phasesJson, trafficJson, trafficDeltaJson, cellJson } from './liveSnapshot.js';
@@ -303,7 +304,7 @@ app.post('/api/user/start', requireUser, rateLimit('navigation starts', 20, 10 *
     const userId = caller(res).uid;
     if (emergency !== undefined && emergency !== null) {
       if (!['ambulance', 'fire', 'police'].includes(emergency)) return res.status(400).json({ error: 'emergency must be ambulance, fire or police' });
-      if (caller(res).role !== 'responder' && caller(res).role !== 'controller') return res.status(403).json({ error: 'Only responders can start an emergency run' });
+      if (caller(res).role !== 'responder' && !canControl(caller(res).role)) return res.status(403).json({ error: 'Only responders can start an emergency run' });
     }
     if (req.body.userId && req.body.userId !== userId) {
       return res.status(403).json({ error: 'You can only start your own navigation' });
@@ -507,7 +508,7 @@ app.delete('/api/files/:id', requireUser, async (req, res) => {
   const { uid, role } = caller(res);
   try {
     const meta = await getFileMeta(String(req.params.id));
-    if (!meta || !(meta.owner === uid || role === 'controller')) return res.status(404).json({ error: 'No such file' });
+    if (!meta || !(meta.owner === uid || canControl(role))) return res.status(404).json({ error: 'No such file' });
     await deleteFile(meta);
     if (meta.reportId) attachPhoto(meta.reportId, undefined);
     res.json({ deleted: meta.id });
@@ -619,6 +620,69 @@ app.get('/api/control/log', requireUser, requireOperator, (_req, res) => {
   res.json({ log: controlLog() });
 });
 
+// ── Admin: users and roles, overview, audit, announcement ───────────────────
+
+function sendAdminError(res: express.Response, err: any) {
+  res.status(err instanceof AdminError ? err.status : 500).json({ error: err.message });
+}
+
+/** Users (?q=email or id, ?role=, ?requested=1 for pending role requests). */
+app.get('/api/admin/users', requireUser, requireAdmin, async (req, res) => {
+  try {
+    res.json({ users: await listUsers({ q: req.query.q ? String(req.query.q) : undefined, role: req.query.role ? String(req.query.role) : undefined, requested: req.query.requested === '1' }) });
+  } catch (err) { sendAdminError(res, err); }
+});
+
+app.post('/api/admin/users/:uid/role', requireUser, requireAdmin, async (req, res) => {
+  try { await setRole(String(req.params.uid), String(req.body?.role ?? ''), caller(res).uid); res.json({ ok: true }); }
+  catch (err) { sendAdminError(res, err); }
+});
+
+app.post('/api/admin/users/:uid/decline', requireUser, requireAdmin, async (req, res) => {
+  try { await declineRequest(String(req.params.uid), caller(res).uid); res.json({ ok: true }); }
+  catch (err) { sendAdminError(res, err); }
+});
+
+app.post('/api/admin/users/:uid/disabled', requireUser, requireAdmin, async (req, res) => {
+  try { await setDisabled(String(req.params.uid), req.body?.disabled === true, caller(res).uid); res.json({ ok: true }); }
+  catch (err) { sendAdminError(res, err); }
+});
+
+/** Everything at a glance: users by role, live traffic, routing, trips, emergencies. */
+app.get('/api/admin/overview', requireUser, requireAdmin, async (_req, res) => {
+  try {
+    const users = await listUsers({});
+    const byRole: Record<string, number> = {};
+    for (const u of users) byRole[u.role] = (byRole[u.role] ?? 0) + 1;
+    const engine = getSimulationEngine();
+    const mem = process.memoryUsage();
+    res.json({
+      users: { total: users.length, byRole, pendingRequests: users.filter(u => u.requestedRole && u.requestedRole !== u.role).length,
+        activeToday: users.filter(u => (u.lastSeenAt ?? 0) > Date.now() - 86400_000).length, disabled: users.filter(u => u.disabled).length },
+      live: { vehicles: engine?.getStats().totalVehicles ?? 0, navigators: activeNavigatorCount(), emergencies: listCorridors().filter(c => c.status === 'active').length },
+      trips: tripStats().trips,
+      server: { uptimeMin: Math.round(process.uptime() / 60), memoryMB: Math.round(mem.rss / 1e6), routeQueue: routeQueuePerWorker(), ...authInfo() },
+    });
+  } catch (err) { sendAdminError(res, err); }
+});
+
+/** Admin actions (roles, accounts, announcements) and recent signal control actions. */
+app.get('/api/admin/log', requireUser, requireAdmin, async (_req, res) => {
+  try { res.json({ admin: await adminLog(100), control: controlLog(100) }); }
+  catch (err) { sendAdminError(res, err); }
+});
+
+/** The announcement banner for everyone (public, CDN-cached briefly). */
+app.get('/api/settings/announcement', (_req, res) => {
+  res.set('Cache-Control', 'public, max-age=0, s-maxage=30').json({ announcement: getAnnouncement() });
+});
+
+app.put('/api/settings/announcement', requireUser, requireAdmin, async (req, res) => {
+  const level = req.body?.level === 'warning' ? 'warning' : 'info';
+  try { await setAnnouncement(String(req.body?.text ?? ''), level, caller(res).uid); res.json({ announcement: getAnnouncement() }); }
+  catch (err) { sendAdminError(res, err); }
+});
+
 // Load shedding: when the route workers fall behind, phones plan routes themselves (the app
 // has the road network and live traffic colours), so routing capacity grows with the users.
 // (Main-thread lag is the simulation's own work; routes don't run there.)
@@ -662,6 +726,7 @@ async function initializeServer() {
     engine.setMovementHandler(recordMovement);
     startCounts();
     await loadSavedRules(); // controllers' turn rules and phases
+    loadAnnouncement().catch(() => {});
     loadTripCache().catch(() => {}); // planned trip routes from the last run (no cold start)
     engine.start();
     startWeatherPolling();

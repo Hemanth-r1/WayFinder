@@ -3,6 +3,7 @@
  * Context popup on map click with role-aware actions.
  */
 import type { CSSProperties } from 'react';
+import { isDriver, canControl, isOperator } from '../types/roles';
 import type { VehicleType } from '../types';
 import type { RoadReport, ReportType, ReportVote } from '../services/serverClient';
 import { REPORT_LABEL } from '../utils/reports';
@@ -78,7 +79,7 @@ export default function MapContextMenu({
         borderRadius: 10, padding: '6px 0', minWidth: menuWidth,
         maxHeight: 'calc(100vh - 20px)', overflowY: 'auto',
         boxShadow: '0 8px 32px rgba(0,0,0,0.7)',
-        fontFamily: 'system-ui, sans-serif', color: '#fff',
+        fontFamily: 'inherit', color: '#fff',
       }}>
         {/* Header: node info */}
         <div style={{ padding: '6px 14px 8px', borderBottom: '1px solid #222' }}>
@@ -102,8 +103,8 @@ export default function MapContextMenu({
         </div>
 
         {/* Source / Destination (User + Controller) */}
-        {(role === 'user' || role === 'controller') && (
-          <div style={{ borderBottom: '1px solid #1a1a2e' }}>
+        {(isDriver(role) || canControl(role)) && (
+          <div style={{ borderBottom: '1px solid #0a0a0d' }}>
             <MenuItem icon="🟢" label="Set as Origin" onClick={() => { onSetSource(); onClose(); }} />
             <MenuItem icon="🔴" label="Set as Destination" onClick={() => { onSetDest(); onClose(); }} />
           </div>
@@ -111,7 +112,7 @@ export default function MapContextMenu({
 
         {/* Existing reports here: drivers confirm or clear them */}
         {nearbyReports.map(r => (
-          <div key={r.id} style={{ padding: '8px 14px', borderBottom: '1px solid #1a1a2e' }}>
+          <div key={r.id} style={{ padding: '8px 14px', borderBottom: '1px solid #0a0a0d' }}>
             <div style={{ fontSize: 12, color: '#fff' }}>
               {REPORT_LABEL[r.type].icon} {REPORT_LABEL[r.type].label}
               <span style={{ color: r.status === 'confirmed' ? '#FF9800' : '#888', fontSize: 11 }}>
@@ -128,7 +129,7 @@ export default function MapContextMenu({
         ))}
 
         {/* New reports (all roles) */}
-        <div style={{ borderBottom: '1px solid #1a1a2e' }}>
+        <div style={{ borderBottom: '1px solid #0a0a0d' }}>
           <div style={{ padding: '6px 14px 0', fontSize: 10, color: '#555', textTransform: 'uppercase', letterSpacing: 1 }}>Report here</div>
           {(['block', 'tree', 'waterlogging', 'rain'] as const)
             .filter(t => !nearbyReports.some(r => r.type === t))
@@ -138,8 +139,8 @@ export default function MapContextMenu({
         </div>
 
         {/* Intentional jam for design / training (controllers, simulation only) */}
-        {role === 'controller' && onJam && (
-          <div style={{ borderBottom: '1px solid #1a1a2e' }}>
+        {canControl(role) && onJam && (
+          <div style={{ borderBottom: '1px solid #0a0a0d' }}>
             <div style={{ padding: '6px 14px 0', fontSize: 10, color: '#555', textTransform: 'uppercase', letterSpacing: 1 }}>Test jam (simulation)</div>
             <MenuItem icon="🛑" label="Jam this road — standstill, 400 m" onClick={() => { onJam('stopped'); onClose(); }} accent="#F44336" />
             <MenuItem icon="🐢" label="Slow this road — crawl, 400 m" onClick={() => { onJam('slow'); onClose(); }} accent="#FF9800" />
@@ -147,8 +148,8 @@ export default function MapContextMenu({
         )}
 
         {/* Emergency run (controllers, simulation): pick start, then destination */}
-        {role === 'controller' && onAmbulance && (
-          <div style={{ borderBottom: '1px solid #1a1a2e' }}>
+        {canControl(role) && onAmbulance && (
+          <div style={{ borderBottom: '1px solid #0a0a0d' }}>
             <div style={{ padding: '6px 14px 0', fontSize: 10, color: '#555', textTransform: 'uppercase', letterSpacing: 1 }}>Emergency run (simulation)</div>
             <MenuItem icon="🚑" label="Ambulance starts here" onClick={() => { onAmbulance('from'); onClose(); }} accent="#FF1744" />
             {ambulanceFromSet && <MenuItem icon="🏥" label="Ambulance goes here — dispatch" onClick={() => { onAmbulance('to'); onClose(); }} accent="#FF1744" />}
@@ -156,8 +157,8 @@ export default function MapContextMenu({
         )}
 
         {/* Add Signal (Supporter + Controller) */}
-        {(role === 'supporter' || role === 'controller') && nodeId && nodeDegree >= 2 && (
-          <div style={{ borderBottom: '1px solid #1a1a2e' }}>
+        {isOperator(role) && nodeId && nodeDegree >= 2 && (
+          <div style={{ borderBottom: '1px solid #0a0a0d' }}>
             <MenuItem icon="🚦" label="Add Signal Here" onClick={() => { onAddSignal(); onClose(); }} accent="#FF9800" />
           </div>
         )}
@@ -173,7 +174,7 @@ export default function MapContextMenu({
                 key={vt.type}
                 onClick={() => { onSpawnVehicle(vt.type); onClose(); }}
                 style={{
-                  padding: '5px 4px', background: '#1a1a2e', border: '1px solid #2a2a3e',
+                  padding: '5px 4px', background: '#0a0a0d', border: '1px solid #2a2a3e',
                   borderRadius: 6, cursor: 'pointer', color: '#ccc', fontSize: 10,
                   display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
                 }}

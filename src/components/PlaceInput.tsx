@@ -58,8 +58,8 @@ export default function PlaceInput({
   return (
     <div style={{ position: 'relative' }}>
       <div style={{
-        display: 'flex', alignItems: 'center', gap: 8, background: '#1a1a2e',
-        border: `1px solid ${editing ? '#4488FF' : '#2a2a40'}`, borderRadius: 8, padding: '0 10px', height: 44,
+        display: 'flex', alignItems: 'center', gap: 8, background: '#0a0a0d',
+        border: `1px solid ${editing ? '#4f8ef7' : '#26262e'}`, borderRadius: 8, padding: '0 10px', height: 44,
       }}>
         <span style={{ color: dotColor, fontSize: 14 }}>●</span>
         <input
@@ -88,7 +88,7 @@ export default function PlaceInput({
             disabled={locating}
             title="Use my current location"
             style={{
-              background: 'none', border: 'none', color: '#4488FF', cursor: 'pointer',
+              background: 'none', border: 'none', color: '#4f8ef7', cursor: 'pointer',
               fontSize: 12, fontWeight: 'bold', padding: 0, whiteSpace: 'nowrap',
             }}
           >{locating ? 'Locating…' : '◎ My location'}</button>

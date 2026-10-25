@@ -112,7 +112,7 @@ export default function JunctionConsole({ detail, fetchedAt, canControl, movemen
         const t = timing(g);
         const queue = Math.max(0, ...detail.approaches.filter(a => a.group === g).map(a => a.queueVehicles));
         return (
-          <button key={g} onClick={() => setPicked(p => p === g ? null : g)} style={{ ...s.groupRow, borderColor: picked === g ? '#4488FF' : '#1f2638' }}>
+          <button key={g} onClick={() => setPicked(p => p === g ? null : g)} style={{ ...s.groupRow, borderColor: picked === g ? '#4f8ef7' : '#26262e' }}>
             <span style={{ ...s.lamp, background: LIGHT[t.light], boxShadow: `0 0 8px ${LIGHT[t.light]}` }} />
             <span style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
               <span style={{ display: 'block', color: '#eee', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{groupName(detail, g)}</span>
@@ -127,7 +127,7 @@ export default function JunctionConsole({ detail, fetchedAt, canControl, movemen
       })}
 
       {detail.control && (
-        <div style={{ fontSize: 11, color: '#4FC3F7', margin: '6px 0' }}>
+        <div style={{ fontSize: 11, color: '#2fe4cc', margin: '6px 0' }}>
           {detail.control.hold && <div>● Holding {groupName(detail, detail.control.hold.group)} green until {new Date(detail.control.hold.until).toLocaleTimeString()}</div>}
           {detail.control.plan && <div>● Custom timing: {Object.entries(detail.control.plan.greens).map(([g, v]) => `${groupName(detail, g)} ${v}s`).join(', ')}</div>}
           {detail.control.scale && <div>● {groupName(detail, detail.control.scale.group)} green cut to {Math.round(detail.control.scale.factor * 100)}% (coordination)</div>}
@@ -148,7 +148,7 @@ export default function JunctionConsole({ detail, fetchedAt, canControl, movemen
           <div style={{ display: 'grid', gridTemplateColumns: groups.length > 1 ? '1fr 1fr' : '1fr', gap: 6 }}>
             {groups.map(g => (
               <button key={g} disabled={busy || planning} onClick={() => coordinate ? preview(g) : onAction(() => serverClient.holdJunction(detail.id, g, holdFor, false))}
-                style={{ ...s.bigButton, outline: picked === g || plan?.group === g ? '2px solid #4488FF' : 'none' }}>
+                style={{ ...s.bigButton, outline: picked === g || plan?.group === g ? '2px solid #4f8ef7' : 'none' }}>
                 🟢 {groupName(detail, g)}<span style={{ display: 'block', fontSize: 10, fontWeight: 400, opacity: 0.8 }}>for {holdFor}s{coordinate ? ' · preview first' : ''}</span>
               </button>
             ))}
@@ -192,7 +192,7 @@ export default function JunctionConsole({ detail, fetchedAt, canControl, movemen
 
       <Fold title={`Approaches (${detail.approaches.length})`}>
         {detail.approaches.map(a => (
-          <div key={a.edgeId} style={{ fontSize: 11, padding: '4px 0', borderBottom: '1px solid #1a1a2e' }}>
+          <div key={a.edgeId} style={{ fontSize: 11, padding: '4px 0', borderBottom: '1px solid #0a0a0d' }}>
             <div style={{ display: 'flex', gap: 6 }}>
               <span style={{ ...s.dot, background: LIGHT[a.light] }} />
               <span style={{ flex: 1, color: '#ddd' }}>{a.road || 'Unnamed road'} <span style={{ color: '#777' }}>· {a.lanes} lanes</span></span>
@@ -275,7 +275,7 @@ function Diagram({ detail, timing, picked, onPick }: {
         const sel = picked === a.group;
         return (
           <g key={a.edgeId} onClick={() => onPick(a.group)} style={{ cursor: 'pointer' }}>
-            <line x1={x0} y1={y0} x2={x1} y2={y1} stroke={sel ? '#4488FF' : '#3a4150'} strokeWidth={16} strokeLinecap="round" />
+            <line x1={x0} y1={y0} x2={x1} y2={y1} stroke={sel ? '#4f8ef7' : '#3a4150'} strokeWidth={16} strokeLinecap="round" />
             <line x1={x0} y1={y0} x2={qx} y2={qy} stroke={a.overLimit ? '#F44336' : a.queueVehicles > 20 ? '#FF9800' : '#607D8B'} strokeWidth={6} strokeLinecap="round" />
             <circle cx={lx} cy={ly} r={7} fill={LIGHT[t.light]} stroke="#111" strokeWidth={1.5} />
             <text x={lx} y={ly + 3} fontSize={7} textAnchor="middle" fill="#111" fontWeight={700}>{t.changesIn}</text>
@@ -350,7 +350,7 @@ function Timeline({ detail, elapsed }: { detail: JunctionDetail; elapsed: number
 function Fold({ title, children }: { title: string; children: ReactNode }) {
   const [open, setOpen] = useState(false);
   return (
-    <div style={{ borderTop: '1px solid #1a1a2e', marginTop: 8 }}>
+    <div style={{ borderTop: '1px solid #0a0a0d', marginTop: 8 }}>
       <button onClick={() => setOpen(o => !o)} style={{ ...s.link, color: '#9ab', padding: '6px 0', width: '100%', textAlign: 'left' }}>
         {open ? '▾' : '▸'} {title}
       </button>
@@ -360,20 +360,20 @@ function Fold({ title, children }: { title: string; children: ReactNode }) {
 }
 
 const s: Record<string, CSSProperties> = {
-  link: { background: 'none', border: 'none', color: '#4FC3F7', cursor: 'pointer', padding: 0, fontSize: 11 },
+  link: { background: 'none', border: 'none', color: '#2fe4cc', cursor: 'pointer', padding: 0, fontSize: 11 },
   chip: { fontSize: 10, padding: '2px 8px', borderRadius: 10, textTransform: 'uppercase', fontWeight: 700 },
   section: { fontSize: 10, color: '#888', textTransform: 'uppercase', letterSpacing: 1, margin: '12px 0 6px', fontWeight: 600 },
   groupRow: {
     display: 'flex', gap: 8, alignItems: 'center', width: '100%', padding: '7px 8px', marginBottom: 4,
-    background: '#121826', border: '1px solid #1f2638', borderRadius: 8, cursor: 'pointer',
+    background: '#16161a', border: '1px solid #26262e', borderRadius: 8, cursor: 'pointer',
   },
   lamp: { width: 14, height: 14, borderRadius: 7, flexShrink: 0 },
   dot: { width: 8, height: 8, borderRadius: 4, marginTop: 3, flexShrink: 0 },
-  pill: { padding: '5px 9px', fontSize: 11, borderRadius: 14, background: '#1a1a2e', color: '#aaa', border: '1px solid #2a2a40', cursor: 'pointer' },
-  pillOn: { background: '#4488FF33', color: '#fff', borderColor: '#4488FF' },
+  pill: { padding: '5px 9px', fontSize: 11, borderRadius: 14, background: '#0a0a0d', color: '#aaa', border: '1px solid #26262e', cursor: 'pointer' },
+  pillOn: { background: '#4488FF33', color: '#fff', borderColor: '#4f8ef7' },
   bigButton: {
     padding: '10px 8px', background: '#1B5E20', color: '#fff', border: 'none', borderRadius: 8,
     cursor: 'pointer', fontSize: 12, fontWeight: 700, textAlign: 'left', minHeight: 44,
   },
-  button: { padding: '8px 10px', background: '#1565C0', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 11, fontWeight: 600, minHeight: 36 },
+  button: { padding: '8px 10px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 11, fontWeight: 600, minHeight: 36 },
 };

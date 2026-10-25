@@ -128,8 +128,8 @@ const s: Record<string, CSSProperties> = {
   head: { background: 'none', border: 'none', color: '#9ab', cursor: 'pointer', padding: '4px 0', fontSize: 12, width: '100%', textAlign: 'left' },
   label: { fontSize: 10, color: '#888', textTransform: 'uppercase', letterSpacing: 1, margin: '10px 0 4px', fontWeight: 600 },
   muted: { fontSize: 11, color: '#777' },
-  row: { display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, color: '#ddd', padding: '3px 0', borderBottom: '1px solid #1a1a2e' },
-  chip: { padding: '6px 10px', fontSize: 12, borderRadius: 14, background: '#1a1a2e', color: '#ddd', border: '1px solid #2a2a40', cursor: 'pointer', textTransform: 'capitalize' },
-  small: { padding: '6px 9px', fontSize: 11, borderRadius: 6, background: '#1a1a2e', color: '#ccc', border: '1px solid #2a2a40', cursor: 'pointer' },
-  link: { background: 'none', border: 'none', color: '#4FC3F7', cursor: 'pointer', padding: 0, fontSize: 11 },
+  row: { display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, color: '#ddd', padding: '3px 0', borderBottom: '1px solid #0a0a0d' },
+  chip: { padding: '6px 10px', fontSize: 12, borderRadius: 14, background: '#0a0a0d', color: '#ddd', border: '1px solid #26262e', cursor: 'pointer', textTransform: 'capitalize' },
+  small: { padding: '6px 9px', fontSize: 11, borderRadius: 6, background: '#0a0a0d', color: '#ccc', border: '1px solid #26262e', cursor: 'pointer' },
+  link: { background: 'none', border: 'none', color: '#2fe4cc', cursor: 'pointer', padding: 0, fontSize: 11 },
 };
