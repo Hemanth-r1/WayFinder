@@ -16,7 +16,13 @@ interface Props {
 }
 
 const STATUS_COLOR: Record<JunctionSummary['status'], string> = { ok: '#4CAF50', busy: '#FF9800', critical: '#F44336' };
-type Filter = 'attention' | 'all';
+type Filter = 'attention' | 'all' | 'near';
+
+/** Metres between two points (good enough within a city). */
+function metresBetween(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
+  const kx = 111320 * Math.cos(a.lat * Math.PI / 180);
+  return Math.hypot((a.lng - b.lng) * kx, (a.lat - b.lat) * 111320);
+}
 
 export default function JunctionPanel({ canControl, selectedId, onSelect, onFocus }: Props) {
   const [list, setList] = useState<JunctionSummary[]>([]);
@@ -29,6 +35,16 @@ export default function JunctionPanel({ canControl, selectedId, onSelect, onFocu
   const [changes, setChanges] = useState<string[]>([]);
   const [log, setLog] = useState<ControlLogEntry[]>([]);
   const [movements, setMovements] = useState<{ hours: number; rows: MovementRow[] } | null>(null);
+  const [me, setMe] = useState<{ lat: number; lng: number } | null>(null);
+  // Officer on the street: junctions sorted by distance from where they stand
+  const nearMe = () => {
+    if (!navigator.geolocation) { setError('Location is not available on this device'); return; }
+    navigator.geolocation.getCurrentPosition(
+      pos => { setMe({ lat: pos.coords.latitude, lng: pos.coords.longitude }); setFilter('near'); setError(null); },
+      () => setError('Allow location to find the junctions near you'),
+      { enableHighAccuracy: true, timeout: 10000 },
+    );
+  };
 
   // Turning movements for the open junction (refreshed every 30 s)
   useEffect(() => {
@@ -87,8 +103,9 @@ export default function JunctionPanel({ canControl, selectedId, onSelect, onFocu
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (q) return list.filter(j => j.id.toLowerCase().includes(q) || j.name.toLowerCase().includes(q));
+    if (filter === 'near' && me) return [...list].sort((a, b) => metresBetween(me, a) - metresBetween(me, b)).slice(0, 15);
     return filter === 'attention' ? list.filter(j => j.status !== 'ok' || j.controlled) : list;
-  }, [list, query, filter]);
+  }, [list, query, filter, me]);
 
   const act = async (fn: () => Promise<{ changes: string[] }>) => {
     setBusy(true);
@@ -133,9 +150,10 @@ export default function JunctionPanel({ canControl, selectedId, onSelect, onFocu
           </div>
           <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search junction by name or ID" style={styles.input} />
           <div style={{ display: 'flex', gap: 4, marginBottom: 6 }}>
-            {([['attention', `Needs attention (${counts.critical + counts.busy})`], ['all', 'All']] as const).map(([f, label]) => (
+            {([['attention', `⚠ Attention (${counts.critical + counts.busy})`], ['all', 'All']] as const).map(([f, label]) => (
               <button key={f} onClick={() => setFilter(f)} style={{ ...styles.tab, ...(filter === f ? styles.tabOn : {}) }}>{label}</button>
             ))}
+            <button onClick={nearMe} style={{ ...styles.tab, ...(filter === 'near' ? styles.tabOn : {}) }}>📍 Near me</button>
           </div>
           <div style={{ maxHeight: 360, overflowY: 'auto' }}>
             {filtered.length === 0 && <div style={{ fontSize: 11, color: '#666', padding: 8 }}>{query ? 'No junction matches.' : 'All junctions are flowing.'}</div>}
@@ -145,7 +163,7 @@ export default function JunctionPanel({ canControl, selectedId, onSelect, onFocu
                 <span style={{ flex: 1, minWidth: 0 }}>
                   <span style={{ display: 'block', color: '#ddd', fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{j.name}</span>
                   <span style={{ color: '#666', fontSize: 10, fontFamily: 'monospace' }}>
-                    {j.id} · {j.queueVehicles} queued · cycle {j.cycle}s{j.controlled ? ' · ● controlled' : ''}
+                    {filter === 'near' && me ? `${Math.round(metresBetween(me, j))} m · ` : ''}{j.id} · {j.queueVehicles} queued · cycle {j.cycle}s{j.controlled ? ' · ● controlled' : ''}
                   </span>
                 </span>
                 <span style={{ color: '#4FC3F7', fontSize: 12 }}>›</span>
@@ -176,7 +194,11 @@ const styles: Record<string, CSSProperties> = {
     width: '100%', padding: '8px 10px', marginBottom: 6, background: '#111', border: '1px solid #333',
     borderRadius: 6, color: '#ddd', fontSize: 12, boxSizing: 'border-box',
   },
-  tab: { flex: 1, padding: '6px', fontSize: 11, borderRadius: 6, background: '#1a1a2e', color: '#aaa', border: '1px solid #2a2a40', cursor: 'pointer' },
+  // minWidth 0 + ellipsis: three tabs must fit a phone's width
+  tab: {
+    flex: 1, minWidth: 0, padding: '6px 4px', fontSize: 11, borderRadius: 6, background: '#1a1a2e', color: '#aaa',
+    border: '1px solid #2a2a40', cursor: 'pointer', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minHeight: 36,
+  },
   tabOn: { background: '#4488FF33', color: '#fff', borderColor: '#4488FF' },
   row: {
     display: 'flex', gap: 8, alignItems: 'center', width: '100%', padding: '8px 4px', background: 'none',

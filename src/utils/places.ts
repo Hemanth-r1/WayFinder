@@ -100,7 +100,14 @@ export async function searchPlaces(graph: RoadGraph, query: string, signal?: Abo
     if (signal?.aborted) throw err;
     // Geocoder unreachable — road matches still work
   }
-  return [...roads, ...addresses];
+  // The geocoder often returns the same place twice (node and area): keep one per name
+  const seen = new Set<string>();
+  return [...roads, ...addresses].filter(p => {
+    const key = p.label.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 /** Browser GPS position. */

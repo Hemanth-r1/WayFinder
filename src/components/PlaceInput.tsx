@@ -111,7 +111,7 @@ export default function PlaceInput({
         <div style={{
           position: 'absolute', top: 48, left: 0, right: 0, zIndex: 3000,
           background: '#141426', border: '1px solid #333', borderRadius: 8,
-          boxShadow: '0 8px 24px rgba(0,0,0,0.6)', overflow: 'hidden',
+          boxShadow: '0 8px 24px rgba(0,0,0,0.6)', maxHeight: '40vh', overflowY: 'auto',
         }}>
           {results.map((r, i) => (
             <div

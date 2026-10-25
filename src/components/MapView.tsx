@@ -606,14 +606,14 @@ export default function MapView({
       )}
 
       {/* Mini-map */}
-      {!simpleView && <div ref={miniRef} style={{
+      {!simpleView && !compact && <div ref={miniRef} style={{
         position: 'absolute', bottom: 12, right: 12, zIndex: 1000,
         width: 160, height: 120, borderRadius: 8, overflow: 'hidden',
         border: '2px solid #333', boxShadow: '0 4px 16px rgba(0,0,0,0.6)',
       }} />}
 
-      {/* Live stats HUD */}
-      {!simpleView && <div style={{
+      {/* Live stats HUD (desktop operators) */}
+      {!simpleView && !compact && <div style={{
         position: 'absolute', top: 12, left: 270, zIndex: 1001,
         background: 'rgba(10,10,20,0.85)', border: '1px solid #333', borderRadius: 8,
         padding: '6px 12px', fontFamily: 'monospace', fontSize: 11, color: '#ccc',
@@ -623,12 +623,6 @@ export default function MapView({
         <span>⚡ {stats.avgSpeed.toFixed(1)} km/h</span>
         <span style={{ color: stats.congestionHotspots > 3 ? '#FF1744' : '#4CAF50' }}>
           🔥 {stats.congestionHotspots}
-        </span>
-        <span style={{ color: stats.greenWaveActive ? '#00E676' : '#555' }}>
-          🌊 {stats.greenWaveActive ? 'ON' : 'OFF'}
-        </span>
-        <span style={{ color: stats.signalCoordinationScore > 60 ? '#00E676' : '#FF9800' }}>
-          📡 {stats.signalCoordinationScore}%
         </span>
       </div>}
 
@@ -650,7 +644,7 @@ export default function MapView({
         </div>
       )}
 
-      {!simpleView && <NavigationPanel
+      {!simpleView && !compact && <NavigationPanel
         selectedSource={selectedSource}
         selectedDest={selectedDest}
         onSelectSource={onSelectSource}

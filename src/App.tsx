@@ -34,6 +34,8 @@ const PHASE_LABEL: Record<LoadPhase, string> = {
 
 function AppContent() {
   const [offlineSetup, setOfflineSetup] = useState(needsOfflineSetup);
+  // Live data has arrived at least once (the server may still be waking up)
+  const [liveReady, setLiveReady] = useState(false);
   const { user, role, loading: authLoading } = useAuth();
 
   // Every API call identifies the caller: a Firebase ID token, or the demo identity.
@@ -118,6 +120,7 @@ function AppContent() {
     serverClient.startLive();
     const onServerUpdate = (data: any) => {
       if ((data.type === 'update' || data.type === 'initial') && data.data) {
+        setLiveReady(true);
         if (data.data.vehicles) {
           setVehicles(new Map(data.data.vehicles.map((v: any) => [v.id, v])));
         }
@@ -471,6 +474,9 @@ function AppContent() {
       const nav = await serverClient.startNavigation(user.uid, selectedSource, selectedDest, chosen?.edgeIds, mode);
       navigatingRef.current = true;
       setNavigation(nav);
+      // Zoom to the car: the follow camera takes over once its position arrives
+      const start = nav.path?.[0];
+      if (start) setMapFocus({ lat: start.lat, lng: start.lng, zoom: 16.5, key: Date.now() });
       setRouteOptions([]);
       if (db) {
         addDoc(collection(db, 'routes'), {
@@ -546,7 +552,7 @@ function AppContent() {
   return (
     <div style={{
       // % of the full-height #root rather than dvh, which older Safari/Firefox don't support
-      width: '100vw', height: '100%', display: 'flex', margin: 0, padding: 0, overflow: 'hidden',
+      width: '100%', maxWidth: '100vw', height: '100%', display: 'flex', margin: 0, padding: 0, overflow: 'hidden',
       flexDirection: isMobile ? 'column-reverse' : 'row',
     }}>
       {/* Sidebar (bottom sheet on phones) */}
@@ -589,7 +595,7 @@ function AppContent() {
         )}
 
         {/* Role panels */}
-        <div style={{ flex: 1, overflow: 'auto' }}>
+        <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', minWidth: 0 }}>
           {role === 'user' && (
             <UserPanel
               graph={graph}
@@ -718,6 +724,14 @@ function AppContent() {
           onViewportChange={(bbox, zoom) => { serverClient.setViewport(bbox, zoom); progressiveLoader.loadView(bbox, zoom); }}
         />
       </div>
+
+      {!liveReady && !loading && (
+        <div style={{
+          position: 'fixed', top: 10, left: '50%', transform: 'translateX(-50%)', zIndex: 1500,
+          background: 'rgba(20,24,38,0.95)', color: '#cfe0ff', border: '1px solid #2c4a7a', borderRadius: 16,
+          padding: '6px 14px', fontSize: 12, fontFamily: 'system-ui, sans-serif', whiteSpace: 'nowrap',
+        }}>⏳ Connecting to live traffic… (map ready)</div>
+      )}
 
       {/* Navigation Guide Overlay */}
       {navigation && (

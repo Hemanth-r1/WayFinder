@@ -70,7 +70,7 @@ export default function NavigationPanel({
             }}>
               <span style={{ color: '#4CAF50' }}>●</span>
               <span style={{ fontSize: 11, flex: 1, color: selectedSource ? '#ccc' : '#555' }}>
-                {selectedSource ?? 'Click a road to set'}
+                {selectedSource ? (routeInfo?.roadNames[0] ?? 'Point on the map') : 'Click a road to set'}
               </span>
               {selectedSource && (
                 <button onClick={() => onSelectSource(null)} style={{ background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: 10, padding: 0 }} title="Clear origin">✕</button>
@@ -87,7 +87,7 @@ export default function NavigationPanel({
             }}>
               <span style={{ color: '#F44336' }}>●</span>
               <span style={{ fontSize: 11, flex: 1, color: selectedDest ? '#ccc' : '#555' }}>
-                {selectedDest ?? 'Click a road to set'}
+                {selectedDest ? (routeInfo?.roadNames[routeInfo.roadNames.length - 1] ?? 'Point on the map') : 'Click a road to set'}
               </span>
               {selectedDest && (
                 <button onClick={() => onSelectDest(null)} style={{ background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: 10, padding: 0 }} title="Clear destination">✕</button>
@@ -100,7 +100,7 @@ export default function NavigationPanel({
             <div style={{ marginBottom: 8, padding: 6, background: '#1a1a2e', borderRadius: 4 }}>
               <div style={{ fontSize: 10, color: '#aaa', marginBottom: 2 }}>Route</div>
               <div style={{ fontSize: 11, color: '#fff' }}>
-                {routeInfo.path.length - 1} segments · {(routeInfo.distance / 1000).toFixed(1)} km
+                {(routeInfo.distance / 1000).toFixed(1)} km
               </div>
               <div style={{ fontSize: 10, color: '#888' }}>
                 ~{(routeInfo.estimatedTime / 60).toFixed(0)} min · {routeInfo.signalCount} signals
