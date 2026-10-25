@@ -418,14 +418,50 @@ export function findRoute(
   return findRouteOptions(graph, signals, sourceId, destId, ctx, 1)[0] ?? null;
 }
 
-/** Road segment nearest (lat, lng) within `maxMetres`, with its reverse direction if two-way. */
+/** Grid cell size for nearest-road lookups (degrees, ~550 m). */
+const GRID_DEG = 0.005;
+const gridCache = new WeakMap<GraphIndex, Map<string, RoadEdge[]>>();
+
+/** Edges by the grid cells their shape touches, built once per graph (~1 s). */
+function edgeGrid(index: GraphIndex): Map<string, RoadEdge[]> {
+  let grid = gridCache.get(index);
+  if (grid) return grid;
+  grid = new Map();
+  for (const edge of index.edgeList) {
+    const g = edge.geometry;
+    if (!g || g.length < 2) continue;
+    let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
+    for (const p of g) { w = Math.min(w, p.lng); e = Math.max(e, p.lng); s = Math.min(s, p.lat); n = Math.max(n, p.lat); }
+    for (let x = Math.floor(w / GRID_DEG); x <= Math.floor(e / GRID_DEG); x++) {
+      for (let y = Math.floor(s / GRID_DEG); y <= Math.floor(n / GRID_DEG); y++) {
+        const key = x + '_' + y;
+        (grid.get(key) ?? grid.set(key, []).get(key)!).push(edge);
+      }
+    }
+  }
+  gridCache.set(index, grid);
+  return grid;
+}
+
+/**
+ * Road segment nearest (lat, lng) within `maxMetres`, with its reverse direction if two-way.
+ * Looks only at the grid cells around the point (not all ~640k segments).
+ */
 export function nearestRoadSegment(
   index: GraphIndex, lat: number, lng: number, maxMetres = 60,
 ): { edge: RoadEdge; edgeIds: string[]; distance: number } | null {
   const kx = 111320 * Math.cos(lat * Math.PI / 180), ky = 111320;
   let best: RoadEdge | null = null;
   let bestDist = maxMetres;
-  for (const edge of index.edgeList) {
+  const grid = edgeGrid(index);
+  const dLat = maxMetres / ky, dLng = maxMetres / kx;
+  const candidates = new Set<RoadEdge>();
+  for (let x = Math.floor((lng - dLng) / GRID_DEG); x <= Math.floor((lng + dLng) / GRID_DEG); x++) {
+    for (let y = Math.floor((lat - dLat) / GRID_DEG); y <= Math.floor((lat + dLat) / GRID_DEG); y++) {
+      for (const e of grid.get(x + '_' + y) ?? []) candidates.add(e);
+    }
+  }
+  for (const edge of candidates) {
     const g = edge.geometry?.length >= 2 ? edge.geometry : null;
     if (!g) continue;
     for (let i = 1; i < g.length; i++) {

@@ -116,7 +116,7 @@ async function call(method, path, user, role, body) {
   check('signal: control log records it', ((await call('GET', '/api/control/log', 'demo-op', 'controller')).json?.log ?? []).length >= 2);
 
   // 7. Jams
-  const jam = await call('POST', '/api/jams', 'demo-op', 'controller', { lat: 12.9716, lng: 77.5946, severity: 'slow', metres: 200, minutes: 1 });
+  const jam = await call('POST', '/api/jams', 'demo-op', 'controller', { lat: 12.9352, lng: 77.6245, severity: 'slow', metres: 200, minutes: 1 });
   check('jam: created', jam.status === 200 && jam.json.jam?.vehicles > 0, `→ ${jam.status} ${JSON.stringify(jam.json)?.slice(0, 120)}`);
   check('jam: in sea → 400', (await call('POST', '/api/jams', 'demo-op', 'controller', { lat: 10, lng: 70 })).status === 400);
   check('jam: removed', (await call('DELETE', `/api/jams/${jam.json?.jam?.id}`, 'demo-op', 'controller')).status === 200);

@@ -3,7 +3,7 @@
  * - Map tiles, styles, sprites and fonts (OpenFreeMap): cache first — they rarely change,
  *   and "Download Bangalore for offline use" pre-fills this cache.
  * - The app itself and the road network (/api/graph): network first, cached copy offline.
- * - Live data (/api/state, routes, reports…): network only — it must be fresh.
+ * - Live data (/api/live/*, routes, reports…): network only — it must be fresh.
  */
 const MAP_CACHE = 'wf-map-v1';
 const APP_CACHE = 'wf-app-v1';

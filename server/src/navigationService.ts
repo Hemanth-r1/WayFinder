@@ -1,7 +1,7 @@
 import type { RoadGraph, RoadEdge, TrafficSignal, RouteInfo } from './types.js';
 import { findRouteOptionsAsync } from './routeWorkers.js';
 import {
-  getGraphIndex, routeFromEdgeIds, edgeTravelTime, edgeCapacity, describeRoute,
+  getGraphIndex, routeFromEdgeIds, nearestRoadSegment, edgeTravelTime, edgeCapacity, describeRoute,
   type GraphIndex, type RoutingContext,
 } from './pathfindingService.js';
 import { getSimulationEngine, userVehicleKey } from './simulationEngine.js';
@@ -383,13 +383,8 @@ export async function updatePosition(
 
   // Off the route: plan again from the road nearest the driver
   const index = getGraphIndex(graph, signals);
-  let nearest: string | null = null;
-  let bestD = Infinity;
-  for (const node of index.nodes.values()) {
-    if ((index.outEdges.get(node.id)?.length ?? 0) === 0) continue;
-    const d = (node.lat - lat) ** 2 + ((node.lng - lng) * Math.cos(lat * Math.PI / 180)) ** 2;
-    if (d < bestD) { bestD = d; nearest = node.id; }
-  }
+  // Plan from the end of the road the driver is on (they are heading there)
+  const nearest = nearestRoadSegment(index, lat, lng, 300)?.edge.to ?? null;
   if (!nearest || nearest === session.destNodeId) return { onRoute: false, arrived: false, rerouted: false };
   const next = (await findRouteOptionsAsync(nearest, session.destNodeId, routingContext(userId), 1))[0];
   if (!next) return { onRoute: false, arrived: false, rerouted: false };

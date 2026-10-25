@@ -8,6 +8,7 @@ import type { RoadEdge, TrafficSignal, RouteInfo } from './types.js';
 import { getSimulationEngine, type MovementEvent } from './simulationEngine.js';
 import { getGraphIndex, findRoute, type GraphIndex } from './pathfindingService.js';
 import { getGraph } from './graphService.js';
+import { findRouteOptionsAsync } from './routeWorkers.js';
 import { getJunction, applyPlan, holdGreen } from './junctionService.js';
 import { onMovement } from './countsService.js';
 import { haversineMetres } from './osmGraph.js';
@@ -82,11 +83,8 @@ async function buildArms(junctionIds: string[]): Promise<ArmRoutes[]> {
       const approach = index.edges.get(a.edgeId);
       if (!approach) continue;
       const originId = walk(index, inEdges, approach, ORIGIN_METRES, false);
-      const routes: RouteInfo[] = [];
-      for (const d of dests) {
-        const r = findRoute(graph, originId, d, signals);
-        if (r && r.edgeIds.includes(approach.id) && r.distance < 8000) routes.push(r);
-      }
+      const found = await Promise.all(dests.map(d => findRouteOptionsAsync(originId, d, {}, 1).then(r => r[0])));
+      const routes: RouteInfo[] = found.filter((r): r is RouteInfo => !!r && r.edgeIds.includes(approach.id) && r.distance < 8000);
       if (routes.length === 0) continue;
       const green = sig.phases.filter(p => p.group === a.group && p.color === 'GREEN').reduce((t, p) => t + p.duration, 0);
       arms.push({

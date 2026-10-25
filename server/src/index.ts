@@ -61,13 +61,13 @@ app.get('/api/me', requireUser, (_req, res) => {
   res.json({ ...caller(res), auth: authMode() });
 });
 
-// Static once loaded: sent pre-compressed; browsers revalidate by version (ETag) so a
-// server with a new road network is picked up at once, and an unchanged one costs a 304
+// Static once loaded: sent pre-compressed. The ETag is a hash of the content, so a restart
+// with the same roads changes nothing for phones; the CDN keeps it for an hour
 app.get('/api/graph', async (req, res) => {
   try {
-    const { json, gzip } = await getClientGraph();
-    const etag = `"graph-${(await getGraph()).version}"`;
-    res.set('Cache-Control', 'no-cache');
+    const { json, gzip, version } = await getClientGraph();
+    const etag = `"graph-${version}"`;
+    res.set('Cache-Control', 'public, max-age=0, s-maxage=3600');
     res.set('ETag', etag);
     res.set('Vary', 'Accept-Encoding');
     if (req.headers['if-none-match'] === etag) return res.status(304).end();
@@ -454,6 +454,7 @@ async function initializeServer() {
     getClientGraph().catch(() => {}); // serialise once, now that signals carry their directions
     const engine = initSimulationEngine(graph, signals);
     initRouteWorkers(graph, signals); // route searches on the other CPU cores
+    nearestRoadSegment(getGraphIndex(graph, signals), 12.97, 77.59, 1); // build the nearest-road grid now
     engine.setArrivalHandler(markArrived);
     engine.setMovementHandler(recordMovement);
     startCounts();

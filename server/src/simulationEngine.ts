@@ -1559,7 +1559,8 @@ class SimulationEngine {
 
     sv.gps = { at: now, lat, lng };
     const onRoute = best.dist <= GPS_MATCH_METRES;
-    let speed = speedKmh;
+    // Phones report speed; keep it plausible so one phone can't fake a jam (or a free road)
+    let speed = speedKmh === undefined ? undefined : Math.min(150, Math.max(0, speedKmh));
     if (speed === undefined && prev) {
       const secs = (now - prev.at) / 1000;
       if (secs > 0.5) speed = this.metres(prev, { lat, lng }) / secs * 3.6;
