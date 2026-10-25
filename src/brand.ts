@@ -19,7 +19,7 @@ export const BRAND = {
     {
       name: 'WayFinder',
       summary: 'Smart traffic and navigation for Bengaluru',
-      url: 'https://project-7d0d26b8-5887-43f6-804.web.app/',
+      url: 'https://wayfinder-01.web.app/',
     },
     {
       name: 'Avakasha Recruitment Services',

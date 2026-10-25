@@ -4,7 +4,7 @@
 
 WayFinder is a traffic simulation and adaptive signal control system for Bangalore, India. It fetches real road data from OpenStreetMap (Overpass API), simulates vehicle movement using the Intelligent Driver Model (IDM), and controls traffic signals adaptively based on real-time vehicle volumes.
 
-**Live URL:** https://project-7d0d26b8-5887-43f6-804.web.app  
+**Live URL:** https://wayfinder-01.web.app  
 **Project ID:** `project-7d0d26b8-5887-43f6-804`  
 **Hosting:** Firebase Hosting (`dist/` directory)  
 **Auth:** Firebase Authentication (Email/Password)  
@@ -244,7 +244,7 @@ First signup → `role: "user"`. To promote, update Firestore:
 
 **Project:** `project-7d0d26b8-5887-43f6-804`  
 **Firebase alias:** `wayfinder`  
-**Hosting URL:** https://project-7d0d26b8-5887-43f6-804.web.app
+**Hosting URL:** https://wayfinder-01.web.app
 
 ```bash
 # Build
