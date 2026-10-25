@@ -134,6 +134,32 @@ async function call(method, path, user, role, body) {
   check('jam: in sea → 400', (await call('POST', '/api/jams', 'demo-op', 'controller', { lat: 10, lng: 70 })).status === 400);
   check('jam: removed', (await call('DELETE', `/api/jams/${jam.json?.jam?.id}`, 'demo-op', 'controller')).status === 200);
 
+  // 8. Turn rules: close one turn, read it back, clear
+  const tv = await call('GET', `/api/junctions/${junction}/turns`, 'demo-op', 'controller');
+  check('turns: movements listed', tv.status === 200 && tv.json.approaches?.length > 0 && tv.json.approaches.every(a => Array.isArray(a.moves) && Array.isArray(a.mapClosed)), `→ ${tv.status}`);
+  const a0 = tv.json?.approaches?.[0];
+  const closeTurn = a0?.allowed.find(t => t !== 'straight') ?? a0?.allowed[0];
+  const rules = (tv.json?.approaches ?? []).map(a => ({ edgeId: a.edgeId, allowed: a.edgeId === a0.edgeId ? a.allowed.filter(t => t !== closeTurn) : a.allowed, freeLeft: false }));
+  const put = await call('PUT', `/api/junctions/${junction}/turns`, 'demo-op', 'controller', { approaches: rules, phases: null });
+  check('turns: closed turn saved and read back', put.status === 200 && !put.json.view.approaches[0].allowed.includes(closeTurn), `→ ${put.status} ${JSON.stringify(put.json)?.slice(0, 120)}`);
+  check('turns: users cannot change them', (await call('PUT', `/api/junctions/${junction}/turns`, 'demo-u9', 'user', { approaches: rules, phases: null })).status === 403);
+  check('turns: unknown turn → 400', (await call('PUT', `/api/junctions/${junction}/turns`, 'demo-op', 'controller', { approaches: [{ edgeId: a0?.edgeId, allowed: ['sideways'], freeLeft: false }], phases: null })).status === 400);
+  check('turns: cleared', (await call('DELETE', `/api/junctions/${junction}/turns`, 'demo-op', 'controller')).status === 200);
+
+  // 9. Emergency runs
+  const em = await call('POST', '/api/emergency', 'demo-op', 'controller', { from: { lat: 13.0405, lng: 77.5185 }, to: { lat: 13.0225, lng: 77.5545 } });
+  check('emergency: dispatched with signals on its way', em.status === 200 && em.json.corridor?.signals?.length > 0, `→ ${em.status} ${JSON.stringify(em.json)?.slice(0, 120)}`);
+  check('emergency: users cannot dispatch', (await call('POST', '/api/emergency', 'demo-u9', 'user', { from: { lat: 13.04, lng: 77.52 }, to: { lat: 13.02, lng: 77.55 } })).status === 403);
+  const emRoute = em.json?.corridor?.route ?? [];
+  check('emergency: normal user cannot start an emergency trip', emRoute.length > 1 && (await call('POST', '/api/user/start', 'demo-u9', 'user', { sourceNodeId: emRoute[0].split('-')[0], destNodeId: emRoute[emRoute.length - 1].split('-')[1], emergency: 'ambulance' })).status === 403);
+  check('emergency: listed for operators', ((await call('GET', '/api/emergency', 'demo-op', 'controller')).json?.corridors ?? []).some(c => c.id === em.json?.corridor?.id));
+  check('emergency: cancelled', (await call('DELETE', `/api/emergency/${em.json?.corridor?.id}`, 'demo-op', 'controller')).status === 200);
+
+  // 10. Trip model
+  const ts = await call('GET', '/api/trips/stats', 'demo-op', 'controller');
+  check('trips: zones and demand mix', ts.status === 200 && ts.json.zones > 100 && Math.abs(Object.values(ts.json.mix).reduce((t, v) => t + v, 0) - 1) < 0.01, `→ ${ts.status}`);
+  check('trips: users cannot read stats', (await call('GET', '/api/trips/stats', 'demo-u9', 'user')).status === 403);
+
   console.log(`\n${pass} passed, ${fail} failed`);
   for (const f of failures) console.log('  ✗ ' + f);
   process.exitCode = fail ? 1 : 0;

@@ -27,7 +27,7 @@ import {
 import { initRouteWorkers, routeQueuePerWorker } from './routeWorkers.js';
 import { initTurnRules, loadSavedRules, setRules, turnsView, RuleError } from './turnRules.js';
 import { initEmergency, dispatchEmergency, cancelCorridor, listCorridors, EmergencyError } from './emergencyService.js';
-import { initTrips, tripStats } from './tripService.js';
+import { initTrips, tripStats, loadTripCache } from './tripService.js';
 import { planCoordination, applyCoordination } from './coordinationService.js';
 import { commonJson, trafficJson, cellJson } from './liveSnapshot.js';
 
@@ -279,7 +279,7 @@ app.get('/api/stats', async (_req, res) => {
   }
 });
 
-app.post('/api/user/start', requireUser, async (req, res) => {
+app.post('/api/user/start', requireUser, rateLimit('navigation starts', 20, 10 * 60 * 1000), async (req, res) => {
   try {
     const { sourceNodeId, destNodeId, edgeIds, mode, emergency } = req.body;
     const userId = caller(res).uid;
@@ -583,6 +583,7 @@ async function initializeServer() {
     engine.setMovementHandler(recordMovement);
     startCounts();
     await loadSavedRules(); // controllers' turn rules and phases
+    loadTripCache().catch(() => {}); // planned trip routes from the last run (no cold start)
     engine.start();
     startWeatherPolling();
     console.log('[WayFinder Server] Simulation engine started');

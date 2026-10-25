@@ -21,6 +21,8 @@ import type { GraphIndex } from './pathfindingService.js';
 import { getDb } from './firebaseClient.js';
 import { clearSignalCache } from './signalTiming.js';
 import { getSimulationEngine } from './simulationEngine.js';
+import { readFileSync, existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 export type Turn = 'left' | 'straight' | 'right' | 'uturn';
 export const TURNS: Turn[] = ['left', 'straight', 'right', 'uturn'];
@@ -73,8 +75,11 @@ const junctionOfApproach = new Map<string, string>();
 const rulesById = new Map<string, JunctionRules>();
 /** Original phases and approach groups, to go back to defaults */
 const defaults = new Map<string, { phases: SignalPhase[]; groups: Map<string, string> }>();
-/** "fromEdge>toEdge" steps closed by turn rules */
+/** "fromEdge>toEdge" steps closed by turn rules (controllers' rules + OSM restrictions) */
 let banned = new Set<string>();
+/** Steps closed by OpenStreetMap turn restrictions (no right turn, no U-turn, …): the default everywhere */
+const osmBanned = new Set<string>();
+const RESTRICTIONS_FILE = fileURLToPath(new URL('../data/bangalore-restrictions.json', import.meta.url));
 /** junction id → movements its rules ban but cannot close without closing allowed ones */
 const unenforceable = new Map<string, string[]>();
 type BanListener = (pairs: [string, string][]) => void;
@@ -145,6 +150,70 @@ export function initTurnRules(index: GraphIndex, signals: TrafficSignal[]): void
       movesByApproach.set(a.edgeId, moves);
     }
   }
+  loadOsmRestrictions(index);
+  rebuildBans();
+}
+
+/**
+ * OSM restriction relations as closed steps. Via a node: the step from the edge arriving on
+ * the "from" way to the edge leaving on the "to" way. Via a road segment: only U-turns
+ * (the last step back onto the "to" way); other via-road restrictions can't be expressed as
+ * one step without closing turns that are allowed, so they are skipped and counted.
+ */
+function loadOsmRestrictions(index: GraphIndex): void {
+  if (!existsSync(RESTRICTIONS_FILE)) return;
+  const doc = JSON.parse(readFileSync(RESTRICTIONS_FILE, 'utf8')) as { restrictions: [string, number, 'n' | 'w', number[], number][] };
+  const nodeId = (osm: number) => 'n' + osm.toString(36);
+  const inEdges = new Map<string, RoadEdge[]>();
+  for (const e of index.edgeList) (inEdges.get(e.to) ?? inEdges.set(e.to, []).get(e.to)!).push(e);
+  let applied = 0, skipped = 0;
+  for (const [type, fromWay, viaKind, via, toWay] of doc.restrictions) {
+    if (!type.startsWith('no_')) { skipped++; continue; }
+    let pairs: [RoadEdge, RoadEdge][] = [];
+    if (viaKind === 'n') {
+      const v = nodeId(via[0]);
+      const ins = (inEdges.get(v) ?? []).filter(e => e.lastWay === fromWay);
+      const outs = (index.outEdges.get(v) ?? []).filter(e => e.firstWay === toWay);
+      // Keep the steps whose turn is the one the restriction names (from and to can be the same
+      // road, e.g. "no U-turn": its straight-on continuation must stay open)
+      const named: Record<string, Turn> = { no_right_turn: 'right', no_left_turn: 'left', no_u_turn: 'uturn', no_straight_on: 'straight' };
+      const want = named[type];
+      for (const a of ins) for (const b of outs) {
+        const t = turnFor(bearingOf(a, true), bearingOf(b), b.to === a.from);
+        if (!want || t === want) pairs.push([a, b]);
+      }
+    } else if (type === 'no_u_turn') {
+      // Last step: from the via segment onto the "to" way
+      const viaWays = new Set(via);
+      for (const e of index.edgeList) {
+        if (e.firstWay !== toWay) continue;
+        for (const p of inEdges.get(e.from) ?? []) if (p.lastWay !== undefined && viaWays.has(p.lastWay)) pairs.push([p, e]);
+      }
+    }
+    pairs = pairs.filter(([a, b]) => a.id !== b.id);
+    if (pairs.length === 0) { skipped++; continue; }
+    for (const [a, b] of pairs) osmBanned.add(a.id + '>' + b.id);
+    applied++;
+  }
+  console.log(`[TurnRules] OSM turn restrictions: ${applied} applied (${osmBanned.size} closed steps), ${skipped} skipped`);
+}
+
+/** True when every step of a movement is open (map restrictions and controllers' rules). */
+export function movementOpen(m: Movement): boolean {
+  if (banned.size === 0) return true;
+  let prev = m.approachEdgeId;
+  for (const id of m.path) { if (banned.has(prev + '>' + id)) return false; prev = id; }
+  return true;
+}
+
+/** Turns from an approach that OSM restrictions close (shown to police; their rules can reopen them). */
+function mapClosedTurns(approachEdgeId: string): Turn[] {
+  const closed = new Set<Turn>();
+  for (const m of movesByApproach.get(approachEdgeId) ?? []) {
+    let prev = m.approachEdgeId;
+    for (const id of m.path) { if (osmBanned.has(prev + '>' + id)) { closed.add(m.turn); break; } prev = id; }
+  }
+  return TURNS.filter(t => closed.has(t));
 }
 
 /** Movements out of an approach edge (undefined when the edge is no signal approach). */
@@ -353,7 +422,7 @@ function apply(junctionId: string, rules: JunctionRules | null): void {
 }
 
 function rebuildBans(): void {
-  const next = new Set<string>();
+  const next = new Set<string>(osmBanned);
   unenforceable.clear();
   for (const [jid, rules] of rulesById) {
     const s = signalsById.get(jid);
@@ -369,6 +438,8 @@ function rebuildBans(): void {
         else closed.push(m);
       }
     }
+    // Police know the junction: a turn they allow is open even if map data closes it
+    for (const k of allowedSteps) next.delete(k);
     for (const m of closed) {
       const step = steps(seq(m)).find(k => !allowedSteps.has(k));
       if (step) next.add(step);
@@ -424,6 +495,8 @@ export interface TurnsView {
     edgeId: string; road: string; from: string; lanes: number;
     moves: { turn: Turn; road: string; heading: string; exitEdgeId: string }[];
     allowed: Turn[]; freeLeft: boolean;
+    /** Turns OpenStreetMap marks as not allowed here */
+    mapClosed: Turn[];
   }[];
   /** Saved phase list, or null for road-based phases */
   phases: PhaseSpec[] | null;
@@ -453,7 +526,8 @@ export function turnsView(junctionId: string): TurnsView | null {
       edgeId: a.edgeId, road: e?.name || 'Unnamed road',
       from: compassWord(((e ? bearingOf(e, true) : 0) + 180) % 360), lanes: e?.lanes ?? 1,
       moves: TURNS.filter(t => byTurn.has(t)).map(t => { const m = byTurn.get(t)!; return { turn: t, road: m.road, heading: compassWord(m.heading), exitEdgeId: m.exitEdgeId }; }),
-      allowed: r?.allowed ?? TURNS.filter(t => byTurn.has(t)), freeLeft: r?.freeLeft ?? false,
+      allowed: r?.allowed ?? TURNS.filter(t => byTurn.has(t) && !mapClosedTurns(a.edgeId).includes(t)), freeLeft: r?.freeLeft ?? false,
+      mapClosed: mapClosedTurns(a.edgeId),
     };
   });
   const def = defaults.get(junctionId)?.phases ?? [];

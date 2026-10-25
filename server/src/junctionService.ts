@@ -166,9 +166,7 @@ export function initJunctions(index: GraphIndex, signals: TrafficSignal[], place
   for (const j of signals) {
     j.arms = describeArms(j, index, inEdges);
     const members = new Set(j.nodeIds ?? [j.nodeId]);
-    const exits = describeExits(j, members, index, inEdges);
-    exitsBySignal.set(j.id, exits);
-    reachBySignal.set(j.id, reachableExits(j, new Set(exits.map(x => x.edgeId)), index));
+    exitsBySignal.set(j.id, describeExits(j, members, index, inEdges));
     feedersBySignal.set(j.id, new Map(j.approaches
       .filter(a => a.group !== 'FREE')
       .map(a => [a.edgeId, findFeeders(index.edges.get(a.edgeId), members, index, inEdges)])));
@@ -365,32 +363,6 @@ export interface FeederRoad {
 }
 
 const exitsBySignal = new Map<string, JunctionExit[]>();
-/** Exits each approach can physically reach (approach edge → exit edge ids) */
-const reachBySignal = new Map<string, Map<string, string[]>>();
-const REACH_METRES = 150;
-
-/** Searches forward from each approach's stop line (≤150 m, no U-turn) for the junction exits it can use. */
-function reachableExits(j: TrafficSignal, exitIds: Set<string>, index: GraphIndex): Map<string, string[]> {
-  const out = new Map<string, string[]>();
-  for (const a of j.approaches) {
-    const start = index.edges.get(a.edgeId);
-    if (!start) continue;
-    const found = new Set<string>();
-    const best = new Map<string, number>([[start.to, 0]]);
-    const open: [string, number][] = [[start.to, 0]];
-    while (open.length) {
-      const [node, metres] = open.pop()!;
-      for (const e of index.outEdges.get(node) ?? []) {
-        if (node === start.to && e.to === start.from) continue; // U-turn back up the approach
-        if (exitIds.has(e.id)) found.add(e.id);
-        const m = metres + e.length;
-        if (m <= REACH_METRES && m < (best.get(e.to) ?? Infinity)) { best.set(e.to, m); open.push([e.to, m]); }
-      }
-    }
-    out.set(a.edgeId, [...found]);
-  }
-  return out;
-}
 /** Each approach's road upstream (edge ids, nearest first, ≤ 1.5 km): where its queue can reach */
 const chainsBySignal = new Map<string, Map<string, string[]>>();
 const CHAIN_METRES = 1500;
@@ -536,11 +508,6 @@ function findMerges(id: string, members: Set<string>, index: GraphIndex, inEdges
     }
   }
   return merges;
-}
-
-/** Exit descriptions for a junction (used to label movement counts). */
-export function junctionExits(id: string): JunctionExit[] {
-  return exitsBySignal.get(id) ?? [];
 }
 
 // ── Live view and recommendations ────────────────────────────────────────────
@@ -921,9 +888,8 @@ export function memberNodes(id: string): Set<string> {
 }
 
 /** Links to neighbouring signals and the exits of a junction (for coordinationService). */
-export function junctionLinks(id: string): { upstream: JunctionLink[]; downstream: JunctionLink[]; exits: JunctionExit[]; reach: Map<string, string[]> } {
+export function junctionLinks(id: string): { upstream: JunctionLink[]; downstream: JunctionLink[]; exits: JunctionExit[] } {
   return {
-    reach: reachBySignal.get(id) ?? new Map(),
     upstream: net?.upstream.get(id) ?? [],
     downstream: net?.downstream.get(id) ?? [],
     exits: exitsBySignal.get(id) ?? [],

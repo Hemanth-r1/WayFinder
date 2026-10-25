@@ -14,6 +14,9 @@ export interface RoadEdge {
   ix?: number;
   /** Flyover / elevated road (OSM bridge with layer ≥ 1, or a named flyover) */
   elevated?: boolean;
+  /** OSM way the edge starts on and ends on (merged edges can span several ways); for turn restrictions */
+  firstWay?: number;
+  lastWay?: number;
 }
 
 /** A named neighbourhood (OSM place=suburb/neighbourhood/…), used to describe directions. */

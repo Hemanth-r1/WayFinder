@@ -430,7 +430,7 @@ function sameRoad(a: RoadEdge, b: RoadEdge): boolean {
 function joinEdges(a: RoadEdge, b: RoadEdge): RoadEdge {
   const geometry = [...a.geometry, ...b.geometry.slice(1)];
   return {
-    ...a, id: `${a.from}-${b.to}`, to: b.to,
+    ...a, id: `${a.from}-${b.to}`, to: b.to, lastWay: b.lastWay,
     length: Math.round((a.length + b.length) * 10) / 10,
     bearing: Math.round(bearing(geometry[0], geometry[geometry.length - 1])),
     geometry,
@@ -527,6 +527,7 @@ export function buildGraphFromOsm(osm: CompactOsm): BuiltNetwork {
     edges.set(id, {
       ...(isElevated(w) ? { elevated: true } : {}),
       id, from, to, name: w.name ?? '', roadType,
+      firstWay: w.id, lastWay: w.id,
       speedLimit: freeFlowSpeed(w, roadType), lanes,
       length: Math.round(length * 10) / 10,
       bearing: Math.round(bearing(g[0], g[g.length - 1])),

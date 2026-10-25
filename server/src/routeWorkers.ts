@@ -161,6 +161,11 @@ function refreshLiveCosts(): void {
 }
 
 /** Searches waiting or running on the workers, per worker. */
+/** True while at least one route worker is running (searches stay off the simulation thread). */
+export function routeWorkersReady(): boolean {
+  return workers.length > 0;
+}
+
 export function routeQueuePerWorker(): number {
   return workers.length ? waiting.size / workers.length : 0;
 }

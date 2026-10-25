@@ -24,7 +24,7 @@
  */
 import { getSimulationEngine } from './simulationEngine.js';
 import { getJunction, junctionLinks, memberNodes, edgeById, recordControl, ControlError, MAX_WAIT_S, type JunctionLink } from './junctionService.js';
-import { movesFrom, allowedTurns, rulesOf, type Movement } from './turnRules.js';
+import { movesFrom, allowedTurns, rulesOf, movementOpen, type Movement } from './turnRules.js';
 import { junctionMovements } from './countsService.js';
 
 /** Saturation flow per lane (vehicles/s): 1800 per hour. */
@@ -94,7 +94,7 @@ const vehiclesIn = (metres: number, lanes: number) => Math.max(0, metres) * Math
  */
 function movementShares(approachEdgeId: string, junctionId: string, phaseTurns?: Set<string>): { m: Movement; share: number }[] {
   const allowed = new Set(allowedTurns(approachEdgeId));
-  const moves = (movesFrom(approachEdgeId) ?? []).filter(m => allowed.has(m.turn) && (!phaseTurns || phaseTurns.has(m.turn)));
+  const moves = (movesFrom(approachEdgeId) ?? []).filter(m => allowed.has(m.turn) && movementOpen(m) && (!phaseTurns || phaseTurns.has(m.turn)));
   if (!moves.length) return [];
   const rows = junctionMovements(junctionId, 1).rows.filter(r => r.fromEdge === approachEdgeId);
   const counted = rows.filter(r => moves.some(m => m.exitEdgeId === r.toEdge)).reduce((t, r) => t + r.vehicles, 0);

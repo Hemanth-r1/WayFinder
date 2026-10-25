@@ -21,10 +21,11 @@
  */
 import type { RoadEdge, RoadGraph, TrafficSignal, Place } from './types.js';
 import { getGraphIndex, type GraphIndex } from './pathfindingService.js';
-import { findRouteOptionsAsync, routeQueuePerWorker } from './routeWorkers.js';
+import { findRouteOptionsAsync, routeQueuePerWorker, routeWorkersReady } from './routeWorkers.js';
 import { getSimulationEngine, rankOf, type TripPlan, type VehicleKind } from './simulationEngine.js';
 import { isEdgeBlocked } from './reportsService.js';
 import { isTurnBanned, onBansChanged } from './turnRules.js';
+import { getDb } from './firebaseClient.js';
 
 const BBOX = { s: 12.80, w: 77.42, n: 13.20, e: 77.82 };
 const CELL = 0.025;
@@ -37,6 +38,11 @@ const PLAN_EVERY_MS = 250;
 const MAX_CACHE = 6000;
 const REROUTE_EVERY_MS = 2000;
 const MAX_REROUTES = 2;
+/** Planned routes are saved to Firestore `tripRoutes/{originZone}` this often, and loaded at start-up */
+const SAVE_EVERY_MS = 10 * 60_000;
+/** Options kept per pair when saving (a Firestore document holds at most 1 MB) */
+const SAVED_OPTIONS = 2;
+const MAX_DOC_BYTES = 900_000;
 /** Side-street drive added at each end of a trip (m) */
 const LOCAL_M = [150, 700] as const;
 /** A trip may borrow the route of a planned pair whose ends are this close to its own (m) */
@@ -80,6 +86,8 @@ const zones: Zone[] = [];
 const inEdges = new Map<string, RoadEdge[]>();
 /** "from|to" → route options (edge ids) and when planned */
 const cache = new Map<string, { options: string[][]; at: number }>();
+/** Origin zones whose planned routes changed since the last save */
+const dirty = new Set<number>();
 /** Pairs wanted but not planned yet, with how often they were asked for */
 const wanted = new Map<string, number>();
 let planning = false;
@@ -141,7 +149,8 @@ export function initTrips(graph: RoadGraph, signals: TrafficSignal[], places: Pl
   for (const z of zones) z.near = zones.filter(o => metres(o, z) <= NEAR_M).sort((a, b) => metres(a, z) - metres(b, z));
   console.log(`[Trips] ${zones.length} zones, ${zones.filter(z => z.through > 0).length} on the city edge`);
   // Turn rules changed: routes planned before may use a closed turn
-  onBansChanged(() => cache.clear());
+  onBansChanged(() => { cache.clear(); for (const z of zones) dirty.add(z.i); });
+  setInterval(() => { saveCache().catch(err => console.warn('[Trips] save failed:', err.message)); }, SAVE_EVERY_MS).unref();
   setInterval(planNext, PLAN_EVERY_MS).unref();
   setInterval(rerouteAppUsers, REROUTE_EVERY_MS).unref();
   getSimulationEngine()?.setTripSource(nextTrip);
@@ -297,7 +306,8 @@ function nextTrip(kind: VehicleKind, warm: boolean): TripPlan | null {
 /** Plans the most wanted missing or stale zone pair, when the route workers have room. */
 function planNext(): void {
   if (planning || wanted.size === 0 || !idx) return;
-  if (routeQueuePerWorker() > 0.5) return; // real users first
+  // Real users first; and never on the simulation's own thread (no worker running)
+  if (!routeWorkersReady() || routeQueuePerWorker() > 0.5) return;
   let key = '', most = -1;
   for (const [k, n] of wanted) if (n > most) { most = n; key = k; }
   wanted.delete(key);
@@ -310,6 +320,7 @@ function planNext(): void {
       const good = options.map(o => o.edgeIds).filter(ids => ids.length > 0);
       if (good.length) {
         cache.set(key, { options: good, at: Date.now() });
+        dirty.add(a);
         stats.planned++;
         if (cache.size > MAX_CACHE) cache.delete(cache.keys().next().value!);
       } else stats.planFailed++;
@@ -322,7 +333,7 @@ let rerouting = 0;
 /** App-using drivers with a road block ahead on their route get a new route around it. */
 function rerouteAppUsers(): void {
   const engine = getSimulationEngine();
-  if (!engine || !idx || rerouting >= MAX_REROUTES || routeQueuePerWorker() > 0.5) return;
+  if (!engine || !idx || rerouting >= MAX_REROUTES || !routeWorkersReady() || routeQueuePerWorker() > 0.5) return;
   for (const t of engine.appTrips()) {
     if (rerouting >= MAX_REROUTES) break;
     const ahead = t.route.slice(t.routeIndex + 1, t.routeIndex + 12);
@@ -343,6 +354,57 @@ function rerouteAppUsers(): void {
       })
       .catch(() => { /* try again next round */ })
       .finally(() => { rerouting--; });
+  }
+}
+
+/** Saves the planned routes of changed origin zones (one document per zone). */
+async function saveCache(): Promise<void> {
+  const db = getDb();
+  if (!db || dirty.size === 0) return;
+  const zonesToSave = [...dirty];
+  dirty.clear();
+  for (const zi of zonesToSave) {
+    const z = zones[zi];
+    if (!z) continue;
+    const pairs: Record<string, { anchor: string; options: string; at: number }> = {};
+    for (const [key, c] of cache) {
+      const [a, b] = key.split('|').map(Number);
+      if (a !== zi || !zones[b]) continue;
+      // Edge ids joined into one string per option: smaller documents, fewer fields
+      pairs[b] = { anchor: zones[b].anchor, options: c.options.slice(0, SAVED_OPTIONS).map(o => o.join(',')).join(';'), at: c.at };
+    }
+    const doc = { anchor: z.anchor, pairs };
+    if (JSON.stringify(doc).length > MAX_DOC_BYTES) {
+      for (const k of Object.keys(pairs)) pairs[k].options = pairs[k].options.split(';')[0];
+    }
+    await db.collection('tripRoutes').doc(String(zi)).set(doc);
+  }
+}
+
+/** Loads saved routes (call after turn rules are loaded): only those that still fit the map and rules. */
+export async function loadTripCache(): Promise<number> {
+  const db = getDb();
+  if (!db || !idx) return 0;
+  try {
+    const snap = await db.collection('tripRoutes').get();
+    let n = 0, dropped = 0;
+    for (const doc of snap.docs) {
+      const zi = Number(doc.id), z = zones[zi];
+      const d = doc.data() as { anchor: string; pairs: Record<string, { anchor: string; options: string; at: number }> };
+      if (!z || d.anchor !== z.anchor) { dropped += Object.keys(d.pairs ?? {}).length; continue; } // map changed
+      for (const [b, p] of Object.entries(d.pairs ?? {})) {
+        const to = zones[Number(b)];
+        const options = p.options.split(';').map(o => o.split(',')).filter(o => o.length > 0 && connected(o)
+          && idx!.edges.get(o[0])?.from === z.anchor && idx!.edges.get(o[o.length - 1])?.to === to?.anchor);
+        if (!to || to.anchor !== p.anchor || options.length === 0) { dropped++; continue; }
+        if (!cache.has(`${zi}|${b}`)) { cache.set(`${zi}|${b}`, { options, at: p.at }); n++; }
+      }
+    }
+    console.log(`[Trips] loaded ${n} saved zone routes (${dropped} no longer fit the map or turn rules)`);
+    return n;
+  } catch (err) {
+    console.warn('[Trips] could not load saved routes:', (err as Error).message);
+    return 0;
   }
 }
 

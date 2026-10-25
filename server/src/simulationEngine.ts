@@ -15,7 +15,7 @@ import {
   getGraphIndex, congestionFactor, edgeCapacity, activeRouteEdgeIds, recordObservedSpeed, type GraphIndex,
 } from './pathfindingService.js';
 import { signalControl, approachState } from './signalTiming.js';
-import { movesFrom, allowedTurns, isFreeLeft, isTurnBanned, movementAlong, movementLight, type Turn } from './turnRules.js';
+import { movesFrom, allowedTurns, isFreeLeft, isTurnBanned, movementAlong, movementLight, movementOpen, type Turn } from './turnRules.js';
 import { createHmac, randomBytes } from 'node:crypto';
 import { getWeather, getDemand, getBehaviour, type Behaviour } from './conditionsService.js';
 import { jamSpeedFactor } from './jamService.js';
@@ -433,7 +433,7 @@ class SimulationEngine {
   private emergencyIds = new Set<string>();
   /** Origin–destination trips (tripService) and their counters */
   private tripSource: TripSource | null = null;
-  private tripStats = { started: 0, done: 0, seconds: 0, metres: 0, fallback: 0, improvised: 0, rerouted: 0 };
+  private tripStats = { started: 0, done: 0, seconds: 0, metres: 0, fallback: 0, improvised: 0, rerouted: 0, collided: 0 };
   /** Wrong-way copies of one-way roads: contra id → real edge id, and by start node */
   private contraBase = new Map<string, string>();
   private contraFrom = new Map<string, RoadEdge[]>();
@@ -798,15 +798,18 @@ class SimulationEngine {
     const edge = trip ? this.index.edges.get(trip.route[trip.startIndex]) ?? null : this.pickSpawnEdge(kind, corridor);
     if (!edge) return;
     const lane = this.pickLane(edge, kind);
-    const progress = trip ? Math.min(edge.length, trip.progress) : Math.random() * edge.length;
+    let progress = trip ? Math.min(edge.length, trip.progress) : Math.random() * edge.length;
 
-    // Don't drop a vehicle on top of another in the same lane
-    const bucket = `${edge.id}#${lane}#${Math.floor(progress / 10)}`;
-    if (this.spawnBuckets.has(bucket)) return;
-    for (const other of this.lanesByEdge[edge.ix!]?.[lane] ?? []) {
-      if (Math.abs(other.progress - progress) < 8) return;
+    // Don't drop a vehicle on top of another in the same lane; a trip moves along its first street to a free spot
+    const free = (at: number) => !this.spawnBuckets.has(`${edge.id}#${lane}#${Math.floor(at / 10)}`)
+      && !(this.lanesByEdge[edge.ix!]?.[lane] ?? []).some(other => Math.abs(other.progress - at) < 8);
+    if (!free(progress)) {
+      let spot = -1;
+      if (trip) for (let at = progress + 10; at < edge.length; at += 10) if (free(at)) { spot = at; break; }
+      if (spot < 0) { if (trip) this.tripStats.collided++; return; }
+      progress = spot;
     }
-    this.spawnBuckets.add(bucket);
+    this.spawnBuckets.add(`${edge.id}#${lane}#${Math.floor(progress / 10)}`);
 
     this.vehicleCounter++;
     // Driver temperament (~N(1, 0.15)): aggressive drivers keep shorter gaps, pick up faster, care less
@@ -1333,7 +1336,7 @@ class SimulationEngine {
     const moves = this.contraBase.has(edge.id) ? undefined : movesFrom(edge.id);
     if (moves?.length) {
       const allowed = new Set(allowedTurns(edge.id));
-      let pool = moves.filter(m => allowed.has(m.turn) && !m.path.some(id => isEdgeBlocked(id)));
+      let pool = moves.filter(m => allowed.has(m.turn) && movementOpen(m) && !m.path.some(id => isEdgeBlocked(id)));
       if (sv.kind.minRank > 0) {
         const big = pool.filter(m => { const x = this.index.edges.get(m.exitEdgeId); return x && rankOf(x) >= sv.kind.minRank - 1; });
         if (big.length > 0) pool = big;
@@ -1544,7 +1547,7 @@ class SimulationEngine {
   }
 
   /** Trip counters since start: started, arrived (with total time and distance), random fallbacks, improvised. */
-  getTripStats(): { started: number; done: number; seconds: number; metres: number; fallback: number; improvised: number; rerouted: number; onRoad: number; app: number } {
+  getTripStats(): { started: number; done: number; seconds: number; metres: number; fallback: number; improvised: number; rerouted: number; collided: number; onRoad: number; app: number } {
     let onRoad = 0, app = 0;
     for (const sv of this.sim.values()) if (sv.trip && sv.route) { onRoad++; if (sv.trip.app) app++; }
     return { ...this.tripStats, onRoad, app };
