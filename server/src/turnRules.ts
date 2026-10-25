@@ -83,6 +83,10 @@ const RESTRICTIONS_FILE = fileURLToPath(new URL('../data/bangalore-restrictions.
 /** junction id → movements its rules ban but cannot close without closing allowed ones */
 const unenforceable = new Map<string, string[]>();
 type BanListener = (pairs: [string, string][]) => void;
+/** Changes whenever the closed turns do (phones fetch them only then) */
+let bansVersion = '';
+const STARTED = Date.now().toString(36);
+let bansCounter = 0;
 const banListeners = new Set<BanListener>();
 
 function metres(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
@@ -165,7 +169,12 @@ function loadOsmRestrictions(index: GraphIndex): void {
   const doc = JSON.parse(readFileSync(RESTRICTIONS_FILE, 'utf8')) as { restrictions: [string, number, 'n' | 'w', number[], number][] };
   const nodeId = (osm: number) => 'n' + osm.toString(36);
   const inEdges = new Map<string, RoadEdge[]>();
-  for (const e of index.edgeList) (inEdges.get(e.to) ?? inEdges.set(e.to, []).get(e.to)!).push(e);
+  const byFirstWay = new Map<number, RoadEdge[]>(), byLastWay = new Map<number, RoadEdge[]>();
+  for (const e of index.edgeList) {
+    (inEdges.get(e.to) ?? inEdges.set(e.to, []).get(e.to)!).push(e);
+    if (e.firstWay !== undefined) (byFirstWay.get(e.firstWay) ?? byFirstWay.set(e.firstWay, []).get(e.firstWay)!).push(e);
+    if (e.lastWay !== undefined) (byLastWay.get(e.lastWay) ?? byLastWay.set(e.lastWay, []).get(e.lastWay)!).push(e);
+  }
   let applied = 0, skipped = 0;
   for (const [type, fromWay, viaKind, via, toWay] of doc.restrictions) {
     if (!type.startsWith('no_')) { skipped++; continue; }
@@ -183,11 +192,17 @@ function loadOsmRestrictions(index: GraphIndex): void {
         if (!want || t === want) pairs.push([a, b]);
       }
     } else if (type === 'no_u_turn') {
-      // Last step: from the via segment onto the "to" way
+      // Last step from the via segment (a median gap) onto the "to" way, but only the step that
+      // heads back the way the "from" road came; traffic from a side street crossing the same
+      // gap onto the far carriageway keeps its turn
       const viaWays = new Set(via);
-      for (const e of index.edgeList) {
-        if (e.firstWay !== toWay) continue;
-        for (const p of inEdges.get(e.from) ?? []) if (p.lastWay !== undefined && viaWays.has(p.lastWay)) pairs.push([p, e]);
+      const viaStarts = new Set(via.flatMap(w => (byFirstWay.get(w) ?? []).map(e => e.from)));
+      const from = (byLastWay.get(fromWay) ?? []).find(e => viaStarts.has(e.to));
+      if (from) {
+        for (const e of byFirstWay.get(toWay) ?? []) {
+          if (turnFor(bearingOf(from, true), bearingOf(e)) !== 'uturn') continue;
+          for (const p of inEdges.get(e.from) ?? []) if (p.lastWay !== undefined && viaWays.has(p.lastWay)) pairs.push([p, e]);
+        }
       }
     }
     pairs = pairs.filter(([a, b]) => a.id !== b.id);
@@ -245,6 +260,10 @@ export function isFreeLeft(approachEdgeId: string): boolean {
 /** True when the step from one edge to the next is closed by a turn rule. */
 export function isTurnBanned(fromEdgeId: string, toEdgeId: string): boolean {
   return banned.size > 0 && banned.has(fromEdgeId + '>' + toEdgeId);
+}
+
+export function closedTurnsVersion(): string {
+  return bansVersion;
 }
 
 export function bannedSteps(): [string, string][] {
@@ -393,6 +412,33 @@ function compassWord(b: number): string {
   return ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west'][Math.round((((b % 360) + 360) % 360) / 45) % 8];
 }
 
+/** Rule changes waiting for their junction's next all-red before the new phases take over */
+const pending = new Map<string, JunctionRules | null>();
+let pendingTimer: NodeJS.Timeout | null = null;
+
+/** Switches phases only during an all-red, so the old green ends with its amber first. */
+function applyWhenClear(junctionId: string, rules: JunctionRules | null): number {
+  const s = signalsById.get(junctionId);
+  if (!s) return 0;
+  // Closed turns change at once (they don't depend on the light)
+  if (rules) rulesById.set(junctionId, rules); else rulesById.delete(junctionId);
+  rebuildBans();
+  const phase = s.phases[s.currentPhaseIndex];
+  if (!phase || phase.group === 'ALL' || !getSimulationEngine()) { apply(junctionId, rules); return 0; }
+  pending.set(junctionId, rules);
+  pendingTimer ??= setInterval(() => {
+    for (const [id, r] of pending) {
+      const sig = signalsById.get(id);
+      if (!sig || sig.phases[sig.currentPhaseIndex]?.group === 'ALL') { pending.delete(id); apply(id, r); }
+    }
+    if (pending.size === 0 && pendingTimer) { clearInterval(pendingTimer); pendingTimer = null; }
+  }, 200);
+  // Seconds until the next all-red, at most
+  let wait = phase.duration - s.timer;
+  for (let i = (s.currentPhaseIndex + 1) % s.phases.length; s.phases[i].group !== 'ALL' && i !== s.currentPhaseIndex; i = (i + 1) % s.phases.length) wait += s.phases[i].duration;
+  return Math.max(0, Math.round(wait));
+}
+
 /** Applies rules to the live signal (phases, groups) and recomputes the closed steps. */
 function apply(junctionId: string, rules: JunctionRules | null): void {
   const s = signalsById.get(junctionId);
@@ -413,7 +459,9 @@ function apply(junctionId: string, rules: JunctionRules | null): void {
     s.phases = def.phases.map(p => ({ ...p }));
     for (const a of s.approaches) a.group = def.groups.get(a.edgeId) ?? a.group;
   }
-  s.currentPhaseIndex = 0;
+  // Start in the new plan's last all-red: the junction is clear, the first green comes next
+  const allRed = s.phases.map(p => p.group).lastIndexOf('ALL');
+  s.currentPhaseIndex = allRed >= 0 ? allRed : 0;
   s.timer = 0;
   s.cycleLength = s.phases.reduce((t, p) => t + p.duration, 0);
   clearSignalCache(s);
@@ -447,16 +495,23 @@ function rebuildBans(): void {
     }
   }
   banned = next;
+  bansVersion = `${STARTED}-${++bansCounter}`;
   const pairs = bannedSteps();
   for (const fn of banListeners) fn(pairs);
 }
 
-/** Sets (or with null, clears) a junction's rules: applied now and saved. */
-export function setRules(junctionId: string, input: { approaches: ApproachRule[]; phases: PhaseSpec[] | null } | null, by: string): RulesCheck {
+/** Sets (or with null, clears) a junction's rules: applied (phases at the next all-red) and saved. */
+export async function setRules(junctionId: string, input: { approaches: ApproachRule[]; phases: PhaseSpec[] | null } | null, by: string): Promise<RulesCheck> {
+  const db = getDb();
+  const saved = async (write: () => Promise<unknown>) => {
+    try { await write(); } catch (err) {
+      throw Object.assign(new RuleError(`Applied in the simulation but not saved (${(err as Error).message}) — it will be lost when the server restarts; try again`), { status: 503 });
+    }
+  };
   if (!input) {
-    apply(junctionId, null);
-    getDb()?.collection('junctionRules').doc(junctionId).delete().catch(() => {});
-    return { warnings: [] };
+    const wait = applyWhenClear(junctionId, null);
+    if (db) await saved(() => db.collection('junctionRules').doc(junctionId).delete());
+    return { warnings: wait ? [`Default phases start at the next all-red (within ${wait} s)`] : [] };
   }
   const clean = {
     approaches: input.approaches.map(r => ({ edgeId: String(r.edgeId), allowed: [...new Set(r.allowed)] as Turn[], freeLeft: !!r.freeLeft })),
@@ -464,9 +519,15 @@ export function setRules(junctionId: string, input: { approaches: ApproachRule[]
   };
   const check = checkRules(junctionId, clean);
   const rules: JunctionRules = { ...clean, by, at: Date.now() };
-  apply(junctionId, rules);
-  getDb()?.collection('junctionRules').doc(junctionId).set(rules).catch((err: Error) => console.warn('[TurnRules] save failed:', err.message));
-  return { warnings: [...check.warnings, ...unenforceableMoves(junctionId).map(m => `cannot close ${m} without closing an allowed turn (shared road inside the junction)`)] };
+  const wait = applyWhenClear(junctionId, rules);
+  if (db) await saved(() => db.collection('junctionRules').doc(junctionId).set(rules));
+  return {
+    warnings: [
+      ...check.warnings,
+      ...unenforceableMoves(junctionId).map(m => `cannot close ${m} without closing an allowed turn (shared road inside the junction)`),
+      ...(wait && rules.phases ? [`New phases start at the next all-red (within ${wait} s)`] : []),
+    ],
+  };
 }
 
 /** Loads saved rules from Firestore (no-op without Firebase). */

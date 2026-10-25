@@ -10,7 +10,7 @@ import {
   setBehaviour,
 } from './conditionsService.js';
 import { createJam, listJams, removeJam } from './jamService.js';
-import { initReports, createReport, vote, withdraw, SEGMENT_TYPES, type ReportType, canAttachPhoto, attachPhoto,
+import { initReports, createReport, vote, withdraw, SEGMENT_TYPES, type ReportType, canAttachPhoto, attachPhoto, onReportGone,
 } from './reportsService.js';
 import {
   requireUser, requireSelf, pace, requireOperator, requireController, rateLimit, caller, authMode,
@@ -26,7 +26,7 @@ import {
   startNavigation, getNavigationUpdate, planRoutes, acceptReroute, updatePosition, NavigationError,
 } from './navigationService.js';
 import { initRouteWorkers, routeQueuePerWorker } from './routeWorkers.js';
-import { initTurnRules, loadSavedRules, setRules, turnsView, RuleError } from './turnRules.js';
+import { initTurnRules, loadSavedRules, setRules, turnsView, RuleError, closedTurnsVersion, bannedSteps } from './turnRules.js';
 import { initEmergency, dispatchEmergency, cancelCorridor, listCorridors, EmergencyError } from './emergencyService.js';
 import { initTrips, tripStats, loadTripCache } from './tripService.js';
 import { saveFile, listFiles, getFileMeta, readFile, deleteFile, FileError, FILE_TYPES, MAX_FILE_BYTES, type FilePurpose } from './fileService.js';
@@ -139,6 +139,10 @@ app.get('/api/live/signal-order/:sv', (req, res) => {
   const json = signalOrderJson(String(req.params.sv));
   if (!json) return res.status(404).json({ error: 'Unknown signal list version' });
   res.set('Cache-Control', 'public, max-age=86400, immutable').type('json').send(json);
+});
+/** Closed turns (map restrictions + police rules) as [fromEdge, toEdge] steps, for routes planned on phones (?v=<ctv>) */
+app.get('/api/roads/closed-turns', (_req, res) => {
+  res.set('Cache-Control', 'public, max-age=0, s-maxage=60').json({ v: closedTurnsVersion(), steps: bannedSteps() });
 });
 /** Signals whose phases differ from the cached road data */
 app.get('/api/live/phases', (_req, res) => sendLive(res, phasesJson(), 2));
@@ -473,6 +477,12 @@ app.post('/api/files', requireUser, rateLimit('uploads', 30, 10 * 60 * 1000),
     }
   });
 
+// A report's photo goes when the report does (it would otherwise use the reporter's quota for good)
+onReportGone(photoId => {
+  if (!photoId) return;
+  getFileMeta(photoId).then(m => (m && m.purpose === 'report-photo' ? deleteFile(m) : undefined)).catch(() => {});
+});
+
 /** The caller's files and storage used. */
 app.get('/api/files', requireUser, async (_req, res) => {
   try {
@@ -542,13 +552,13 @@ app.get('/api/junctions/:id/turns', requireUser, requireOperator, (req, res) => 
 });
 
 /** Controllers: set turn rules (and optionally turn-based phases); null phases keep the road-based ones. */
-app.put('/api/junctions/:id/turns', requireUser, requireController, (req, res) => {
+app.put('/api/junctions/:id/turns', requireUser, requireController, async (req, res) => {
   const id = String(req.params.id);
   const { approaches, phases } = req.body ?? {};
   if (!Array.isArray(approaches)) return res.status(400).json({ error: 'approaches must be a list' });
   if (phases !== null && phases !== undefined && !Array.isArray(phases)) return res.status(400).json({ error: 'phases must be a list or null' });
   try {
-    const { warnings } = setRules(id, { approaches, phases: phases ?? null }, caller(res).uid);
+    const { warnings } = await setRules(id, { approaches, phases: phases ?? null }, caller(res).uid);
     const v = turnsView(id)!;
     const closed = v.approaches.flatMap(a => a.moves.filter(m => !a.allowed.includes(m.turn)).map(m => `${a.road} from the ${a.from}: no ${m.turn}`));
     recordControl(caller(res).uid, id, 'turn rules', [closed.join(', ') || 'all turns open', phases ? `${phases.length} turn phases` : 'road phases'].join(' · '));
@@ -557,12 +567,14 @@ app.put('/api/junctions/:id/turns', requireUser, requireController, (req, res) =
 });
 
 /** Controllers: back to the default (all turns, road-based phases). */
-app.delete('/api/junctions/:id/turns', requireUser, requireController, (req, res) => {
+app.delete('/api/junctions/:id/turns', requireUser, requireController, async (req, res) => {
   const id = String(req.params.id);
   if (!turnsView(id)) return res.status(404).json({ error: 'Unknown junction' });
-  setRules(id, null, caller(res).uid);
-  recordControl(caller(res).uid, id, 'turn rules', 'cleared: all turns open, road phases');
-  res.json({ view: turnsView(id), warnings: [] });
+  try {
+    const { warnings } = await setRules(id, null, caller(res).uid);
+    recordControl(caller(res).uid, id, 'turn rules', 'cleared: all turns open, road phases');
+    res.json({ view: turnsView(id), warnings });
+  } catch (err) { sendControlError(res, err); }
 });
 
 /** Turning movements at a junction over the last ?hours=1 (estimated vehicles and people per hour). */

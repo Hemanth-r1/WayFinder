@@ -361,11 +361,10 @@ function rerouteAppUsers(): void {
 async function saveCache(): Promise<void> {
   const db = getDb();
   if (!db || dirty.size === 0) return;
-  const zonesToSave = [...dirty];
-  dirty.clear();
-  for (const zi of zonesToSave) {
+  // A zone counts as saved only once its write succeeded; the rest wait for the next round
+  for (const zi of [...dirty]) {
     const z = zones[zi];
-    if (!z) continue;
+    if (!z) { dirty.delete(zi); continue; }
     const pairs: Record<string, { anchor: string; options: string; at: number }> = {};
     for (const [key, c] of cache) {
       const [a, b] = key.split('|').map(Number);
@@ -378,6 +377,7 @@ async function saveCache(): Promise<void> {
       for (const k of Object.keys(pairs)) pairs[k].options = pairs[k].options.split(';')[0];
     }
     await db.collection('tripRoutes').doc(String(zi)).set(doc);
+    dirty.delete(zi);
   }
 }
 

@@ -286,43 +286,40 @@ function aStar(
     return haversine(n, src) <= LOCAL_STREET_METRES || haversine(n, dest) <= LOCAL_STREET_METRES;
   };
 
-  const g = new Map<string, number>([[sourceId, 0]]);
-  const via = new Map<string, RoadEdge>();
+  // State per road segment (edge), not per junction: with closed turns the best way can pass
+  // the same junction twice (straight on, U-turn further on, back through it)
+  const g = new Map<string, number>();
+  const via = new Map<string, RoadEdge | null>();
   const closed = new Set<string>();
   const heap = new MinHeap();
-  heap.push(sourceId, 0);
+  const relax = (edge: RoadEdge, inEdge: RoadEdge | null, base: number) => {
+    if (isEdgeBlocked(edge.id) || (inEdge && isTurnBanned(inEdge.id, edge.id))) return;
+    if (LOCAL_TYPES.has(edge.roadType) && !localOk(edge.to) && !localOk(edge.from)) return;
+    const control = signalControl(index.signalByNode, edge);
+    const tentative = base +
+      edgeTravelTime(edge, ctx) * userSpread(ctx.userId, edge.id) * (extraPenalty?.get(edge.id) ?? 1) +
+      turnCost(inEdge ?? undefined, edge) +
+      (control && edge.to !== destId ? expectedSignalDelay(control.signal, control.group) : 0);
+    if (tentative < (g.get(edge.id) ?? Infinity)) {
+      g.set(edge.id, tentative);
+      via.set(edge.id, inEdge);
+      heap.push(edge.id, tentative + haversine(index.nodes.get(edge.to)!, dest) / index.maxSpeedMs);
+    }
+  };
+  for (const edge of index.outEdges.get(sourceId) ?? []) relax(edge, null, 0);
 
   while (heap.size > 0) {
     const current = heap.pop();
     if (closed.has(current)) continue;
-    if (current === destId) {
+    closed.add(current);
+    const edge = index.edges.get(current)!;
+    if (edge.to === destId) {
       const edgeIds: string[] = [];
-      for (let e = via.get(destId); e; e = via.get(e.from)) {
-        edgeIds.push(e.id);
-        if (e.from === sourceId) break;
-      }
+      for (let e: RoadEdge | null | undefined = edge; e; e = via.get(e.id)) edgeIds.push(e.id);
       return edgeIds.reverse();
     }
-    closed.add(current);
-
     const gCur = g.get(current)!;
-    const inEdge = via.get(current);
-    for (const edge of index.outEdges.get(current) ?? []) {
-      if (closed.has(edge.to) || isEdgeBlocked(edge.id) || (inEdge && isTurnBanned(inEdge.id, edge.id))) continue;
-      if (LOCAL_TYPES.has(edge.roadType) && !localOk(edge.to) && !localOk(edge.from)) continue;
-      const control = signalControl(index.signalByNode, edge);
-      const cost =
-        edgeTravelTime(edge, ctx) * userSpread(ctx.userId, edge.id) * (extraPenalty?.get(edge.id) ?? 1) +
-        turnCost(inEdge, edge) +
-        (control && edge.to !== destId ? expectedSignalDelay(control.signal, control.group) : 0);
-      const tentative = gCur + cost;
-      if (tentative < (g.get(edge.to) ?? Infinity)) {
-        g.set(edge.to, tentative);
-        via.set(edge.to, edge);
-        const node = index.nodes.get(edge.to)!;
-        heap.push(edge.to, tentative + haversine(node, dest) / index.maxSpeedMs);
-      }
-    }
+    for (const next of index.outEdges.get(edge.to) ?? []) if (!closed.has(next.id)) relax(next, edge, gCur);
   }
   return null;
 }

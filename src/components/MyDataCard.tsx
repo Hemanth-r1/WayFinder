@@ -67,7 +67,7 @@ export default function MyDataCard({ uid, current, onGo, lastReportId }: Props) 
       {/* Saved places are always visible: one tap to go there */}
       {places.length > 0 && (
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
-          {places.sort((a, b) => a.kind.localeCompare(b.kind)).map(p => (
+          {[...places].sort((a, b) => a.kind.localeCompare(b.kind)).map(p => (
             <button key={p.id} onClick={() => onGo(p)} title={p.name} style={s.chip}>{KIND_ICON[p.kind]} {p.kind === 'favourite' ? p.name.slice(0, 18) : p.kind}</button>
           ))}
         </div>

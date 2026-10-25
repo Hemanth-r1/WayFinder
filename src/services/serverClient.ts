@@ -1,4 +1,5 @@
 import { saveToIndexedDB, loadFromIndexedDB } from '../data/indexedDBCache';
+import { setClosedTurns } from '../utils/offlineRoute';
 // Production is served by Firebase Hosting, which forwards /api/** to Cloud Run on the same origin.
 const SERVER_URL: string = import.meta.env.VITE_SERVER_URL ?? (import.meta.env.DEV ? 'http://localhost:8080' : '');
 /** Matches the CDN cache time of /api/live/* (1 s) */
@@ -447,7 +448,7 @@ class ServerClient {
   /** Live data this device already has: signal order (by version), phases, conditions and traffic versions */
   private liveState = {
     sv: '', order: [] as string[], pv: '', sentPv: '', phaseSets: {} as Record<string, unknown>,
-    cv: '', ta: 0, traffic: new Map<string, number>(),
+    cv: '', ta: 0, traffic: new Map<string, number>(), ctv: '',
   };
 
   /** Tells the server which part of the map is visible. */
@@ -548,7 +549,8 @@ class ServerClient {
   }
 
   async fetchConditions(): Promise<Conditions> {
-    const response = await fetch(`${SERVER_URL}/api/conditions`);
+    // Right after the user changed something: a fresh copy, not the CDN's up-to-2-s-old one
+    const response = await fetch(`${SERVER_URL}/api/conditions?fresh=${Date.now()}`);
     if (!response.ok) throw new Error(await errorMessage(response, 'Failed to load road conditions'));
     return response.json();
   }
@@ -719,7 +721,12 @@ class ServerClient {
     };
     // What this device already has, so only changes are downloaded
     const live = this.liveState;
+    // One poll at a time: a map move during a poll asks for one more right after it,
+    // instead of a second poll fetching the same pieces at once
+    let busy = false, again = false;
     const poll = async () => {
+      if (busy) { again = true; return; }
+      busy = true;
       try {
         const n = this.pollCount++;
         const cells: string[] = [];
@@ -747,11 +754,16 @@ class ServerClient {
         }
         // Phases that differ from the road data, and road conditions: only when their version changes
         if (common.pv !== live.pv) {
-          const phases = await getJson('/api/live/phases');
+          // The version in the URL: a new version is never answered from the CDN's older copy
+          const phases = await getJson(`/api/live/phases?v=${common.pv}`);
           if (phases) { live.pv = common.pv; live.phaseSets = phases; }
         }
+        if (common.ctv && common.ctv !== live.ctv) {
+          const closed = await getJson(`/api/roads/closed-turns?v=${common.ctv}`) as { v: string; steps: [string, string][] } | null;
+          if (closed) { live.ctv = common.ctv; setClosedTurns(closed.steps, closed.v); }
+        }
         if (common.cv !== live.cv) {
-          const conditions = await getJson('/api/conditions');
+          const conditions = await getJson(`/api/conditions?v=${common.cv}`);
           if (conditions) { live.cv = common.cv; data.conditions = conditions; }
         }
         // Signal states every few seconds (the device advances the countdowns in between)
@@ -767,19 +779,24 @@ class ServerClient {
         }
         // Road traffic: only what changed since the copy on this device
         if (common.ta !== live.ta) {
-          const delta = live.ta ? await getJson('/api/live/traffic-delta') as { from: number; at: number; set: [string, number][]; clear: string[] } | null : null;
+          const delta = live.ta ? await getJson(`/api/live/traffic-delta?at=${common.ta}`) as { from: number; at: number; set: [string, number][]; clear: string[] } | null : null;
           if (delta && delta.from === live.ta) {
             for (const [id, level] of delta.set) live.traffic.set(id, level);
             for (const id of delta.clear) live.traffic.delete(id);
             live.ta = delta.at;
           } else {
-            const full = await getJson('/api/live/traffic') as [string, number][] | null;
+            const full = await getJson(`/api/live/traffic?at=${common.ta}`) as [string, number][] | null;
             if (full) { live.traffic = new Map(full); live.ta = common.ta; }
+            else live.ta = 0; // try again next time
           }
           data.traffic = [...live.traffic];
         }
         this.notifyCallbacks({ type: 'update', data });
       } catch { /* server unreachable; keep trying */ }
+      finally {
+        busy = false;
+        if (again) { again = false; poll(); }
+      }
     };
     poll();
     this.pollNow = poll;

@@ -5,6 +5,7 @@
  * route spreading (those need the server).
  */
 import type { RoadGraph, RoadEdge, TrafficSignal } from '../types';
+import { saveToIndexedDB, loadFromIndexedDB } from '../data/indexedDBCache';
 import type { RouteOption } from '../services/serverClient';
 
 /** Average wait at a signal for a random arrival (s), roughly a quarter cycle. */
@@ -46,6 +47,17 @@ class Heap {
 }
 
 /** Fastest route by free-flow time, or null when unreachable. */
+/** Closed turns ("fromEdge>toEdge"), kept on the device for routes planned without the server. */
+let closedTurns = new Set<string>();
+const CLOSED_KEY = 'closed-turns';
+export function setClosedTurns(steps: [string, string][], version: string): void {
+  closedTurns = new Set(steps.map(([a, b]) => a + '>' + b));
+  saveToIndexedDB(CLOSED_KEY, { data: { version, steps }, timestamp: Date.now() }).catch(() => {});
+}
+loadFromIndexedDB<{ version: string; steps: [string, string][] }>(CLOSED_KEY)
+  .then(saved => { if (saved && closedTurns.size === 0) closedTurns = new Set(saved.data.steps.map(([a, b]) => a + '>' + b)); })
+  .catch(() => {});
+
 export function offlineRoute(
   graph: RoadGraph, signals: Map<string, TrafficSignal>, sourceId: string, destId: string,
   traffic?: Map<string, number>,
@@ -58,35 +70,38 @@ export function offlineRoute(
   for (const e of graph.edges.values()) maxSpeed = Math.max(maxSpeed, e.speedLimit);
   const vmax = maxSpeed / 3.6;
 
-  const g = new Map<string, number>([[sourceId, 0]]);
-  const via = new Map<string, RoadEdge>();
+  if (sourceId === destId) return null;
+  // State per road segment, so a closed turn can be worked around through the same junction
+  const g = new Map<string, number>();
+  const via = new Map<string, RoadEdge | null>();
   const done = new Set<string>();
   const heap = new Heap();
-  heap.push(0, sourceId);
+  const relax = (e: RoadEdge, inEdge: RoadEdge | null, base: number) => {
+    if (inEdge && closedTurns.has(inEdge.id + '>' + e.id)) return;
+    const turn = inEdge ? Math.abs(((e.bearing - inEdge.bearing + 540) % 360) - 180) : 0;
+    const t = base + e.length / (Math.max(5, e.speedLimit) / 3.6) * TRAFFIC_SLOWDOWN[traffic?.get(e.id) ?? 0]
+      + (turn / 90) * TURN_SECONDS_PER_90 + (turn > 170 ? 30 : 0)
+      + (signalNodes.has(e.to) && e.to !== destId ? SIGNAL_WAIT : 0);
+    if (t < (g.get(e.id) ?? Infinity)) {
+      g.set(e.id, t);
+      via.set(e.id, inEdge);
+      heap.push(t + haversine(graph.nodes.get(e.to)!, dest) / vmax, e.id);
+    }
+  };
+  for (const e of graph.adjacency.get(sourceId) ?? []) relax(e, null, 0);
+  let last: RoadEdge | null = null;
   while (heap.size > 0) {
     const cur = heap.pop();
     if (done.has(cur)) continue;
-    if (cur === destId) break;
     done.add(cur);
-    const inEdge = via.get(cur);
-    for (const e of graph.adjacency.get(cur) ?? []) {
-      if (done.has(e.to)) continue;
-      const turn = inEdge ? Math.abs(((e.bearing - inEdge.bearing + 540) % 360) - 180) : 0;
-      const cost = e.length / (Math.max(5, e.speedLimit) / 3.6) * TRAFFIC_SLOWDOWN[traffic?.get(e.id) ?? 0]
-        + (turn / 90) * TURN_SECONDS_PER_90 + (turn > 170 ? 30 : 0)
-        + (signalNodes.has(e.to) && e.to !== destId ? SIGNAL_WAIT : 0);
-      const t = g.get(cur)! + cost;
-      if (t < (g.get(e.to) ?? Infinity)) {
-        g.set(e.to, t);
-        via.set(e.to, e);
-        heap.push(t + haversine(graph.nodes.get(e.to)!, dest) / vmax, e.to);
-      }
-    }
+    const edge = graph.edges.get(cur)!;
+    if (edge.to === destId) { last = edge; break; }
+    for (const e of graph.adjacency.get(edge.to) ?? []) if (!done.has(e.id)) relax(e, edge, g.get(cur)!);
   }
-  if (!via.has(destId) && sourceId !== destId) return null;
+  if (!last) return null;
 
   const edges: RoadEdge[] = [];
-  for (let n = destId; n !== sourceId;) { const e = via.get(n)!; edges.unshift(e); n = e.from; }
+  for (let e: RoadEdge | null | undefined = last; e; e = via.get(e.id)) edges.unshift(e);
   const geometry: { lat: number; lng: number }[] = [];
   const roadNames: string[] = [];
   let distance = 0, signalCount = 0;
@@ -98,6 +113,6 @@ export function offlineRoute(
   });
   return {
     path: [sourceId, ...edges.map(e => e.to)], edgeIds: edges.map(e => e.id),
-    distance, estimatedTime: g.get(destId) ?? 0, signalCount, roadNames, geometry, sharedUsers: 0,
+    distance, estimatedTime: g.get(last.id) ?? 0, signalCount, roadNames, geometry, sharedUsers: 0,
   };
 }

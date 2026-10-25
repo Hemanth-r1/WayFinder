@@ -1582,11 +1582,15 @@ class SimulationEngine {
     return { route: sv.route, routeIndex: sv.routeIndex, progress: sv.progress, v: sv.v, lat: sv.pub.lat, lng: sv.pub.lng };
   }
 
-  /** Green for an emergency vehicle at a junction until `until` (ms); overrides holds and plans. */
+  /** Green for an emergency vehicle at a junction until `until` (ms); overrides holds and plans, not another emergency vehicle's green. */
   setEmergencyGreen(id: string, group: string, until: number, corridorId: string): boolean {
     const s = this.state.signals.get(id);
     if (!s || !s.phases.some(p => p.group === group && p.color === 'GREEN')) return false;
     const ctl = this.control.get(id) ?? {};
+    // First come, first served: another emergency vehicle's green for a different direction stays
+    // until it has passed (this one asks again every second and gets it then)
+    const other = ctl.emergency;
+    if (other && other.corridorId !== corridorId && other.group !== group && Date.now() < other.until) return false;
     ctl.emergency = { group, until, corridorId };
     this.control.set(id, ctl);
     return true;

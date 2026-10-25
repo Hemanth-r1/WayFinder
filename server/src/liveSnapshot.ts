@@ -16,7 +16,7 @@
  *   conditions (/api/conditions) are fetched only when cv changes
  */
 import { getSimulationEngine } from './simulationEngine.js';
-import { rulesOf } from './turnRules.js';
+import { rulesOf, closedTurnsVersion } from './turnRules.js';
 import type { SignalPhase } from './types.js';
 import { getConditions } from './conditionsService.js';
 
@@ -100,7 +100,7 @@ function build(): Snapshot | null {
   }
   const common = JSON.stringify({
     stats: engine.getStats(), at: now,
-    sv, cv: hash(conditions), pv: hash(phases), ta: trafficAt,
+    sv, cv: hash(conditions), pv: hash(phases), ta: trafficAt, ctv: closedTurnsVersion(),
   });
   return {
     at: now, common, signals: `[${states.join(',')}]`, order, sv, phases,

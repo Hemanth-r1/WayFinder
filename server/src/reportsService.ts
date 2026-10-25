@@ -152,11 +152,17 @@ function rebuildEffects(): void {
   effects = next;
 }
 
+/** Told when a report ends (expired, cleared or removed), e.g. to delete its photo. */
+const goneListeners = new Set<(photoId: string | undefined) => void>();
+export function onReportGone(fn: (photoId: string | undefined) => void): void {
+  goneListeners.add(fn);
+}
+
 function pruneExpired(): void {
   const now = Date.now();
   let changed = false;
   for (const r of reports.values()) {
-    if (r.expiresAt <= now) { reports.delete(r.id); changed = true; }
+    if (r.expiresAt <= now) { reports.delete(r.id); changed = true; for (const fn of goneListeners) fn(r.photoId); }
   }
   if (changed) rebuildEffects();
 }
@@ -191,8 +197,9 @@ function confirm(r: ReportRecord, source: NonNullable<ReportRecord['confirmSourc
 }
 
 function remove(id: string): boolean {
+  const r = reports.get(id);
   const ok = reports.delete(id);
-  if (ok) rebuildEffects();
+  if (ok) { rebuildEffects(); for (const fn of goneListeners) fn(r?.photoId); }
   return ok;
 }
 

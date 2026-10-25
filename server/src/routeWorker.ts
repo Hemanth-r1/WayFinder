@@ -71,11 +71,13 @@ function spread(userHash: number, e: number): number {
 }
 
 export function createSearcher(G: SharedGraph) {
-  const g = new Float64Array(G.n).fill(Infinity);
-  const via = new Int32Array(G.n).fill(-1);
-  const closed = new Uint8Array(G.n);
+  // Search state per road segment (edge), not per junction: with closed turns the best way
+  // can pass the same junction twice (straight on, U-turn further on, back through it)
+  const g = new Float64Array(G.m).fill(Infinity);
+  const via = new Int32Array(G.m).fill(-1);
+  const closed = new Uint8Array(G.m);
   const touched: number[] = [];
-  // Binary heap of (node, key)
+  // Binary heap of (edge, key)
   let hn = new Int32Array(1024), hk = new Float64Array(1024), hs = 0;
   const push = (node: number, key: number) => {
     if (hs === hn.length) {
@@ -120,41 +122,41 @@ export function createSearcher(G: SharedGraph) {
 
   function aStar(src: number, dst: number, userHash: number, own: Set<number>, penalty?: Map<number, number>): number[] | null {
     if (src === dst) return [];
-    for (const v of touched) { g[v] = Infinity; via[v] = -1; closed[v] = 0; }
+    for (const e of touched) { g[e] = Infinity; via[e] = -1; closed[e] = 0; }
     touched.length = 0;
     hs = 0;
     const sLat = G.nodeLat[src], sLng = G.nodeLng[src], dLat = G.nodeLat[dst], dLng = G.nodeLng[dst];
     const localOk = (v: number) =>
       haversine(G.nodeLat[v], G.nodeLng[v], sLat, sLng) <= LOCAL_STREET_METRES ||
       haversine(G.nodeLat[v], G.nodeLng[v], dLat, dLng) <= LOCAL_STREET_METRES;
-    g[src] = 0; touched.push(src);
-    push(src, 0);
+    // Reach the end of edge e coming from edge prev (−1 at the start)
+    const relax = (e: number, prev: number, base: number) => {
+      const to = G.eTo[e];
+      if (G.eBlocked[e]) return;
+      if (prev >= 0 && bans.size > 0 && bans.has(prev * G.m + e)) return; // closed turn
+      if (G.eLocal[e] && !localOk(to) && !localOk(G.eFrom[e])) return;
+      const t = base + travel(e, own) * spread(userHash, e) * (penalty?.get(e) ?? 1) +
+        turn(prev, e) + (to !== dst ? G.eSignal[e] : 0);
+      if (t < g[e]) {
+        if (g[e] === Infinity) touched.push(e);
+        g[e] = t; via[e] = prev;
+        push(e, t + haversine(G.nodeLat[to], G.nodeLng[to], dLat, dLng) / G.maxSpeedMs);
+      }
+    };
+    for (let k = G.outStart[src]; k < G.outStart[src + 1]; k++) relax(G.outEdges[k], -1, 0);
     while (hs > 0) {
       const cur = pop();
       if (closed[cur]) continue;
-      if (cur === dst) {
+      closed[cur] = 1;
+      const node = G.eTo[cur];
+      if (node === dst) {
         const path: number[] = [];
-        for (let e = via[dst]; e >= 0; e = via[G.eFrom[e]]) {
-          path.push(e);
-          if (G.eFrom[e] === src) break;
-        }
+        for (let e = cur; e >= 0; e = via[e]) path.push(e);
         return path.reverse();
       }
-      closed[cur] = 1;
-      const gCur = g[cur], inEdge = via[cur];
-      for (let k = G.outStart[cur]; k < G.outStart[cur + 1]; k++) {
-        const e = G.outEdges[k], to = G.eTo[e];
-        if (closed[to] || G.eBlocked[e]) continue;
-        if (inEdge >= 0 && bans.size > 0 && bans.has(inEdge * G.m + e)) continue; // closed turn
-        if (G.eLocal[e] && !localOk(to) && !localOk(G.eFrom[e])) continue;
-        const cost = travel(e, own) * spread(userHash, e) * (penalty?.get(e) ?? 1) +
-          turn(inEdge, e) + (to !== dst ? G.eSignal[e] : 0);
-        const t = gCur + cost;
-        if (t < g[to]) {
-          if (g[to] === Infinity) touched.push(to);
-          g[to] = t; via[to] = e;
-          push(to, t + haversine(G.nodeLat[to], G.nodeLng[to], dLat, dLng) / G.maxSpeedMs);
-        }
+      for (let k = G.outStart[node]; k < G.outStart[node + 1]; k++) {
+        const e = G.outEdges[k];
+        if (!closed[e]) relax(e, cur, g[cur]);
       }
     }
     return null;

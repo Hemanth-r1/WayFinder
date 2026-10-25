@@ -51,6 +51,8 @@ async function call(method, path, user, role, body) {
   const states = await call('GET', '/api/live/signals');
   check('live/signals match the signal order', order.status === 200 && states.status === 200 && states.json.length === order.json.length && states.json.length > 0);
   check('live/signal-order unknown version → 404', (await call('GET', '/api/live/signal-order/nope')).status === 404);
+  const closedTurns = await call('GET', `/api/roads/closed-turns?v=${common.json?.ctv}`);
+  check('closed turns for phones (version in live feed)', closedTurns.status === 200 && closedTurns.json?.v === common.json?.ctv && closedTurns.json.steps.length > 100, `→ ${closedTurns.status} ${closedTurns.json?.steps?.length}`);
   const delta = await call('GET', '/api/live/traffic-delta');
   check('live/traffic-delta has set and clear', delta.status === 200 && Array.isArray(delta.json?.set) && Array.isArray(delta.json?.clear));
   check('live/common CDN header', /s-maxage=1/.test(common.headers.get('cache-control') ?? ''));
@@ -151,6 +153,21 @@ async function call(method, path, user, role, body) {
   check('turns: users cannot change them', (await call('PUT', `/api/junctions/${junction}/turns`, 'demo-u9', 'user', { approaches: rules, phases: null })).status === 403);
   check('turns: unknown turn → 400', (await call('PUT', `/api/junctions/${junction}/turns`, 'demo-op', 'controller', { approaches: [{ edgeId: a0?.edgeId, allowed: ['sideways'], freeLeft: false }], phases: null })).status === 400);
   check('turns: cleared', (await call('DELETE', `/api/junctions/${junction}/turns`, 'demo-op', 'controller')).status === 200);
+
+  // Routes avoid a closed turn and still find a way (passing the junction twice if needed)
+  const turnApproach = (tv.json?.approaches ?? []).find(a => a.moves.some(m => m.turn !== 'straight' && m.turn !== 'uturn' && a.allowed.includes(m.turn)));
+  const closedMove = turnApproach?.moves.find(m => m.turn !== 'straight' && m.turn !== 'uturn' && turnApproach.allowed.includes(m.turn));
+  if (turnApproach && closedMove) {
+    const src = turnApproach.edgeId.split('-')[0], dst = closedMove.exitEdgeId.split('-')[1];
+    const close = (tv.json.approaches).map(a => ({ edgeId: a.edgeId, allowed: a.edgeId === turnApproach.edgeId ? a.allowed.filter(t => t !== closedMove.turn) : a.allowed, freeLeft: false }));
+    await call('PUT', `/api/junctions/${junction}/turns`, 'demo-op', 'controller', { approaches: close, phases: null });
+    let r2; for (let i = 0; i < 5; i++) { r2 = await call('POST', '/api/route', 'demo-route2', 'user', { sourceId: src, destId: dst }); if (r2.status !== 503) break; await new Promise(r => setTimeout(r, 1500)); }
+    const ids = r2.json?.routes?.[0]?.edgeIds ?? [];
+    const k = ids.indexOf(turnApproach.edgeId);
+    const usesClosed = k >= 0 && ids.slice(k + 1, k + 6).includes(closedMove.exitEdgeId);
+    check('routes: closed turn avoided, a way still found', r2.status === 200 && ids.length > 0 && !usesClosed, `→ ${r2.status}, ${ids.length} edges, uses closed turn: ${usesClosed}`);
+    await call('DELETE', `/api/junctions/${junction}/turns`, 'demo-op', 'controller');
+  }
 
   // 9. Emergency runs
   const em = await call('POST', '/api/emergency', 'demo-op', 'controller', { from: { lat: 13.0405, lng: 77.5185 }, to: { lat: 13.0225, lng: 77.5545 } });
