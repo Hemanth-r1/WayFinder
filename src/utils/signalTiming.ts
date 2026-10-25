@@ -17,12 +17,23 @@ export interface GroupTiming {
   allRed: number;
 }
 
-/** Timing for phase group `group`, `elapsed` seconds after the signal's last update. */
-export function groupTiming(sig: TrafficSignal, group: string, elapsed = 0): GroupTiming {
+/** Turns a turn-based phase plan lists for one approach, in display order. */
+export const TURN_ORDER = ['left', 'straight', 'right', 'uturn'] as const;
+export function turnsServed(sig: TrafficSignal, edgeId: string): string[] {
+  const all = new Set(sig.phases.flatMap(p => p.moves ?? []));
+  return TURN_ORDER.filter(t => all.has(`${edgeId}:${t}`));
+}
+
+/**
+ * Timing for phase group `group` (or, on turn-based phases, for movement `move` =
+ * "<approach edge id>:<turn>"), `elapsed` seconds after the signal's last update.
+ */
+export function groupTiming(sig: TrafficSignal, group: string, elapsed = 0, move?: string): GroupTiming {
   const phases = sig.phases;
+  const ours = (p: TrafficSignal['phases'][number]) => move && p.moves ? p.moves.includes(move) : p.group === group;
   const cycle = phases.reduce((t, p) => t + p.duration, 0) || 1;
-  const green = phases.filter(p => p.group === group && p.color === 'GREEN').reduce((t, p) => t + p.duration, 0);
-  const yellow = phases.filter(p => p.group === group && p.color === 'YELLOW').reduce((t, p) => t + p.duration, 0);
+  const green = phases.filter(p => ours(p) && p.color === 'GREEN').reduce((t, p) => t + p.duration, 0);
+  const yellow = phases.filter(p => ours(p) && p.color === 'YELLOW').reduce((t, p) => t + p.duration, 0);
 
   // Walk forward from the live state by the time elapsed since the update
   let i = sig.currentPhaseIndex;
@@ -32,14 +43,14 @@ export function groupTiming(sig: TrafficSignal, group: string, elapsed = 0): Gro
     i = (i + 1) % phases.length;
   }
   const p = phases[i];
-  const light: GroupTiming['light'] = p.group === group ? (p.color === 'GREEN' ? 'GREEN' : 'YELLOW') : 'RED';
+  const light: GroupTiming['light'] = ours(p) && p.color !== 'RED' ? (p.color === 'GREEN' ? 'GREEN' : 'YELLOW') : 'RED';
 
   // Time until the light changes: to the end of our green/yellow, or until our green starts
   let changesIn = p.duration - t;
   let j = (i + 1) % phases.length;
   for (let guard = 0; guard < phases.length; guard++) {
     const next = phases[j];
-    const nextLight = next.group === group ? (next.color === 'GREEN' ? 'GREEN' : 'YELLOW') : 'RED';
+    const nextLight = ours(next) && next.color !== 'RED' ? (next.color === 'GREEN' ? 'GREEN' : 'YELLOW') : 'RED';
     if (nextLight !== light) break;
     changesIn += next.duration;
     j = (j + 1) % phases.length;

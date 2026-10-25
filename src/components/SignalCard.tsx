@@ -5,7 +5,9 @@
  */
 import { useEffect, useState } from 'react';
 import type { TrafficSignal } from '../types';
-import { groupTiming, formatSeconds } from '../utils/signalTiming';
+import { groupTiming, formatSeconds, turnsServed } from '../utils/signalTiming';
+
+const TURN_ARROW: Record<string, string> = { left: '↰', straight: '↑', right: '↱', uturn: '↶' };
 
 const LIGHT = { GREEN: '#00E676', YELLOW: '#FFD600', RED: '#FF1744' } as const;
 /** Reds at least this long are worth switching the engine off for (s). */
@@ -55,7 +57,10 @@ export default function SignalCard({ signal, updatedAt, onClose, compact }: Prop
 
       <div style={{ marginTop: 8 }}>
         {rows.map(r => {
-          const t = groupTiming(signal, r.group, elapsed);
+          // Turn-based phases: the main light is straight ahead (else the first turn served), plus one chip per turn
+          const turns = turnsServed(signal, r.key);
+          const main = turns.includes('straight') ? 'straight' : turns[0];
+          const t = groupTiming(signal, r.group, elapsed, main ? `${r.key}:${main}` : undefined);
           return (
             <div key={r.key} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '7px 0', borderTop: '1px solid #1a1a2e' }}>
               <span style={{ width: 16, height: 16, borderRadius: 8, background: LIGHT[t.light], flexShrink: 0, boxShadow: `0 0 8px ${LIGHT[t.light]}` }} />
@@ -66,6 +71,18 @@ export default function SignalCard({ signal, updatedAt, onClose, compact }: Prop
                   green {formatSeconds(t.green)} · amber {formatSeconds(t.yellow)} · red {formatSeconds(t.red)} each cycle
                   {t.allRed > 0 && <> (incl. {t.allRed} s all-red clearance)</>}
                 </div>
+                {turns.length > 1 && (
+                  <div style={{ display: 'flex', gap: 6, marginTop: 3, flexWrap: 'wrap' }}>
+                    {turns.map(turn => {
+                      const tt = groupTiming(signal, r.group, elapsed, `${r.key}:${turn}`);
+                      return (
+                        <span key={turn} title={turn} style={{ fontSize: 11, fontFamily: 'monospace', color: LIGHT[tt.light], border: `1px solid ${LIGHT[tt.light]}55`, borderRadius: 6, padding: '0 5px' }}>
+                          {TURN_ARROW[turn]} {tt.changesIn}s
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
                 {t.light === 'RED' && t.changesIn >= ENGINE_OFF_SECONDS && (
                   <div style={{ color: '#FFD54F', fontSize: 11, marginTop: 2 }}>⏱ Switch off your engine — green in {formatSeconds(t.changesIn)}</div>
                 )}

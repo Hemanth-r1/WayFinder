@@ -15,6 +15,7 @@ import {
   getGraphIndex, congestionFactor, edgeCapacity, activeRouteEdgeIds, recordObservedSpeed, type GraphIndex,
 } from './pathfindingService.js';
 import { signalControl, approachState } from './signalTiming.js';
+import { movesFrom, allowedTurns, isFreeLeft, isTurnBanned, movementAlong, movementLight, type Turn } from './turnRules.js';
 import { createHmac, randomBytes } from 'node:crypto';
 import { getWeather, getDemand, getBehaviour, type Behaviour } from './conditionsService.js';
 import { jamSpeedFactor } from './jamService.js';
@@ -305,6 +306,11 @@ interface SimVehicle {
   speedFactor: number;
   /** Next edge after this one (chosen on entry, so queues can see across junctions) */
   next: RoadEdge | null;
+  /** Rest of the way through the junction ahead (background vehicles), and the turn made there */
+  through?: string[];
+  turn?: Turn;
+  /** Road the vehicle leaves the junction ahead by (for movement counts) */
+  moveExit?: string;
   /** Seconds left before a background vehicle leaves */
   ttl: number;
   stuck: number;
@@ -560,11 +566,12 @@ class SimulationEngine {
     const sigFrom = this.index.signalByNode.get(next.from);
     if (sigFrom && sv.approach?.signalId === sigFrom.id && !this.clusterOf.get(sigFrom.id)?.has(next.to)) {
       this.movementHandler?.({
-        signalId: sigFrom.id, vehicleId: sv.pub.id, fromEdge: sv.approach.edgeId, toEdge: next.id, vehicleType: sv.kind.type,
+        signalId: sigFrom.id, vehicleId: sv.pub.id, fromEdge: sv.approach.edgeId, toEdge: sv.moveExit ?? next.id, vehicleType: sv.kind.type,
         source: sv.gps ? 'gps' : sv.userId ? 'user' : 'sim',
         scale: sv.userId ? 1 : DEMAND_SCALE, waitSeconds: Math.round(sv.approachWait), at: Date.now(),
       });
       sv.approach = undefined;
+      sv.moveExit = undefined;
     }
     const sigTo = this.index.signalByNode.get(next.to);
     if (sigTo && !this.clusterOf.get(sigTo.id)?.has(next.from)) {
@@ -894,7 +901,9 @@ class SimulationEngine {
     if ((sv.route && sv.next && isEdgeBlocked(sv.next.id)) || (!sv.next && !sv.route)) return Math.max(0, toLine);
     const isLastEdge = sv.route !== undefined && sv.routeIndex >= sv.route.length - 1;
     // Wrong-way riders don't stop for lights meant for the other direction
-    const control = isLastEdge || this.contraBase.has(edge.id) ? null : signalControl(this.index.signalByNode, edge);
+    // A free left turn doesn't wait for the signal: it gives way like at an unsignalled junction
+    const freeLeft = sv.turn === 'left' && isFreeLeft(edge.id);
+    const control = isLastEdge || freeLeft || this.contraBase.has(edge.id) ? null : signalControl(this.index.signalByNode, edge);
     if (!control) {
       // Unsignalled junction: give way as the road rules say
       // (wait a few metres back, where the roads haven't merged yet, not on the junction point)
@@ -902,7 +911,8 @@ class SimulationEngine {
       sv.yieldWait = 0;
       return Infinity;
     }
-    const state = approachState(control.signal, control.group);
+    // Turn-based phases light each movement on its own; otherwise the road's group decides
+    const state = movementLight(control.signal, edge.id, sv.turn ?? 'straight') ?? approachState(control.signal, control.group);
     // Green, turning right: wait for a gap in the oncoming traffic
     if (state === 'GREEN' && sv.next && toLine < GIVE_WAY_METRES && this.mustGiveWay(sv, control.group)) {
       return Math.max(0, toLine);
@@ -1010,7 +1020,10 @@ class SimulationEngine {
         // Signal: only oncoming traffic released by the same green matters, and only for right turns
         if (!turningRight || !oncoming) continue;
         const g = signalControl(this.index.signalByNode, o);
-        if (!g || g.group !== signalGroup) continue;
+        if (!g) continue;
+        // Turn-based phases: only oncoming traffic whose own movement is green (a protected right goes freely)
+        const theirs = movementLight(g.signal, o.id, f.turn ?? 'straight');
+        if (theirs !== null ? theirs !== 'GREEN' : g.group !== signalGroup) continue;
         sv.yieldWait += 0.2;
         return true;
       }
@@ -1221,17 +1234,58 @@ class SimulationEngine {
    * others mostly go straight and prefer bigger roads, rarely turning back.
    */
   private chooseNext(sv: SimVehicle): RoadEdge | null {
+    const edge = sv.edge;
+    sv.turn = undefined;
     if (sv.route) {
       const id = sv.route[sv.routeIndex + 1];
+      // On a signal approach: which movement the route makes (for turn-based phases)
+      if (id && movesFrom(edge.id)) {
+        const m = movementAlong(edge.id, sv.route.slice(sv.routeIndex + 1, sv.routeIndex + 12));
+        sv.turn = m?.turn;
+        sv.moveExit = m?.exitEdgeId;
+      }
       return id ? this.index.edges.get(id) ?? null : null;
     }
-    const edge = sv.edge;
+    // Inside a junction: keep to the movement chosen on the approach
+    if (sv.through?.length) {
+      const nextEdge = this.index.edges.get(sv.through.shift()!);
+      if (nextEdge && nextEdge.from === edge.to && !isEdgeBlocked(nextEdge.id)) return nextEdge;
+      sv.through = undefined;
+    }
+    sv.through = undefined;
+    // On a signal approach: pick one of the allowed movements through the junction
+    const moves = this.contraBase.has(edge.id) ? undefined : movesFrom(edge.id);
+    if (moves?.length) {
+      const allowed = new Set(allowedTurns(edge.id));
+      let pool = moves.filter(m => allowed.has(m.turn) && !m.path.some(id => isEdgeBlocked(id)));
+      if (sv.kind.minRank > 0) {
+        const big = pool.filter(m => { const x = this.index.edges.get(m.exitEdgeId); return x && rankOf(x) >= sv.kind.minRank - 1; });
+        if (big.length > 0) pool = big;
+      }
+      if (pool.length > 0) {
+        const weights = pool.map(m => {
+          const x = this.index.edges.get(m.exitEdgeId)!;
+          const t = m.turn === 'straight' ? 3 : m.turn === 'uturn' ? 0.2 : 1;
+          return t * (RANK_WEIGHT[rankOf(x)] ?? 1);
+        });
+        let r = Math.random() * weights.reduce((s, w) => s + w, 0);
+        let pick = pool[pool.length - 1];
+        for (let i = 0; i < pool.length; i++) { r -= weights[i]; if (r <= 0) { pick = pool[i]; break; } }
+        const first = this.index.edges.get(pick.path[0]);
+        if (first) {
+          sv.through = pick.path.slice(1);
+          sv.turn = pick.turn;
+          sv.moveExit = pick.exitEdgeId;
+          return first;
+        }
+      }
+    }
     // Now and then a rider takes a short stretch the wrong way down a one-way
     if (this.behaviour.wrongWay && !sv.reformed && sv.kind.wrongWay > 0 && !this.contraBase.has(edge.id) && Math.random() < sv.kind.wrongWay) {
       const shortcuts = (this.contraFrom.get(edge.to) ?? []).filter(c => c.to !== edge.from && c.length < 400);
       if (shortcuts.length > 0) return shortcuts[Math.floor(Math.random() * shortcuts.length)];
     }
-    const options = (this.index.outEdges.get(edge.to) ?? []).filter(e => !isEdgeBlocked(e.id));
+    const options = (this.index.outEdges.get(edge.to) ?? []).filter(e => !isEdgeBlocked(e.id) && !isTurnBanned(edge.id, e.id));
     const forward = options.filter(e => e.to !== edge.from);
     let pool = forward.length > 0 ? forward : options;
     if (pool.length === 0) return null;
@@ -1389,6 +1443,14 @@ class SimulationEngine {
   }
 
   /** Back to the default timing; ends holds and scaling. */
+  /** Turn rules replaced a junction's phases: new defaults, earlier controller changes dropped. */
+  phasesReplaced(id: string): void {
+    const s = this.state.signals.get(id);
+    if (!s) return;
+    this.basePhases.set(id, s.phases.map(p => p.duration));
+    this.control.delete(id);
+  }
+
   resetSignal(id: string): boolean {
     const s = this.state.signals.get(id);
     const base = this.basePhases.get(id);

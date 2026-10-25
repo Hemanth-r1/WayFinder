@@ -9,6 +9,8 @@
  * (flag: 0 normal, 1 wrong way, 2 ran a red).
  */
 import { getSimulationEngine } from './simulationEngine.js';
+import { rulesOf } from './turnRules.js';
+import type { SignalPhase } from './types.js';
 import { getConditions } from './conditionsService.js';
 
 /** Cell size in degrees (~2.2 km at Bangalore). The client uses the same grid. */
@@ -49,8 +51,13 @@ function build(): Snapshot | null {
   for (const [key, list] of groups) cells.set(key, { json: list.join(','), count: list.length });
 
   const signalStates: Record<string, [number, number]> = {};
-  for (const s of engine.getSignals()) signalStates[s.id] = [s.currentPhaseIndex, Math.round(s.timer * 10) / 10];
-  const common = JSON.stringify({ signalStates, stats: engine.getStats(), conditions: getConditions(), at: now }).slice(1, -1);
+  // Junctions whose phases differ from the cached road tiles (turn phases, new green times)
+  const phaseSets: Record<string, SignalPhase[]> = {};
+  for (const s of engine.getSignals()) {
+    signalStates[s.id] = [s.currentPhaseIndex, Math.round(s.timer * 10) / 10];
+    if (rulesOf(s.id)?.phases || engine.getSignalControl(s.id)?.plan) phaseSets[s.id] = s.phases;
+  }
+  const common = JSON.stringify({ signalStates, phaseSets, stats: engine.getStats(), conditions: getConditions(), at: now }).slice(1, -1);
 
   const fresh = !snap || now - snap.trafficAt >= TRAFFIC_MS;
   const traffic = fresh ? JSON.stringify([...engine.getTraffic()].filter(([, level]) => level > 0)) : snap!.traffic;

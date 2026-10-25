@@ -15,6 +15,7 @@ import type { GraphIndex } from './pathfindingService.js';
 import { getSimulationEngine } from './simulationEngine.js';
 import { approachState } from './signalTiming.js';
 import { getDb } from './firebaseClient.js';
+import { movesFrom } from './turnRules.js';
 
 // ── Tuning ───────────────────────────────────────────────────────────────────
 
@@ -60,6 +61,8 @@ export interface JunctionLink {
   departure: number;
   /** The road segment leaving U on this path (one of U's exits) */
   exitEdgeId: string;
+  /** First road segments of the path out of U (≤10), to match U's turning movements */
+  headEdges: string[];
 }
 
 interface JunctionNet {
@@ -113,6 +116,8 @@ export function initJunctions(index: GraphIndex, signals: TrafficSignal[], place
       if (!start) continue;
       const found = new Set<string>();
       const best = new Map<string, number>([[start.id, start.length]]);
+      /** The edge after each one on the way to J (to read a link's first steps out of U) */
+      const after = new Map<string, string>();
       const open: { edge: RoadEdge; metres: number; seconds: number }[] = [{ edge: start, metres: start.length, seconds: secondsOf(start) }];
       while (open.length) {
         let k = 0;
@@ -134,6 +139,7 @@ export function initJunctions(index: GraphIndex, signals: TrafficSignal[], place
             road: start.name || edge.name || '',
             departure: Math.round(departureBearing(edge)),
             exitEdgeId: edge.id,
+            headEdges: (() => { const h = [edge.id]; for (let x = after.get(edge.id); x && h.length < 10; x = after.get(x)) h.push(x); return h; })(),
           };
           (upstream.get(j.id) ?? upstream.set(j.id, []).get(j.id)!).push(link);
           (downstream.get(u.id) ?? downstream.set(u.id, []).get(u.id)!).push(link);
@@ -145,6 +151,7 @@ export function initJunctions(index: GraphIndex, signals: TrafficSignal[], place
           const m = metres + p.length;
           if (m < (best.get(p.id) ?? Infinity)) {
             best.set(p.id, m);
+            after.set(p.id, edge.id);
             open.push({ edge: p, metres: m, seconds: seconds + secondsOf(p) });
           }
         }
@@ -907,6 +914,12 @@ export function holdGreen(id: string, group: string, seconds: number, by: string
   return changes;
 }
 
+/** Stop-line nodes of a junction. */
+export function memberNodes(id: string): Set<string> {
+  const s = net?.signals.get(id);
+  return new Set(s ? s.nodeIds ?? [s.nodeId] : []);
+}
+
 /** Links to neighbouring signals and the exits of a junction (for coordinationService). */
 export function junctionLinks(id: string): { upstream: JunctionLink[]; downstream: JunctionLink[]; exits: JunctionExit[]; reach: Map<string, string[]> } {
   return {
@@ -968,7 +981,10 @@ export function describeMovement(signalId: string, fromEdge: string, toEdge: str
   const approachBearing = s?.approaches.find(a => a.edgeId === fromEdge)?.bearing ?? inE?.bearing ?? 0;
   const diff = outE ? ((departureBearing(outE) - approachBearing + 540) % 360) - 180 : 0;
   // India drives on the left: a negative (anticlockwise) turn is a left turn
-  const turnType: MovementLabel['turn'] = Math.abs(diff) < 30 ? 'straight' : Math.abs(diff) > 150 ? 'U-turn' : diff < 0 ? 'left' : 'right';
+  // The movement table knows the turn through multi-node junctions; bearings are the fallback
+  const known = movesFrom(fromEdge)?.find(m => m.exitEdgeId === toEdge || m.path[0] === toEdge)?.turn;
+  const turnType: MovementLabel['turn'] = known ? (known === 'uturn' ? 'U-turn' : known)
+    : Math.abs(diff) < 30 ? 'straight' : Math.abs(diff) > 150 ? 'U-turn' : diff < 0 ? 'left' : 'right';
   return {
     fromRoad: arm?.road ?? inE?.name ?? 'Unnamed road',
     fromDir: arm ? `from the ${arm.from}${arm.fromJunction ? ` (${arm.fromJunction})` : ''}` : `from the ${compass(approachBearing + 180)}`,

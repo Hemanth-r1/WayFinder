@@ -39,6 +39,11 @@ export interface RouteRequest {
 }
 
 export interface RouteReply { id: number; routes: number[][]; error?: string }
+/** Steps closed by junction turn rules, as edge index pairs [from, to, from, to, …] */
+export interface BansMessage { bans: number[] }
+
+/** Closed steps, keyed fromEdge * m + toEdge */
+let bans = new Set<number>();
 
 // Same tuning as pathfindingService.ts
 const SHARE_PENALTY = 0.12;
@@ -140,6 +145,7 @@ export function createSearcher(G: SharedGraph) {
       for (let k = G.outStart[cur]; k < G.outStart[cur + 1]; k++) {
         const e = G.outEdges[k], to = G.eTo[e];
         if (closed[to] || G.eBlocked[e]) continue;
+        if (inEdge >= 0 && bans.size > 0 && bans.has(inEdge * G.m + e)) continue; // closed turn
         if (G.eLocal[e] && !localOk(to) && !localOk(G.eFrom[e])) continue;
         const cost = travel(e, own) * spread(userHash, e) * (penalty?.get(e) ?? 1) +
           turn(inEdge, e) + (to !== dst ? G.eSignal[e] : 0);
@@ -194,7 +200,13 @@ export function createSearcher(G: SharedGraph) {
 
 if (parentPort && workerData?.graph) {
   const search = createSearcher(workerData.graph as SharedGraph);
-  parentPort.on('message', (req: RouteRequest) => {
+  parentPort.on('message', (req: RouteRequest | BansMessage) => {
+    if ('bans' in req) {
+      const m = (workerData.graph as SharedGraph).m, next = new Set<number>();
+      for (let i = 0; i + 1 < req.bans.length; i += 2) next.add(req.bans[i] * m + req.bans[i + 1]);
+      bans = next;
+      return;
+    }
     let reply: RouteReply;
     try { reply = { id: req.id, routes: search(req) }; }
     catch (err) { reply = { id: req.id, routes: [], error: (err as Error).message }; }

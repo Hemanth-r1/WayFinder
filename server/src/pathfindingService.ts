@@ -11,6 +11,7 @@ import type { RoadGraph, RoadEdge, RoadNode, TrafficSignal, RouteInfo } from './
 import { expectedSignalDelay, signalControl } from './signalTiming.js';
 import { getWeather } from './conditionsService.js';
 import { isEdgeBlocked, edgeTimeFactor } from './reportsService.js';
+import { isTurnBanned } from './turnRules.js';
 
 // ── Tuning ───────────────────────────────────────────────────────────────────
 
@@ -307,7 +308,7 @@ function aStar(
     const gCur = g.get(current)!;
     const inEdge = via.get(current);
     for (const edge of index.outEdges.get(current) ?? []) {
-      if (closed.has(edge.to) || isEdgeBlocked(edge.id)) continue;
+      if (closed.has(edge.to) || isEdgeBlocked(edge.id) || (inEdge && isTurnBanned(inEdge.id, edge.id))) continue;
       if (LOCAL_TYPES.has(edge.roadType) && !localOk(edge.to) && !localOk(edge.from)) continue;
       const control = signalControl(index.signalByNode, edge);
       const cost =

@@ -15,7 +15,7 @@ import {
   requireUser, requireSelf, pace, requireOperator, requireController, rateLimit, caller, authMode,
 } from './auth.js';
 import {
-  initJunctions, listJunctions, getJunction, holdGreen, applyPlan, resetJunction, controlLog, ControlError,
+  initJunctions, listJunctions, getJunction, holdGreen, applyPlan, resetJunction, controlLog, ControlError, recordControl,
 } from './junctionService.js';
 import { recordMovement, startCounts, junctionMovements, countsCsv } from './countsService.js';
 import { surgeLive } from './scenarioService.js';
@@ -25,6 +25,7 @@ import {
   startNavigation, getNavigationUpdate, planRoutes, acceptReroute, updatePosition, NavigationError,
 } from './navigationService.js';
 import { initRouteWorkers, routeQueuePerWorker } from './routeWorkers.js';
+import { initTurnRules, loadSavedRules, setRules, turnsView, RuleError } from './turnRules.js';
 import { planCoordination, applyCoordination } from './coordinationService.js';
 import { commonJson, trafficJson, cellJson } from './liveSnapshot.js';
 
@@ -369,7 +370,7 @@ app.delete('/api/user/:userId', requireUser, requireSelf, async (req, res) => {
 // ── Junctions: police view and signal control ────────────────────────────────
 
 function sendControlError(res: express.Response, err: any) {
-  res.status(err instanceof ControlError ? err.status : 500).json({ error: err.message });
+  res.status(err instanceof ControlError || err instanceof RuleError ? err.status : 500).json({ error: err.message });
 }
 
 /** Every signalised junction with live status, worst first (operators). */
@@ -428,6 +429,37 @@ app.post('/api/junctions/:id/reset', requireUser, requireController, (req, res) 
   try {
     res.json({ changes: resetJunction(String(req.params.id), caller(res).uid) });
   } catch (err) { sendControlError(res, err); }
+});
+
+/** Turn rules and turn-based phases: what each approach may do and which movements each phase lets go. */
+app.get('/api/junctions/:id/turns', requireUser, requireOperator, (req, res) => {
+  const view = turnsView(String(req.params.id));
+  if (!view) return res.status(404).json({ error: 'Unknown junction' });
+  res.json(view);
+});
+
+/** Controllers: set turn rules (and optionally turn-based phases); null phases keep the road-based ones. */
+app.put('/api/junctions/:id/turns', requireUser, requireController, (req, res) => {
+  const id = String(req.params.id);
+  const { approaches, phases } = req.body ?? {};
+  if (!Array.isArray(approaches)) return res.status(400).json({ error: 'approaches must be a list' });
+  if (phases !== null && phases !== undefined && !Array.isArray(phases)) return res.status(400).json({ error: 'phases must be a list or null' });
+  try {
+    const { warnings } = setRules(id, { approaches, phases: phases ?? null }, caller(res).uid);
+    const v = turnsView(id)!;
+    const closed = v.approaches.flatMap(a => a.moves.filter(m => !a.allowed.includes(m.turn)).map(m => `${a.road} from the ${a.from}: no ${m.turn}`));
+    recordControl(caller(res).uid, id, 'turn rules', [closed.join(', ') || 'all turns open', phases ? `${phases.length} turn phases` : 'road phases'].join(' · '));
+    res.json({ view: v, warnings });
+  } catch (err) { sendControlError(res, err); }
+});
+
+/** Controllers: back to the default (all turns, road-based phases). */
+app.delete('/api/junctions/:id/turns', requireUser, requireController, (req, res) => {
+  const id = String(req.params.id);
+  if (!turnsView(id)) return res.status(404).json({ error: 'Unknown junction' });
+  setRules(id, null, caller(res).uid);
+  recordControl(caller(res).uid, id, 'turn rules', 'cleared: all turns open, road phases');
+  res.json({ view: turnsView(id), warnings: [] });
 });
 
 /** Turning movements at a junction over the last ?hours=1 (estimated vehicles and people per hour). */
@@ -504,6 +536,7 @@ async function initializeServer() {
     const { graph, signals } = await getGraph();
     initReports(getGraphIndex(graph, signals));
     initJunctions(getGraphIndex(graph, signals), signals, (await getGraph()).places);
+    initTurnRules(getGraphIndex(graph, signals), signals);
     getRoadTiles().catch(() => {}); // serialise once (road tiles + full graph), now that signals carry their directions
     const engine = initSimulationEngine(graph, signals);
     initRouteWorkers(graph, signals); // route searches on the other CPU cores
@@ -511,6 +544,7 @@ async function initializeServer() {
     engine.setArrivalHandler(markArrived);
     engine.setMovementHandler(recordMovement);
     startCounts();
+    await loadSavedRules(); // controllers' turn rules and phases
     engine.start();
     startWeatherPolling();
     console.log('[WayFinder Server] Simulation engine started');

@@ -93,6 +93,8 @@ function AppContent() {
   const [navigation, setNavigation] = useState<NavigationResponse | null>(null);
   const navigatedVehicle = navigation !== null;
   const navigatingRef = useRef(false);
+  // Phases as the cached road data had them, to fall back to when a junction's custom phases end
+  const baseSignalPhases = useRef(new Map<string, TrafficSignal['phases']>());
   navigatingRef.current = navigatedVehicle;
   const [showHeatmap, setShowHeatmap] = useState(true);
   const [speed, setSpeed] = useState(1);
@@ -128,14 +130,19 @@ function AppContent() {
         }
         // Live phase per signal: [phase index, seconds into phase]
         const states = data.data.signalStates as Record<string, [number, number]> | undefined;
+        // Junctions whose phases changed since the road data was cached (turn phases, new greens)
+        const phaseSets = data.data.phaseSets as Record<string, TrafficSignal['phases']> | undefined;
         if (states) {
           setSignals(prev => {
             if (prev.size === 0) return prev;
             const next = new Map(prev);
             for (const [id, [phaseIndex, timer]] of Object.entries(states)) {
               const s = next.get(id);
-              if (s && (s.currentPhaseIndex !== phaseIndex || Math.abs(s.timer - timer) > 0.9)) {
-                next.set(id, { ...s, currentPhaseIndex: phaseIndex, timer });
+              if (!s) continue;
+              const phases = phaseSets?.[id] ?? baseSignalPhases.current.get(id) ?? s.phases;
+              if (!baseSignalPhases.current.has(id)) baseSignalPhases.current.set(id, s.phases);
+              if (s.currentPhaseIndex !== phaseIndex || Math.abs(s.timer - timer) > 0.9 || s.phases !== phases) {
+                next.set(id, { ...s, phases, cycleLength: phases.reduce((t, p) => t + p.duration, 0), currentPhaseIndex: phaseIndex, timer });
               }
             }
             return next;

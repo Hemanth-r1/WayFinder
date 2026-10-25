@@ -31,6 +31,8 @@ export interface RoadGraph {
 
 export interface SignalPhase {
   group: string; color: string; duration: number; yellowDuration: number;
+  /** Turn-based phases: the movements this phase lets go ("<approach edge id>:<turn>"); absent = whole group */
+  moves?: string[];
 }
 
 export interface SignalApproach {

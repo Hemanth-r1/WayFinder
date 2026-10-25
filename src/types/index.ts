@@ -30,7 +30,11 @@ export interface SignalApproach {
 }
 
 /** group: 'A' main road, 'B' cross road, 'ALL' all red (legacy 'NS' / 'EW') */
-export interface SignalPhase { group: string; color: SignalColor; duration: number; yellowDuration: number; }
+export interface SignalPhase {
+  group: string; color: SignalColor; duration: number; yellowDuration: number;
+  /** Turn-based phases: movements this phase lets go ("<approach edge id>:<turn>") */
+  moves?: string[];
+}
 /** One direction of traffic at a junction, in plain words. */
 export interface SignalArm {
   edgeId: string;

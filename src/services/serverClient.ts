@@ -106,6 +106,24 @@ export interface FeederRoad {
 }
 
 /** Vehicles moving from one approach to one exit (turning movement count). */
+/** Junction turn rules and turn-based phases (server/src/turnRules.ts). */
+export type Turn = 'left' | 'straight' | 'right' | 'uturn';
+export interface ApproachRule { edgeId: string; allowed: Turn[]; freeLeft: boolean }
+export interface PhaseSpec { green: number; moves: { edgeId: string; turns: Turn[] }[] }
+export interface TurnsView {
+  junctionId: string;
+  approaches: {
+    edgeId: string; road: string; from: string; lanes: number;
+    moves: { turn: Turn; road: string; heading: string; exitEdgeId: string }[];
+    allowed: Turn[]; freeLeft: boolean;
+  }[];
+  phases: PhaseSpec[] | null;
+  defaultGreens: { group: string; green: number }[];
+  by?: string;
+  at?: number;
+  warnings: string[];
+}
+
 /** One neighbour's change in a coordinated hold (server/src/coordinationService.ts). */
 export interface CoordAction {
   /** wave-out: green for traffic leaving us · wave-in: green for traffic coming to us · gate: shorter green so a stopped road doesn't overflow */
@@ -517,6 +535,26 @@ class ServerClient {
   /** Controllers: what a coordinated hold would do (hold length, neighbours' changes), without applying it. */
   async previewCoordination(id: string, group: string, seconds: number): Promise<CoordinationPlan> {
     return this.post(`/api/junctions/${encodeURIComponent(id)}/coordination`, { group, seconds }, 'Failed to plan coordination');
+  }
+
+  /** Turn rules and turn-based phases of a junction. */
+  async getTurns(id: string): Promise<TurnsView> {
+    return this.getJson(`/api/junctions/${encodeURIComponent(id)}/turns`, 'Failed to load turn rules');
+  }
+
+  /** Controllers: save turn rules; phases null keeps road-based phases. */
+  async setTurns(id: string, approaches: ApproachRule[], phases: PhaseSpec[] | null): Promise<{ view: TurnsView; warnings: string[] }> {
+    const response = await this.send(`/api/junctions/${encodeURIComponent(id)}/turns`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ approaches, phases }),
+    });
+    if (!response.ok) throw new Error(await errorMessage(response, 'Failed to save turn rules'));
+    return response.json();
+  }
+
+  async clearTurns(id: string): Promise<{ view: TurnsView; warnings: string[] }> {
+    const response = await this.send(`/api/junctions/${encodeURIComponent(id)}/turns`, { method: 'DELETE' });
+    if (!response.ok) throw new Error(await errorMessage(response, 'Failed to clear turn rules'));
+    return response.json();
   }
 
   async planJunction(id: string, plan: Record<string, number> | 'recommended'): Promise<{ changes: string[] }> {

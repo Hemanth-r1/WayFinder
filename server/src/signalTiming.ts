@@ -20,6 +20,11 @@ export function approachState(signal: TrafficSignal, group: SignalGroup): Approa
 /** Approach groups per edge, built once per controller list. */
 const groupCache = new WeakMap<TrafficSignal, Map<string, string>>();
 
+/** Forget cached approach groups after a junction's groups change (turn rules). */
+export function clearSignalCache(signal: TrafficSignal): void {
+  groupCache.delete(signal);
+}
+
 /**
  * The controller and phase group that govern traffic driving to the end of `edge`,
  * or null when the edge ends at no signal or runs inside a junction already passed.

@@ -23,7 +23,8 @@
  * green cut only if those queues would otherwise spill back into them.
  */
 import { getSimulationEngine } from './simulationEngine.js';
-import { getJunction, junctionLinks, edgeById, recordControl, ControlError, MAX_WAIT_S, type JunctionLink } from './junctionService.js';
+import { getJunction, junctionLinks, memberNodes, edgeById, recordControl, ControlError, MAX_WAIT_S, type JunctionLink } from './junctionService.js';
+import { movesFrom, allowedTurns, rulesOf, type Movement } from './turnRules.js';
 import { junctionMovements } from './countsService.js';
 
 /** Saturation flow per lane (vehicles/s): 1800 per hour. */
@@ -37,12 +38,12 @@ const MIN_HOLD = 10, MAX_HOLD = 180, MAX_WAVE = 90;
 /** Most neighbours one action adjusts, and how far (m). */
 const MAX_ACTIONS = 6, MAX_REACH_M = 3000;
 /** Turning shares before enough vehicles are counted (left-hand traffic: left is easy). */
-const DEFAULT_SHARE = { straight: 0.6, left: 0.25, right: 0.15 } as const;
+const DEFAULT_SHARE = { straight: 0.6, left: 0.25, right: 0.15, uturn: 0.02 } as const;
 const MIN_COUNTED = 20;
 /** Share of a feeding junction's saturation flow sent into one road on a normal cycle (green ≈ 40%, ~75% of it this way) */
 const FEED_SHARE = 0.3;
 
-type Turn = 'left' | 'straight' | 'right';
+type Turn = 'left' | 'straight' | 'right' | 'uturn';
 
 export interface CoordAction {
   kind: 'wave-out' | 'wave-in' | 'gate';
@@ -84,59 +85,42 @@ export interface CoordinationPlan {
   warnings: string[];
 }
 
-function bearing(e: { geometry: { lat: number; lng: number }[] } | undefined, end = false): number {
-  const g = e?.geometry;
-  if (!g || g.length < 2) return 0;
-  const [a, b] = end ? [g[g.length - 2], g[g.length - 1]] : [g[0], g[1]];
-  const y = (b.lng - a.lng) * Math.cos(a.lat * Math.PI / 180), x = b.lat - a.lat;
-  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
-}
-
-/** Signed turn from heading a to heading b (+ = right). */
-function turnAngle(a: number, b: number): number {
-  return ((b - a + 540) % 360) - 180;
-}
-
-function turnOf(angle: number): Turn | null {
-  if (Math.abs(angle) <= 35) return 'straight';
-  if (angle > 35 && angle < 150) return 'right';
-  if (angle < -35 && angle > -150) return 'left';
-  return null; // U-turn
-}
-
 const vehiclesIn = (metres: number, lanes: number) => Math.max(0, metres) * Math.max(1, lanes) / JAM_M;
 
-/** Exit shares for one approach: measured turning movements, else defaults by turn. */
-function exitShares(junctionId: string, approachEdgeId: string, approachBearing: number): Map<string, { share: number; turn: Turn }> {
-  const links = junctionLinks(junctionId);
-  const reachable = links.reach.get(approachEdgeId);
-  const reach = new Set(reachable?.length ? reachable : links.exits.map(x => x.edgeId));
-  const exits = links.exits
-    .filter(x => reach.has(x.edgeId))
-    .map(x => ({ id: x.edgeId, turn: turnOf(turnAngle(approachBearing, bearing(edgeById(x.edgeId)))) }))
-    .filter((x): x is { id: string; turn: Turn } => x.turn !== null);
-  const out = new Map<string, { share: number; turn: Turn }>();
+/**
+ * Where one approach's released traffic goes: its allowed movements (turn rules), with
+ * the turning shares counted per exit road, else defaults by turn. With turn-based phases
+ * only the movements the held phase lets go count.
+ */
+function movementShares(approachEdgeId: string, junctionId: string, phaseTurns?: Set<string>): { m: Movement; share: number }[] {
+  const allowed = new Set(allowedTurns(approachEdgeId));
+  const moves = (movesFrom(approachEdgeId) ?? []).filter(m => allowed.has(m.turn) && (!phaseTurns || phaseTurns.has(m.turn)));
+  if (!moves.length) return [];
   const rows = junctionMovements(junctionId, 1).rows.filter(r => r.fromEdge === approachEdgeId);
-  const counted = rows.reduce((t, r) => t + r.vehicles, 0);
+  const counted = rows.filter(r => moves.some(m => m.exitEdgeId === r.toEdge)).reduce((t, r) => t + r.vehicles, 0);
   if (counted >= MIN_COUNTED) {
-    for (const x of exits) {
-      const v = rows.filter(r => r.toEdge === x.id).reduce((t, r) => t + r.vehicles, 0);
-      if (v > 0) out.set(x.id, { share: v / counted, turn: x.turn });
-    }
-    if (out.size) return out;
+    const out = moves.map(m => ({ m, share: rows.filter(r => r.toEdge === m.exitEdgeId).reduce((t, r) => t + r.vehicles, 0) / counted }));
+    if (out.some(x => x.share > 0)) return out.filter(x => x.share > 0);
   }
   const perTurn = new Map<Turn, number>();
-  for (const x of exits) perTurn.set(x.turn, (perTurn.get(x.turn) ?? 0) + 1);
+  for (const m of moves) perTurn.set(m.turn, (perTurn.get(m.turn) ?? 0) + 1);
   const total = [...perTurn.keys()].reduce((t, k) => t + DEFAULT_SHARE[k], 0) || 1;
-  for (const x of exits) out.set(x.id, { share: DEFAULT_SHARE[x.turn] / total / perTurn.get(x.turn)!, turn: x.turn });
-  return out;
+  return moves.map(m => ({ m, share: DEFAULT_SHARE[m.turn] / total / perTurn.get(m.turn)! }));
 }
 
-/** The downstream links reached through this exit (several when the road forks before the next signal). */
-function linksForExit(junctionId: string, exitEdgeId: string): JunctionLink[] {
+/**
+ * Downstream links a movement leads to: links whose first steps out of this junction
+ * follow the movement's path from the last stop line it passes (several when the road
+ * forks before the next signal; nearest link per junction).
+ */
+function linksForMovement(junctionId: string, m: Movement): JunctionLink[] {
+  const members = memberNodes(junctionId);
+  let k = 0;
+  m.path.forEach((id, i) => { const e = edgeById(id); if (e && members.has(e.from)) k = i; });
+  const tail = m.path.slice(k);
   const nearest = new Map<string, JunctionLink>();
   for (const l of junctionLinks(junctionId).downstream) {
-    if (l.exitEdgeId !== exitEdgeId) continue;
+    if (!tail.every((id, i) => l.headEdges[i] === id)) continue;
     const n = nearest.get(l.to);
     if (!n || l.metres < n.metres) nearest.set(l.to, l);
   }
@@ -157,9 +141,13 @@ function approachState(junctionId: string, edgeId: string) {
 export function planCoordination(id: string, group: string, requested: number): CoordinationPlan {
   const j = getJunction(id);
   if (!j) throw new ControlError(`Unknown junction ${id}`, 404);
-  const released = j.approaches.filter(a => a.group === group);
+  // Turn-based phases: the movements the held phase lets go, per approach
+  const specs = rulesOf(id)?.phases;
+  const phaseMoves = specs && /^Pd+$/.test(group) ? specs[Number(group.slice(1)) - 1]?.moves : undefined;
+  const turnsOf = (edgeId: string) => phaseMoves ? new Set<string>(phaseMoves.find(m => m.edgeId === edgeId)?.turns ?? []) : undefined;
+  const released = phaseMoves ? j.approaches.filter(a => (turnsOf(a.edgeId)?.size ?? 0) > 0) : j.approaches.filter(a => a.group === group);
   if (!released.length) throw new ControlError(`Junction ${id} has no group ${group}`);
-  const stopped = j.approaches.filter(a => a.group !== group);
+  const stopped = j.approaches.filter(a => !released.includes(a));
   const links = junctionLinks(id);
   const req = Math.round(Math.min(MAX_HOLD, Math.max(MIN_HOLD, requested)));
 
@@ -168,7 +156,7 @@ export function planCoordination(id: string, group: string, requested: number): 
     const lanes = Math.max(1, a.lanes);
     return {
       a, N: vehiclesIn(a.queueMetres, lanes), c: SAT * lanes, lambda: a.arrivalsPerHour / 3600,
-      shares: exitShares(id, a.edgeId, a.bearing),
+      shares: movementShares(a.edgeId, id, turnsOf(a.edgeId)),
     };
   });
   const R = (f: typeof flows[number], H: number) => Math.min(f.N + f.lambda * H, f.c * Math.max(0, H - LOST));
@@ -180,8 +168,9 @@ export function planCoordination(id: string, group: string, requested: number): 
   interface Out { link: JunctionLink; share: Map<typeof flows[number], number>; turns: Set<Turn>; lanes: number; free: number; queued: number; tau: number; clearD: number; c: number }
   const outs = new Map<string, Out>();
   for (const f of flows) {
-    for (const [exitId, { share, turn }] of f.shares) {
-      const reached = linksForExit(id, exitId).filter(l => l.metres <= MAX_REACH_M);
+    for (const { m, share } of f.shares) {
+      const turn = m.turn;
+      const reached = linksForMovement(id, m).filter(l => l.metres <= MAX_REACH_M);
       for (const link of reached) {
       let o = outs.get(link.to + '|' + link.approachEdgeId);
       if (!o) {

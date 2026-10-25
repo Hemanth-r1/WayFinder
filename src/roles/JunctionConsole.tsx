@@ -7,6 +7,7 @@ import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from
 import { serverClient, type JunctionDetail, type MovementRow, type CoordinationPlan, type CoordAction } from '../services/serverClient';
 import { groupTiming } from '../utils/signalTiming';
 import { COORD_COLOR } from '../components/mapLayers';
+import TurnsEditor from './TurnsEditor';
 import type { TrafficSignal } from '../types';
 
 const LIGHT = { RED: '#FF1744', YELLOW: '#FFD600', GREEN: '#00E676' } as const;
@@ -182,6 +183,12 @@ export default function JunctionConsole({ detail, fetchedAt, canControl, movemen
       ) : (
         <div style={{ fontSize: 11, color: '#777', margin: '8px 0' }}>View only — controllers can change signals.</div>
       )}
+
+      <Fold title="Turns & phases">
+        <TurnsEditor junctionId={detail.id} canControl={canControl}
+          groupOf={Object.fromEntries(detail.approaches.map(x => [x.edgeId, x.group]))}
+          onSaved={c => onAction(async () => ({ changes: c }))} />
+      </Fold>
 
       <Fold title={`Approaches (${detail.approaches.length})`}>
         {detail.approaches.map(a => (

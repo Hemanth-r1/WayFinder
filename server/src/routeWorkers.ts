@@ -7,7 +7,8 @@
 import { Worker } from 'node:worker_threads';
 import { availableParallelism } from 'node:os';
 import type { RoadGraph, TrafficSignal, RouteInfo } from './types.js';
-import type { SharedGraph, RouteRequest, RouteReply } from './routeWorker.js';
+import type { SharedGraph, RouteRequest, RouteReply, BansMessage } from './routeWorker.js';
+import { onBansChanged, bannedSteps } from './turnRules.js';
 import {
   getGraphIndex, describeRoute, findRouteOptions, congestionFactor, forEachObservedSpeed,
   forEachNavigatorEdge, userRouteEdgeIds, LOCAL_TYPES, type RoutingContext,
@@ -33,7 +34,9 @@ let workerUrl: URL;
 let workerExecArgv: string[] = [];
 let nextId = 1;
 let touched: number[] = [];
-let signalEdges: { e: number; signal: TrafficSignal; group: string }[] = [];
+let signalEdges: { e: number; id: string; signal: TrafficSignal; group: string }[] = [];
+/** Closed turns as edge index pairs, sent to every worker */
+let banPairs: number[] = [];
 
 function shared<T extends Float64Array | Float32Array | Int32Array | Uint8Array>(
   Ctor: { new(buf: SharedArrayBuffer): T; BYTES_PER_ELEMENT: number }, length: number,
@@ -71,7 +74,7 @@ export function initRouteWorkers(graph: RoadGraph, signals: TrafficSignal[]): vo
   signalEdges = [];
   graph.edges.forEach((e, i) => {
     const c = signalControl(index.signalByNode, e);
-    if (c) signalEdges.push({ e: i, signal: c.signal, group: c.group });
+    if (c) signalEdges.push({ e: i, id: e.id, signal: c.signal, group: c.group });
   });
   G = g;
   refreshLiveCosts();
@@ -83,6 +86,13 @@ export function initRouteWorkers(graph: RoadGraph, signals: TrafficSignal[]): vo
   workerUrl = new URL(isTs ? './routeWorker.ts' : './routeWorker.js', import.meta.url);
   workerExecArgv = isTs ? ['--import', 'tsx'] : [];
   for (let k = 0; k < size; k++) workers.push(startWorker());
+  // Junction turn rules: keep every worker's closed turns current
+  const sendBans = (pairs: [string, string][]) => {
+    banPairs = pairs.flatMap(([a, b]) => { const x = edgeIdx.get(a), y = edgeIdx.get(b); return x === undefined || y === undefined ? [] : [x, y]; });
+    for (const s of workers) s.w.postMessage({ bans: banPairs } satisfies BansMessage);
+  };
+  onBansChanged(sendBans);
+  sendBans(bannedSteps());
   console.log(`[Routes] ${size} route worker${size === 1 ? '' : 's'} (${availableParallelism()} CPU cores)`);
 }
 
@@ -98,6 +108,7 @@ function finish(id: number, reply: RouteReply): void {
 function startWorker(): Slot {
   const slot: Slot = { w: new Worker(workerUrl, { workerData: { graph: G }, execArgv: workerExecArgv }), pending: new Set() };
   slot.w.on('message', (reply: RouteReply) => { slot.pending.delete(reply.id); finish(reply.id, reply); });
+  if (banPairs.length) slot.w.postMessage({ bans: banPairs } satisfies BansMessage);
   slot.w.on('error', (err: Error) => console.error('[Routes] Worker failed:', err.message));
   slot.w.on('exit', code => {
     for (const id of slot.pending) finish(id, { id, routes: [], error: `worker exited (${code})` });
@@ -145,7 +156,8 @@ function refreshLiveCosts(): void {
     if (i !== undefined) { g.eNav[i] = count; if (!mul.has(i)) { mul.set(i, { cong: 1, measured: 0, factor: 1 }); next.push(i); } }
   });
   touched = next;
-  for (const s of signalEdges) g.eSignal[s.e] = expectedSignalDelay(s.signal, s.group);
+  // (groups can change when a junction gets turn-based phases)
+  for (const s of signalEdges) g.eSignal[s.e] = expectedSignalDelay(s.signal, s.signal.approaches.find(a => a.edgeId === s.id)?.group ?? s.group);
 }
 
 /** Searches waiting or running on the workers, per worker. */
