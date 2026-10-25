@@ -11,6 +11,7 @@ import RoleSelector from './components/RoleSelector';
 import UserPanel, { type RecentTrip } from './roles/UserPanel';
 import SupporterPanel from './roles/SupporterPanel';
 import JunctionPanel from './roles/JunctionPanel';
+import EmergencyPanel from './roles/EmergencyPanel';
 import OfflineCard from './components/OfflineCard';
 import { offlineRoute } from './utils/offlineRoute';
 import NavigationGuide from './components/NavigationGuide';
@@ -18,7 +19,7 @@ import { progressiveLoader, type LoadUpdate, type LoadPhase } from './services/p
 import { serverClient } from './services/serverClient';
 import type { RoadGraph, TrafficSignal, Vehicle } from './types';
 import type {
-  ServerStats, RouteOption, NavigationResponse, Conditions, WeatherMode, TrafficMode, ReportType, ReportVote, Behaviour, Jam, JamSeverity, CoordinationPlan,
+  ServerStats, RouteOption, NavigationResponse, Conditions, WeatherMode, TrafficMode, ReportType, ReportVote, Behaviour, Jam, JamSeverity, CoordinationPlan, Corridor, EmergencyKind,
 } from './services/serverClient';
 import { REPORT_LABEL } from './utils/reports';
 import ConditionsPanel from './components/ConditionsPanel';
@@ -69,6 +70,10 @@ function AppContent() {
   const [mapFocus, setMapFocus] = useState<{ lat: number; lng: number; zoom: number; key: number } | null>(null);
   // Police: coordination preview drawn on the map while the console shows it
   const [coordPlan, setCoordPlan] = useState<CoordinationPlan | null>(null);
+  // Emergency runs: responders choose one for their trip; operators see all, controllers dispatch
+  const [emergencyKind, setEmergencyKind] = useState<EmergencyKind | null>(null);
+  const [corridors, setCorridors] = useState<Corridor[]>([]);
+  const [ambulanceFrom, setAmbulanceFrom] = useState<{ lat: number; lng: number } | null>(null);
   const [stats, setStats] = useState<ServerStats>({
     totalVehicles: 0, avgSpeed: 0, avgDelay: 0, congestionHotspots: 0,
     greenWaveActive: false, signalCoordinationScore: 0, throughput: 0, maxCongestion: 0,
@@ -84,7 +89,9 @@ function AppContent() {
   const [dismissedOffer, setDismissedOffer] = useState<string | null>(null);
   const [rerouting, setRerouting] = useState(false);
   const isMobile = useIsMobile();
-  const simpleView = role === 'user';
+  // Responders (ambulance, fire, police drivers) use the driver view, with emergency runs
+  const driverView = role === 'user' || role === 'responder';
+  const simpleView = driverView;
   const [graphVersion, setGraphVersion] = useState(0);
   const [routeOptions, setRouteOptions] = useState<RouteOption[]>([]);
   const [selectedRouteIndex, setSelectedRouteIndex] = useState(0);
@@ -330,16 +337,45 @@ function AppContent() {
     try { setConditions(await serverClient.fetchConditions()); } catch { /* next live update brings it */ }
   }, []);
 
+  // Emergency runs on the map (operators and responders), refreshed every 2 s while any is active
+  useEffect(() => {
+    if (role === 'user') return;
+    let alive = true;
+    let t = 0;
+    const load = () => serverClient.listEmergency()
+      .then(c => { if (alive) setCorridors(c); })
+      .catch(() => { /* not signed in yet */ })
+      .finally(() => { if (alive) t = window.setTimeout(load, corridorsActive.current ? 2000 : 10000); });
+    load();
+    return () => { alive = false; window.clearTimeout(t); };
+  }, [role]);
+  const corridorsActive = useRef(false);
+  corridorsActive.current = corridors.some(c => c.status === 'active');
+
+  // Controllers: right-click "Ambulance starts here", then "goes here" dispatches it
+  const handleAmbulance = useCallback(async (end: 'from' | 'to', lat: number, lng: number) => {
+    if (end === 'from') { setAmbulanceFrom({ lat, lng }); pushToast('Ambulance start set — right-click the destination', 'success'); return; }
+    if (!ambulanceFrom) return;
+    try {
+      const c = await serverClient.dispatchEmergency(ambulanceFrom, { lat, lng }, 'ambulance');
+      setAmbulanceFrom(null);
+      setCorridors(prev => [...prev.filter(x => x.id !== c.id), c]);
+      pushToast(`🚑 Ambulance dispatched: ${c.signals.length} signals on its way, ~${Math.max(1, Math.round(c.eta / 60))} min`, 'success');
+    } catch (err) {
+      pushToast((err as Error).message, 'error');
+    }
+  }, [ambulanceFrom]);
+
   // Intentional test jams (operators see them; controllers create and remove them)
   const [jams, setJams] = useState<Jam[]>([]);
   useEffect(() => {
-    if (role === 'user') return;
+    if (driverView) return;
     let alive = true;
     const load = () => serverClient.listJams().then(j => { if (alive) setJams(j); }).catch(() => { /* not signed in yet */ });
     load();
     const t = window.setInterval(load, 15000);
     return () => { alive = false; window.clearInterval(t); };
-  }, [role]);
+  }, [driverView]);
   const handleCreateJam = useCallback(async (lat: number, lng: number, severity: JamSeverity) => {
     try {
       const { jam, jams: all } = await serverClient.createJam(lat, lng, severity);
@@ -480,7 +516,7 @@ function AppContent() {
           pushToast('Location is off — showing a simulated drive instead', 'warning');
         }
       }
-      const nav = await serverClient.startNavigation(user.uid, selectedSource, selectedDest, chosen?.edgeIds, mode);
+      const nav = await serverClient.startNavigation(user.uid, selectedSource, selectedDest, chosen?.edgeIds, mode, role === 'responder' ? emergencyKind : null);
       navigatingRef.current = true;
       setNavigation(nav);
       // Zoom to the car: the follow camera takes over once its position arrives
@@ -501,7 +537,7 @@ function AppContent() {
     } finally {
       setStarting(false);
     }
-  }, [user, selectedSource, selectedDest, sourceLabel, destLabel, routeOptions, selectedRouteIndex, isMobile]);
+  }, [user, selectedSource, selectedDest, sourceLabel, destLabel, routeOptions, selectedRouteIndex, isMobile, role, emergencyKind]);
 
   /**
    * Hands this user's route to Google Maps for voice guidance. The trip is still started in
@@ -605,7 +641,7 @@ function AppContent() {
 
         {/* Role panels */}
         <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', minWidth: 0 }}>
-          {role === 'user' && (
+          {driverView && (
             <UserPanel
               graph={graph}
               sourceLabel={sourceLabel}
@@ -627,10 +663,22 @@ function AppContent() {
               starting={starting}
               onStart={handleStartNavigation}
               onOpenGoogleMaps={handleOpenGoogleMaps}
+              emergencyKind={role === 'responder' ? emergencyKind : undefined}
+              onEmergencyKind={role === 'responder' ? setEmergencyKind : undefined}
+            />
+          )}
+          {/* Emergency runs: operators watch (controllers dispatch and cancel) */}
+          {!driverView && (
+            <EmergencyPanel
+              corridors={corridors}
+              canControl={role === 'controller'}
+              picking={ambulanceFrom !== null}
+              onCancel={async id => { try { await serverClient.cancelEmergency(id); setCorridors(await serverClient.listEmergency()); } catch (err) { pushToast((err as Error).message, 'error'); } }}
+              onFocus={(lat, lng) => setMapFocus({ lat, lng, zoom: 15, key: Date.now() })}
             />
           )}
           {/* Police view first: junction control console */}
-          {role !== 'user' && (
+          {!driverView && (
             <JunctionPanel
               canControl={role === 'controller'}
               selectedId={selectedJunction}
@@ -641,7 +689,7 @@ function AppContent() {
           )}
           <OfflineCard online={online} />
           {/* Operators set city-wide conditions and review driver reports */}
-          {role !== 'user' && (
+          {!driverView && (
             <ConditionsPanel
               conditions={conditions}
               onWeather={handleWeather}
@@ -726,12 +774,15 @@ function AppContent() {
           onVoteReport={handleVoteReport}
           onRemoveReport={handleRemoveReport}
           onCreateJam={role === 'controller' ? handleCreateJam : undefined}
-          canRemoveReports={role !== 'user'}
+          canRemoveReports={!driverView}
           followVehicleId={simpleView && navigation?.vehicleId ? navigation.vehicleId : undefined}
           traffic={traffic}
           focus={mapFocus}
           onSelectJunction={setSelectedJunction}
-          coordination={role !== 'user' ? coordPlan : null}
+          coordination={!driverView ? coordPlan : null}
+          emergencyCorridors={corridors}
+          onAmbulance={role === 'controller' ? handleAmbulance : undefined}
+          ambulanceFromSet={ambulanceFrom !== null}
           onViewportChange={(bbox, zoom) => { serverClient.setViewport(bbox, zoom); progressiveLoader.loadView(bbox, zoom); }}
         />
       </div>

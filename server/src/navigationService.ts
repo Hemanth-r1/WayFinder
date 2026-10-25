@@ -10,6 +10,7 @@ import {
   type DriveMode, type RerouteSuggestion, type UserSession,
 } from './userVehicleService.js';
 import { getWeather, type WeatherCondition } from './conditionsService.js';
+import { startResponderRun, emergencyBehind, emergencyRunOf, type EmergencyKind } from './emergencyService.js';
 import {
   isEdgeBlocked, observeDriver, reportsOnEdges, hasVoted, type PublicReport,
 } from './reportsService.js';
@@ -23,6 +24,8 @@ export interface NavigationRequest {
   edgeIds?: string[];
   /** 'gps' when the phone will send positions; otherwise the drive is simulated */
   mode?: DriveMode;
+  /** Responders: this trip is an emergency run (signals turn green ahead, traffic makes way) */
+  emergency?: EmergencyKind;
 }
 
 export interface NavigationResponse {
@@ -48,6 +51,10 @@ export interface NavigationResponse {
   weather: WeatherCondition;
   /** A crowd report on the road ahead that this driver hasn't voted on yet */
   reportPrompt: ReportPrompt | null;
+  /** An emergency vehicle close behind on this driver's road: keep left and let it pass */
+  emergencyBehind?: { kind: EmergencyKind; metres: number } | null;
+  /** This driver's own emergency run, if any */
+  emergencyRun?: ReturnType<typeof emergencyRunOf>;
 }
 
 export interface ReportPrompt {
@@ -137,7 +144,7 @@ export async function planRoutes(
 }
 
 export async function startNavigation(req: NavigationRequest, graph: RoadGraph, signals: TrafficSignal[]): Promise<NavigationResponse> {
-  const { userId, sourceNodeId, destNodeId, edgeIds, mode = 'simulated' } = req;
+  const { userId, sourceNodeId, destNodeId, edgeIds, mode = 'simulated', emergency } = req;
   const index = getGraphIndex(graph, signals);
   requireNodes(index, sourceNodeId, destNodeId);
   if (!getSimulationEngine()) throw new NavigationError('Simulation engine not initialized', 503);
@@ -147,7 +154,8 @@ export async function startNavigation(req: NavigationRequest, graph: RoadGraph, 
   const chosen = (edgeIds && routeFromEdgeIds(index, sourceNodeId, destNodeId, edgeIds, ctx)) || options[0];
   if (!chosen) throw new NavigationError('No route found', 404);
 
-  startUserSession(userId, chosen, mode);
+  const session = startUserSession(userId, chosen, mode, !!emergency);
+  const run = emergency ? startResponderRun(userId, session.vehicleId, chosen.edgeIds, emergency) : null;
 
   return {
     path: chosen.geometry,
@@ -164,6 +172,7 @@ export async function startNavigation(req: NavigationRequest, graph: RoadGraph, 
     blockedAhead: false,
     weather: getWeather().condition,
     reportPrompt: null,
+    emergencyRun: run ? emergencyRunOf(userId) : null,
   };
 }
 
@@ -209,6 +218,7 @@ export function getNavigationUpdate(userId: string, graph: RoadGraph, signals: T
   });
 
   const ahead = signalsAhead(index, route.edgeIds, progress.edgeIndex, progress.edgeProgress);
+  const sirenBehind = emergencyBehind(userId, route.edgeIds, progress.edgeIndex, progress.edgeProgress);
   duration += ahead.reduce((s, sig) => s + sig.estimatedWait, 0);
 
   const blockedAhead = remainingIds.slice(1).some(isEdgeBlocked);
@@ -237,6 +247,8 @@ export function getNavigationUpdate(userId: string, graph: RoadGraph, signals: T
       geometry: suggestion.route.geometry,
     } : null,
     blockedAhead: blockedAhead && !suggestion,
+    emergencyBehind: sirenBehind,
+    emergencyRun: emergencyRunOf(userId),
     weather: getWeather().condition,
     reportPrompt: nearestReportPrompt(userId, index, remainingIds, progress.edgeProgress),
   };

@@ -65,6 +65,28 @@ export default function NavigationGuide({
       padding: 14, zIndex: 1500, boxShadow: '0 6px 24px rgba(0,0,0,0.55)',
       fontFamily: 'system-ui, sans-serif', color: '#ccc',
     }}>
+      {/* An emergency vehicle close behind: make way */}
+      {navigation.emergencyBehind && (
+        <div role="alert" style={{ background: '#D5000033', border: '1px solid #FF1744', borderRadius: 10, padding: '10px 12px', marginBottom: 12 }}>
+          <div style={{ fontSize: 15, fontWeight: 'bold', color: '#fff' }}>
+            {navigation.emergencyBehind.kind === 'fire' ? '🚒 Fire engine' : navigation.emergencyBehind.kind === 'police' ? '🚓 Police' : '🚑 Ambulance'} {navigation.emergencyBehind.metres} m behind you
+          </div>
+          <div style={{ fontSize: 12, color: '#ffcdd2', marginTop: 2 }}>Keep left and slow down to let it pass. Don't stop suddenly.</div>
+        </div>
+      )}
+      {/* Responders: their own emergency run */}
+      {navigation.emergencyRun && (
+        <div style={{ background: '#1a0d10', border: '1px solid #5a1a24', borderRadius: 10, padding: '8px 12px', marginBottom: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 'bold', color: '#FF8A80' }}>
+            🚨 Emergency run · {navigation.emergencyRun.greenAhead} signal{navigation.emergencyRun.greenAhead === 1 ? '' : 's'} green ahead
+          </div>
+          {navigation.emergencyRun.next && (
+            <div style={{ fontSize: 12, color: '#ccc', marginTop: 2 }}>
+              Next: {navigation.emergencyRun.next.name} — {navigation.emergencyRun.next.green ? 'green for you' : `turns green before you arrive${navigation.emergencyRun.next.eta != null ? ` (~${navigation.emergencyRun.next.eta} s)` : ''}`}
+            </div>
+          )}
+        </div>
+      )}
       {/* Reroute offer */}
       {offer && (
         <div style={{

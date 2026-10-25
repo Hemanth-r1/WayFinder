@@ -21,7 +21,7 @@ function decodeVehicles(raw: unknown[]): ServerVehicle[] {
     const [id, lat, lng, speed, bearing, type, flag] = v as [string, number, number, number, number, string, number];
     return {
       id, lat, lng, speed, bearing, type, color: TYPE_COLOR[type] ?? '#1E88E5', isNavigated: false,
-      wrongWay: flag === 1 || undefined, violation: flag === 2 || undefined,
+      wrongWay: flag === 1 || undefined, violation: flag === 2 || undefined, emergency: flag === 3 || undefined,
     };
   });
 }
@@ -37,6 +37,8 @@ export interface ServerVehicle {
   isNavigated: boolean;
   wrongWay?: boolean;
   violation?: boolean;
+  /** Ambulance / fire / police on a run (siren on) */
+  emergency?: boolean;
 }
 
 export interface ServerSignal {
@@ -361,6 +363,27 @@ export interface NavigationResponse {
   weather: WeatherCondition;
   /** A crowd report on the road ahead the driver hasn't answered yet */
   reportPrompt: ReportPrompt | null;
+  /** An emergency vehicle close behind on this driver's road */
+  emergencyBehind?: { kind: EmergencyKind; metres: number } | null;
+  /** Responders: their own emergency run */
+  emergencyRun?: { id: string; kind: EmergencyKind; signals: number; greenAhead: number; next?: { name: string; eta: number | null; green: boolean } } | null;
+}
+
+export type EmergencyKind = 'ambulance' | 'fire' | 'police';
+
+/** An emergency vehicle's run with the signals on its way (server/src/emergencyService.ts). */
+export interface Corridor {
+  id: string;
+  kind: EmergencyKind;
+  vehicleId: string;
+  userId?: string;
+  geometry: { lat: number; lng: number }[];
+  signals: { junctionId: string; name: string; lat: number; lng: number; eta: number | null; state: 'ahead' | 'green' | 'passed' }[];
+  startedBy: string;
+  startedAt: number;
+  status: 'active' | 'arrived' | 'cancelled';
+  eta: number;
+  position?: { lat: number; lng: number };
 }
 
 /** Headers that identify the caller: a Firebase ID token, or the demo identity. */
@@ -445,8 +468,25 @@ class ServerClient {
   /** Starts driving `edgeIds` (a chosen RouteOption); the server falls back to its best route if stale. */
   async startNavigation(
     userId: string, sourceNodeId: string, destNodeId: string, edgeIds?: string[], mode: DriveMode = 'simulated',
+    emergency?: EmergencyKind | null,
   ): Promise<NavigationResponse> {
-    return this.post('/api/user/start', { userId, sourceNodeId, destNodeId, edgeIds, mode }, 'Failed to start navigation');
+    return this.post('/api/user/start', { userId, sourceNodeId, destNodeId, edgeIds, mode, emergency: emergency ?? undefined }, 'Failed to start navigation');
+  }
+
+  // ── Emergency corridors ──────────────────────────────────────────────────────
+
+  async listEmergency(): Promise<Corridor[]> {
+    return (await this.getJson<{ corridors: Corridor[] }>('/api/emergency', 'Failed to load emergency runs')).corridors;
+  }
+
+  /** Controllers: send a simulated emergency vehicle between two points. */
+  async dispatchEmergency(from: { lat: number; lng: number }, to: { lat: number; lng: number }, kind: EmergencyKind = 'ambulance'): Promise<Corridor> {
+    return (await this.post<{ corridor: Corridor }>('/api/emergency', { from, to, kind }, 'Failed to dispatch')).corridor;
+  }
+
+  async cancelEmergency(id: string): Promise<void> {
+    const response = await this.send(`/api/emergency/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (!response.ok) throw new Error(await errorMessage(response, 'Failed to cancel'));
   }
 
   /** Sends a GPS fix while navigating in 'gps' mode. */

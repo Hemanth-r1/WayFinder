@@ -15,12 +15,12 @@ import MapContextMenu from './MapContextMenu';
 import NavigationPanel from './NavigationPanel';
 import ControlPanel from './ControlPanel';
 import type { NavRouteSummary } from './NavigationPanel';
-import type { RoadReport, ReportType, ReportVote, CoordinationPlan } from '../services/serverClient';
+import type { RoadReport, ReportType, ReportVote, CoordinationPlan, Corridor } from '../services/serverClient';
 import { distanceMetres, snapToRoad } from '../utils/places';
 import SignalCard from './SignalCard';
 import {
   MAP_STYLES, SRC, LAYER, addOverlayLayers, addMissingImage, setSourceData,
-  roadsData, markingsData, trafficData, trafficBaseData, signalsData, vehiclesData, heatData, linesData, reportsData, coordinationData,
+  roadsData, markingsData, trafficData, trafficBaseData, signalsData, vehiclesData, heatData, linesData, reportsData, coordinationData, emergencyData,
 } from './mapLayers';
 
 const MAP_CENTER: [number, number] = [12.9716, 77.5946];
@@ -82,6 +82,12 @@ interface MapViewProps {
   onSelectJunction?: (id: string) => void;
   /** Police: coordination preview (the junction, its neighbours and their changes) */
   coordination?: CoordinationPlan | null;
+  /** Emergency runs to draw (route, signals, vehicle) */
+  emergencyCorridors?: Corridor[];
+  /** Controllers: pick where a simulated ambulance starts / goes (right-click menu) */
+  onAmbulance?: (end: 'from' | 'to', lat: number, lng: number) => void;
+  /** An ambulance start point is picked, waiting for the destination */
+  ambulanceFromSet?: boolean;
 }
 
 interface ContextMenuState {
@@ -155,7 +161,7 @@ export default function MapView({
   onAddSignal, onSpawnVehicleAt, showHeatmap = true, routePolyline, altRoutePolylines, speed: _speed, onSpeedChange: _onSpeedChange,
   onStartNavigation, routeInfo, clearRoute, navigatedVehicle, simpleView = false, compact = false,
   reports = [], reroutePolyline, onReport, onVoteReport, onRemoveReport, canRemoveReports = false, onCreateJam,
-  followVehicleId, traffic, onViewportChange, focus, onSelectJunction, coordination = null,
+  followVehicleId, traffic, onViewportChange, focus, onSelectJunction, coordination = null, emergencyCorridors, onAmbulance, ambulanceFromSet = false,
 }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const miniRef = useRef<HTMLDivElement>(null);
@@ -506,6 +512,11 @@ export default function MapView({
     setSourceData(map, SRC.reroute, linesData([reroutePolyline]));
   }, [routePolyline, altRoutePolylines, reroutePolyline, loadCount]);
 
+  useEffect(() => {
+    const map = loadedMap();
+    if (map) setSourceData(map, SRC.emergency, emergencyData(emergencyCorridors ?? []));
+  }, [emergencyCorridors, loadCount]);
+
   // Coordination preview: draw it and fit the junction and its neighbours in view
   useEffect(() => {
     const map = loadedMap();
@@ -699,6 +710,8 @@ export default function MapView({
           canRemove={canRemoveReports}
           onRemove={id => onRemoveReport?.(id)}
           onJam={onCreateJam ? severity => onCreateJam(contextMenu.lat, contextMenu.lng, severity) : undefined}
+          onAmbulance={onAmbulance ? end => onAmbulance(end, contextMenu.lat, contextMenu.lng) : undefined}
+          ambulanceFromSet={ambulanceFromSet}
           simple={simpleView}
         />
       )}

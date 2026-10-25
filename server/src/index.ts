@@ -26,6 +26,7 @@ import {
 } from './navigationService.js';
 import { initRouteWorkers, routeQueuePerWorker } from './routeWorkers.js';
 import { initTurnRules, loadSavedRules, setRules, turnsView, RuleError } from './turnRules.js';
+import { initEmergency, dispatchEmergency, cancelCorridor, listCorridors, EmergencyError } from './emergencyService.js';
 import { planCoordination, applyCoordination } from './coordinationService.js';
 import { commonJson, trafficJson, cellJson } from './liveSnapshot.js';
 
@@ -279,8 +280,12 @@ app.get('/api/stats', async (_req, res) => {
 
 app.post('/api/user/start', requireUser, async (req, res) => {
   try {
-    const { sourceNodeId, destNodeId, edgeIds, mode } = req.body;
+    const { sourceNodeId, destNodeId, edgeIds, mode, emergency } = req.body;
     const userId = caller(res).uid;
+    if (emergency !== undefined && emergency !== null) {
+      if (!['ambulance', 'fire', 'police'].includes(emergency)) return res.status(400).json({ error: 'emergency must be ambulance, fire or police' });
+      if (caller(res).role !== 'responder' && caller(res).role !== 'controller') return res.status(403).json({ error: 'Only responders can start an emergency run' });
+    }
     if (req.body.userId && req.body.userId !== userId) {
       return res.status(403).json({ error: 'You can only start your own navigation' });
     }
@@ -293,7 +298,7 @@ app.post('/api/user/start', requireUser, async (req, res) => {
 
     const { graph, signals } = await getGraph();
     const navigation = await startNavigation(
-      { userId, sourceNodeId, destNodeId, edgeIds, mode: mode === 'gps' ? 'gps' : 'simulated' }, graph, signals,
+      { userId, sourceNodeId, destNodeId, edgeIds, mode: mode === 'gps' ? 'gps' : 'simulated', emergency: emergency || undefined }, graph, signals,
     );
     res.json(navigation);
   } catch (err: any) {
@@ -431,6 +436,31 @@ app.post('/api/junctions/:id/reset', requireUser, requireController, (req, res) 
   } catch (err) { sendControlError(res, err); }
 });
 
+/** Emergency corridors (operators and responders see them on the map). */
+app.get('/api/emergency', requireUser, (req, res) => {
+  const { role } = caller(res);
+  if (role === 'user') return res.status(403).json({ error: 'Operators and responders only' });
+  res.json({ corridors: listCorridors() });
+});
+
+/** Controllers: dispatch a simulated ambulance / fire engine / police vehicle. */
+app.post('/api/emergency', requireUser, requireController, async (req, res) => {
+  const { from, to, kind = 'ambulance' } = req.body ?? {};
+  const ok = (p: any) => p && typeof p.lat === 'number' && typeof p.lng === 'number';
+  if (!ok(from) || !ok(to)) return res.status(400).json({ error: 'from and to need lat and lng' });
+  if (!['ambulance', 'fire', 'police'].includes(kind)) return res.status(400).json({ error: 'kind must be ambulance, fire or police' });
+  try {
+    res.json({ corridor: await dispatchEmergency(from, to, kind, caller(res).uid) });
+  } catch (err: any) {
+    res.status(err instanceof EmergencyError ? err.status : 500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/emergency/:id', requireUser, requireController, (req, res) => {
+  if (!cancelCorridor(String(req.params.id), caller(res).uid)) return res.status(404).json({ error: 'No active corridor with that id' });
+  res.json({ corridors: listCorridors() });
+});
+
 /** Turn rules and turn-based phases: what each approach may do and which movements each phase lets go. */
 app.get('/api/junctions/:id/turns', requireUser, requireOperator, (req, res) => {
   const view = turnsView(String(req.params.id));
@@ -540,6 +570,7 @@ async function initializeServer() {
     getRoadTiles().catch(() => {}); // serialise once (road tiles + full graph), now that signals carry their directions
     const engine = initSimulationEngine(graph, signals);
     initRouteWorkers(graph, signals); // route searches on the other CPU cores
+    initEmergency(graph, signals);
     nearestRoadSegment(getGraphIndex(graph, signals), 12.97, 77.59, 1); // build the nearest-road grid now
     engine.setArrivalHandler(markArrived);
     engine.setMovementHandler(recordMovement);

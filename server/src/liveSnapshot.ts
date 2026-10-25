@@ -6,7 +6,7 @@
  * for a second), so server work doesn't grow with the number of people watching.
  *
  * Vehicles are compact arrays: [id, lat, lng, km/h, bearing, type, flag]
- * (flag: 0 normal, 1 wrong way, 2 ran a red).
+ * (flag: 0 normal, 1 wrong way, 2 ran a red, 3 emergency vehicle on a run).
  */
 import { getSimulationEngine } from './simulationEngine.js';
 import { rulesOf } from './turnRules.js';
@@ -43,7 +43,7 @@ function build(): Snapshot | null {
   for (const v of engine.getVehicles()) {
     const [x, y] = cellOf(v.lng, v.lat);
     const key = `${x}_${y}`;
-    const flag = v.wrongWay ? 1 : v.violation ? 2 : 0;
+    const flag = v.emergency ? 3 : v.wrongWay ? 1 : v.violation ? 2 : 0;
     const enc = `[${JSON.stringify(v.id)},${v.lat},${v.lng},${Math.round(v.speed)},${Math.round(Number(v.bearing) || 0)},"${v.type}",${flag}]`;
     (groups.get(key) ?? groups.set(key, []).get(key)!).push(enc);
   }

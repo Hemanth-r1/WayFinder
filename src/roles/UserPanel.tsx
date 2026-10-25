@@ -3,7 +3,7 @@ import { collection, query, where, orderBy, limit, onSnapshot } from 'firebase/f
 import { db } from '../config/firebase';
 import { useAuth } from '../context/useAuth';
 import type { RoadGraph } from '../types';
-import type { RouteOption } from '../services/serverClient';
+import type { RouteOption, EmergencyKind } from '../services/serverClient';
 import type { Place } from '../utils/places';
 import PlaceInput from '../components/PlaceInput';
 
@@ -26,7 +26,15 @@ interface Props {
   navigating: boolean; starting: boolean;
   onStart: () => void;
   onOpenGoogleMaps: () => void;
+  /** Responders: run this trip as an emergency (null = normal trip); absent for other drivers */
+  emergencyKind?: EmergencyKind | null;
+  onEmergencyKind?: (kind: EmergencyKind | null) => void;
 }
+
+const EMERGENCY_CHOICES: { kind: EmergencyKind | null; label: string }[] = [
+  { kind: null, label: 'Normal trip' }, { kind: 'ambulance', label: '🚑 Ambulance' },
+  { kind: 'fire', label: '🚒 Fire' }, { kind: 'police', label: '🚓 Police' },
+];
 
 /** Road names that set this route apart from the other options (all names if none do). */
 function distinctRoads(options: RouteOption[], index: number): string[] {
@@ -149,9 +157,22 @@ export default function UserPanel(p: Props) {
             <>
               {/* Start stays in reach on small screens where the option list scrolls */}
               <div style={{ position: 'sticky', bottom: 0, background: 'rgba(8,8,18,0.99)', paddingBottom: 8 }}>
-                <button onClick={p.onStart} disabled={p.starting} style={styles.primary}>
-                  {p.starting ? 'Starting…' : '▶ Start'}
+                {p.onEmergencyKind && (
+                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', margin: '4px 0 8px' }}>
+                    {EMERGENCY_CHOICES.map(c => (
+                      <button key={c.label} onClick={() => p.onEmergencyKind!(c.kind)} style={{
+                        flex: 1, minWidth: 0, padding: '7px 4px', fontSize: 12, borderRadius: 8, cursor: 'pointer', whiteSpace: 'nowrap',
+                        background: p.emergencyKind === c.kind ? (c.kind ? '#FF174433' : '#4488FF33') : '#1a1a2e',
+                        color: p.emergencyKind === c.kind ? '#fff' : '#aaa',
+                        border: `1px solid ${p.emergencyKind === c.kind ? (c.kind ? '#FF1744' : '#4488FF') : '#2a2a40'}`,
+                      }}>{c.label}</button>
+                    ))}
+                  </div>
+                )}
+                <button onClick={p.onStart} disabled={p.starting} style={p.emergencyKind ? { ...styles.primary, background: '#D50000' } : styles.primary}>
+                  {p.starting ? 'Starting…' : p.emergencyKind ? '🚨 Start emergency run' : '▶ Start'}
                 </button>
+                {p.emergencyKind && <div style={{ ...styles.muted, fontSize: 11, marginTop: 4 }}>Signals ahead turn green as you approach; drivers ahead are told to keep left.</div>}
               </div>
               <button onClick={p.onOpenGoogleMaps} disabled={p.starting} style={styles.secondary}>
                 Open this route in Google Maps

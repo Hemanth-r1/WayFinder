@@ -93,6 +93,8 @@ export interface Vehicle {
   wrongWay?: boolean;
   /** Ran a red light in the last few seconds */
   violation?: boolean;
+  /** Ambulance / fire engine / police on an emergency run (siren on) */
+  emergency?: boolean;
 }
 
 export interface CongestionZone {

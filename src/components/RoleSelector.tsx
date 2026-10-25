@@ -6,18 +6,21 @@ const NEXT_ROLE: Record<string, string> = {
   user: 'supporter',
   supporter: 'controller',
   controller: 'controller',
+  responder: 'supporter',
 };
 
 const ROLE_LABELS: Record<string, string> = {
   user: 'Want to become a supporter?',
   supporter: 'Request controller promotion?',
   controller: 'You have full access',
+  responder: 'Ambulance / fire / police driver',
 };
 
 const ROLE_DESCRIPTION: Record<string, string> = {
   user: 'Supporters can add signals and manage overrides',
   supporter: 'Controllers have full system access',
   controller: '',
+  responder: 'You can start emergency runs from the trip planner',
 };
 
 export default function RoleSelector() {
@@ -29,6 +32,7 @@ export default function RoleSelector() {
     user: '#4CAF50',
     supporter: '#4488FF',
     controller: '#FF6D00',
+    responder: '#FF1744',
   };
 
   const handlePromote = async () => {
@@ -93,6 +97,19 @@ export default function RoleSelector() {
           >
             {promoting ? 'Sending…' : isFirebaseAvailable ? `Request ${NEXT_ROLE[role]} access` : `Switch to ${NEXT_ROLE[role]} (demo)`}
           </button>
+          {role !== 'responder' && (
+            <button onClick={async () => {
+              setPromoting(true);
+              try { await promoteRole('responder'); pushToast(isFirebaseAvailable ? 'Requested responder access — an admin will review it' : 'Switched to responder (demo)', 'success'); }
+              catch { pushToast('Role request failed', 'error'); }
+              setPromoting(false); setShowPromote(false);
+            }} disabled={promoting} style={{
+              marginTop: 6, padding: '7px 16px', background: '#1a0d10', color: '#FF8A80', border: '1px solid #5a1a24',
+              borderRadius: 6, cursor: promoting ? 'wait' : 'pointer', fontSize: 12, width: '100%',
+            }}>
+              🚑 {isFirebaseAvailable ? 'I drive an ambulance / fire / police vehicle' : 'Switch to responder (demo)'}
+            </button>
+          )}
         </div>
       )}
     </div>

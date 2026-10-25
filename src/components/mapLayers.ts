@@ -29,6 +29,7 @@ export const SRC = {
   vehicles: 'wf-vehicles',
   reportIcons: 'wf-report-icons',
   coord: 'wf-coord',
+  emergency: 'wf-emergency',
 } as const;
 
 export const LAYER = {
@@ -352,9 +353,9 @@ export function addOverlayLayers(map: MLMap, opts: { showRoads: boolean }): void
     filter: ['!=', ['get', 'flag'], ''],
     paint: {
       'circle-radius': ['interpolate', ['linear'], ['zoom'], 14, 6, 18, 14],
-      'circle-color': ['match', ['get', 'flag'], 'wrong', '#FF1744', '#FF9100'],
+      'circle-color': ['match', ['get', 'flag'], 'wrong', '#FF1744', 'emg', '#2979FF', '#FF9100'],
       'circle-opacity': 0.35, 'circle-stroke-width': 1.5,
-      'circle-stroke-color': ['match', ['get', 'flag'], 'wrong', '#FF1744', '#FF9100'],
+      'circle-stroke-color': ['match', ['get', 'flag'], 'wrong', '#FF1744', 'emg', '#FF1744', '#FF9100'],
     },
   });
   map.addLayer({
@@ -400,6 +401,20 @@ export function addOverlayLayers(map: MLMap, opts: { showRoads: boolean }): void
     layout: { 'icon-image': ['get', 'icon'], 'icon-allow-overlap': true, 'icon-ignore-placement': true },
     paint: { 'icon-opacity': ['case', ['get', 'confirmed'], 1, 0.65] },
   });
+  // Emergency runs: the vehicle's route, and the signals on it (green once cleared for it)
+  map.addLayer({
+    id: 'wf-emergency-route', type: 'line', source: SRC.emergency, filter: ['==', ['geometry-type'], 'LineString'],
+    layout: { 'line-join': 'round', 'line-cap': 'round' },
+    paint: { 'line-color': '#FF1744', 'line-width': 5, 'line-opacity': 0.75, 'line-dasharray': [1.5, 1] },
+  });
+  map.addLayer({
+    id: 'wf-emergency-signal', type: 'circle', source: SRC.emergency, filter: ['==', ['geometry-type'], 'Point'],
+    paint: {
+      'circle-radius': ['case', ['get', 'vehicle'], 11, 8],
+      'circle-color': ['match', ['get', 'state'], 'green', '#00E676', 'passed', '#555555', 'vehicle', '#FF1744', '#FF9100'],
+      'circle-stroke-color': '#FFFFFF', 'circle-stroke-width': 2, 'circle-opacity': 0.9,
+    },
+  });
   // Coordination preview: what a green at one junction does to its neighbours
   map.addLayer({
     id: 'wf-coord-line', type: 'line', source: SRC.coord, filter: ['==', ['geometry-type'], 'LineString'],
@@ -421,6 +436,18 @@ export function addOverlayLayers(map: MLMap, opts: { showRoads: boolean }): void
     },
     paint: { 'text-color': '#ffffff', 'text-halo-color': '#000000', 'text-halo-width': 1.5 },
   });
+}
+
+/** Active emergency runs: route lines, their signals and the vehicles. */
+export function emergencyData(corridors: { status: string; geometry: { lat: number; lng: number }[]; signals: { lat: number; lng: number; state: string }[]; position?: { lat: number; lng: number } }[]): FC {
+  const features: Feature<Geometry, Props>[] = [];
+  for (const c of corridors) {
+    if (c.status !== 'active') continue;
+    features.push(lineFeature(c.geometry.map(p => [p.lat, p.lng] as LatLng), {}));
+    for (const s of c.signals) features.push(pointFeature(s.lat, s.lng, { state: s.state, vehicle: false }));
+    if (c.position) features.push(pointFeature(c.position.lat, c.position.lng, { state: 'vehicle', vehicle: true }));
+  }
+  return fc(features);
 }
 
 /** Colours of coordination actions on the map and in the console. */
@@ -598,7 +625,7 @@ export function vehiclesData(vehicles: Iterable<Vehicle>, selfId: string | undef
     features.push(pointFeature(v.lat, v.lng, {
       id: v.id, icon: vehicleIconId(v.type, v.isNavigated ? '#4488FF' : v.color), k: realScale(v.type),
       nav: !!v.isNavigated, self: v.id === selfId, bearing: Number(v.bearing) || 0,
-      flag: v.wrongWay ? 'wrong' : v.violation ? 'red' : '',
+      flag: v.emergency ? 'emg' : v.wrongWay ? 'wrong' : v.violation ? 'red' : '',
       label: `${v.type.toUpperCase()} · ${Math.round(v.speed)} km/h`,
     }));
   }

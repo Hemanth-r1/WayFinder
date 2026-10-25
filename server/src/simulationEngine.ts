@@ -59,6 +59,8 @@ export interface SignalControlState {
   hold?: { group: string; from: number; until: number; by: string };
   /** Timing plan replacing the default greens, per group (s) */
   plan?: { greens: Record<string, number>; by: string; at: number };
+  /** Emergency vehicle approaching: this group green until then (beats holds and scaling) */
+  emergency?: { group: string; until: number; corridorId: string };
   /** Temporary green scaling for a group (gating upstream traffic) */
   scale?: { group: string; factor: number; until: number; by: string };
 }
@@ -228,6 +230,12 @@ const KINDS: VehicleKind[] = [
   { type: 'trailer', color: '#546E7A', share: 0.005, maxKmh: 35, length: 16, pcu: 4.5, speedFactor: 0.6, T: 2.2, s0: 3, a: 0.45, b: 1.5, politeness: 0.4, lcThreshold: 0.4, keepLeft: 0.4, minRank: 5, redJump: 0, wrongWay: 0, weave: 0.02, heavy: true },
 ];
 
+/** Ambulance / fire engine / police vehicle (dispatched runs only, never spawned at random). */
+export const EMERGENCY_KIND: VehicleKind = { type: 'emergency', color: '#FFFFFF', share: 0, maxKmh: 80, length: 5.5, pcu: 1.5, speedFactor: 1.1, T: 0.9, s0: 1.5, a: 2.2, b: 3.5, politeness: 0, lcThreshold: 0.05, keepLeft: -0.3, minRank: 0, redJump: 0, wrongWay: 0, weave: 0 };
+/** How far ahead of an emergency vehicle traffic makes way (m), and the speed share it slows to. */
+const MAKE_WAY_METRES = 150;
+const MAKE_WAY_SPEED = 0.55;
+
 /**
  * MOBIL safe braking for the new follower (m/s²): strict at full speed, relaxed in slow
  * traffic where squeezing in is normal (as in Treiber's MOBIL with bSafe rising as v → 0).
@@ -311,6 +319,13 @@ interface SimVehicle {
   turn?: Turn;
   /** Road the vehicle leaves the junction ahead by (for movement counts) */
   moveExit?: string;
+  /** Emergency run (siren on): drives faster, passes reds slowly, others make way */
+  emergency?: boolean;
+  /** Close to a red light on an emergency run: crawl through */
+  crawl?: boolean;
+  /** Making way for an emergency vehicle behind, until this tick, and the lane it drives in */
+  yieldUntil?: number;
+  yieldLane?: number;
   /** Seconds left before a background vehicle leaves */
   ttl: number;
   stuck: number;
@@ -403,6 +418,8 @@ class SimulationEngine {
   private control = new Map<string, SignalControlState>();
   /** Default phase durations per signal id, restored on reset */
   private basePhases = new Map<string, number[]>();
+  /** Vehicles on an emergency run */
+  private emergencyIds = new Set<string>();
   /** Wrong-way copies of one-way roads: contra id → real edge id, and by start node */
   private contraBase = new Map<string, string>();
   private contraFrom = new Map<string, RoadEdge[]>();
@@ -504,7 +521,7 @@ class SimulationEngine {
    * Scenarios: adds a vehicle that drives `route` (edge ids), starting `startIndex` edges
    * in at `progress` metres and stopped (v = 0) when `queued`. Returns its id.
    */
-  addRoutedVehicle(route: string[], opts: { startIndex?: number; progress?: number; lane?: number; queued?: boolean; kind?: VehicleKind } = {}): string | null {
+  addRoutedVehicle(route: string[], opts: { startIndex?: number; progress?: number; lane?: number; queued?: boolean; kind?: VehicleKind; emergency?: boolean } = {}): string | null {
     const startIndex = opts.startIndex ?? 0;
     const edge = this.index.edges.get(route[startIndex]);
     if (!edge) return null;
@@ -525,7 +542,9 @@ class SimulationEngine {
       route, routeIndex: startIndex,
       violator: Math.random() < kind.redJump, weave: (Math.random() - 0.5) * kind.weave,
       odo: 0, nextStopAt: Infinity, stopAt: null, dwellLeft: 0, violationTimer: 0, approachWait: 0, yieldWait: 0,
+      emergency: opts.emergency,
     };
+    if (opts.emergency) { sv.pub.emergency = true; this.emergencyIds.add(sv.pub.id); }
     sv.next = this.chooseNext(sv);
     // Already on a junction approach: count it as such for movement counts and waits
     const sigTo = this.index.signalByNode.get(edge.to);
@@ -604,6 +623,7 @@ class SimulationEngine {
     this.behaviour = getBehaviour();
     this.spawnVehicles(dt);
     this.updateSignals(dt);
+    this.makeWayForEmergencies();
     // Road load changes slowly (30 s smoothing): once a second is enough
     this.occTimer += dt;
     if (this.occTimer >= 1) {
@@ -834,7 +854,16 @@ class SimulationEngine {
       this.v0Tick[ix] = this.tick;
     }
     // Road speed for this driver, capped at what the vehicle itself can (or may) do
-    return Math.min(this.v0Val[ix] * sv.speedFactor, (sv.kind.maxKmh / 3.6) * Math.min(1, sv.speedFactor / 0.9));
+    let v = Math.min(this.v0Val[ix] * sv.speedFactor, (sv.kind.maxKmh / 3.6) * Math.min(1, sv.speedFactor / 0.9));
+    if (sv.emergency) {
+      // Siren on: a quarter over the limit where the road allows, slow past a red
+      v = Math.max(v, Math.min(edge.speedLimit * 1.25, sv.kind.maxKmh) / 3.6 * this.weatherSpeed * jamSpeedFactor(edge.id));
+      if (sv.crawl) v = Math.min(v, 4);
+    } else if (sv.yieldUntil !== undefined && sv.yieldUntil >= this.tick && sv.lane !== sv.yieldLane) {
+      // Beside the siren's lane: slow down so it passes; in its lane: keep moving and pull over
+      v *= MAKE_WAY_SPEED;
+    }
+    return v;
   }
 
   /**
@@ -897,6 +926,7 @@ class SimulationEngine {
     const edge = sv.edge;
     const toLine = edge.length - 1 - sv.progress;
     sv.atRed = false;
+    sv.crawl = false;
     // Navigated vehicles wait before a road block on their route until rerouted; dead ends stop
     if ((sv.route && sv.next && isEdgeBlocked(sv.next.id)) || (!sv.next && !sv.route)) return Math.max(0, toLine);
     const isLastEdge = sv.route !== undefined && sv.routeIndex >= sv.route.length - 1;
@@ -913,6 +943,8 @@ class SimulationEngine {
     }
     // Turn-based phases light each movement on its own; otherwise the road's group decides
     const state = movementLight(control.signal, edge.id, sv.turn ?? 'straight') ?? approachState(control.signal, control.group);
+    // Emergency run: no stop for the light, but crawl over the line on red (traffic has made way)
+    if (sv.emergency) { sv.crawl = state !== 'GREEN' && toLine < 30; return Infinity; }
     // Green, turning right: wait for a gap in the oncoming traffic
     if (state === 'GREEN' && sv.next && toLine < GIVE_WAY_METRES && this.mustGiveWay(sv, control.group)) {
       return Math.max(0, toLine);
@@ -1106,6 +1138,9 @@ class SimulationEngine {
       // India keeps left: moving towards lane 0 gets the bias, moving away pays it
       let bias = target < sv.lane ? k.keepLeft : -k.keepLeft;
       if (turnLane >= 0) bias += Math.abs(target - turnLane) < Math.abs(sv.lane - turnLane) ? TURN_LANE_BIAS : -TURN_LANE_BIAS;
+      // Making way for a siren: pull towards the kerb; the emergency vehicle takes the outer lane
+      if (sv.yieldUntil !== undefined && sv.yieldUntil >= this.tick) bias += target < sv.lane ? 3 : -3;
+      if (sv.emergency && turnLane < 0) bias += target > sv.lane ? 1.5 : -1.5;
       const gain = accNew - accOld + k.politeness * (oldFollowerGain - newFollowerLoss) + bias;
       if (gain > k.lcThreshold && (!best || gain > best.gain)) best = { lane: target, gain };
     }
@@ -1374,7 +1409,9 @@ class SimulationEngine {
       const ctl = this.control.get(signal.id);
       if (ctl?.hold && now >= ctl.hold.until) delete ctl.hold;
       if (ctl?.scale && now >= ctl.scale.until) delete ctl.scale;
-      const hold = ctl?.hold && now >= ctl.hold.from ? ctl.hold : undefined;
+      if (ctl?.emergency && now >= ctl.emergency.until) delete ctl.emergency;
+      // An emergency vehicle's green comes before any controller hold
+      const hold = ctl?.emergency ? { group: ctl.emergency.group } : ctl?.hold && now >= ctl.hold.from ? ctl.hold : undefined;
 
       signal.timer += dt;
       const phase = signal.phases[signal.currentPhaseIndex];
@@ -1402,7 +1439,7 @@ class SimulationEngine {
 
   getSignalControl(id: string): SignalControlState | undefined {
     const c = this.control.get(id);
-    return c && (c.hold || c.plan || c.scale) ? c : undefined;
+    return c && (c.hold || c.plan || c.scale || c.emergency) ? c : undefined;
   }
 
   /** Keeps `group` green for `seconds`, starting `delay` seconds from now. */
@@ -1443,6 +1480,52 @@ class SimulationEngine {
   }
 
   /** Back to the default timing; ends holds and scaling. */
+  /** Vehicles in front of each emergency vehicle (same road, then the next one) slow and pull to the kerb. */
+  private makeWayForEmergencies(): void {
+    for (const id of this.emergencyIds) {
+      const e = this.sim.get(id);
+      if (!e) { this.emergencyIds.delete(id); continue; }
+      const until = this.tick + 10;
+      const mark = (edge: RoadEdge, from: number, to: number) => {
+        for (const list of this.lanesByEdge[edge.ix!] ?? []) {
+          for (const v of list ?? []) if (v !== e && v.edge === edge && v.progress > from && v.progress <= to) { v.yieldUntil = until; v.yieldLane = e.lane; }
+        }
+      };
+      mark(e.edge, e.progress, e.progress + MAKE_WAY_METRES);
+      const left = MAKE_WAY_METRES - (e.edge.length - e.progress);
+      if (left > 0 && e.next) mark(e.next, -1, left);
+    }
+  }
+
+  /** Where an emergency vehicle is on its route (null once it has gone). */
+  emergencyProgress(id: string): { route: string[]; routeIndex: number; progress: number; v: number; lat: number; lng: number } | null {
+    const sv = this.sim.get(id);
+    if (!sv?.route) return null;
+    return { route: sv.route, routeIndex: sv.routeIndex, progress: sv.progress, v: sv.v, lat: sv.pub.lat, lng: sv.pub.lng };
+  }
+
+  /** Green for an emergency vehicle at a junction until `until` (ms); overrides holds and plans. */
+  setEmergencyGreen(id: string, group: string, until: number, corridorId: string): boolean {
+    const s = this.state.signals.get(id);
+    if (!s || !s.phases.some(p => p.group === group && p.color === 'GREEN')) return false;
+    const ctl = this.control.get(id) ?? {};
+    ctl.emergency = { group, until, corridorId };
+    this.control.set(id, ctl);
+    return true;
+  }
+
+  clearEmergencyGreen(id: string, corridorId: string): void {
+    const ctl = this.control.get(id);
+    if (ctl?.emergency?.corridorId === corridorId) delete ctl.emergency;
+  }
+
+  /** Ends an emergency run: the vehicle drives on as normal traffic. */
+  endEmergency(vehicleId: string): void {
+    const sv = this.sim.get(vehicleId);
+    if (sv) { sv.emergency = false; sv.pub.emergency = undefined; }
+    this.emergencyIds.delete(vehicleId);
+  }
+
   /** Turn rules replaced a junction's phases: new defaults, earlier controller changes dropped. */
   phasesReplaced(id: string): void {
     const s = this.state.signals.get(id);
@@ -1528,7 +1611,7 @@ class SimulationEngine {
   // ── Public API ─────────────────────────────────────────────────────────────
 
   /** Puts the user's vehicle at the start of `route` (edge IDs), replacing any previous one. */
-  addUserVehicle(userId: string, route: string[], gps = false): Vehicle | null {
+  addUserVehicle(userId: string, route: string[], gps = false, emergency = false): Vehicle | null {
     const first = route.length > 0 ? this.index.edges.get(route[0]) : undefined;
     if (!first) return null;
     this.removeUserVehicle(userId);
@@ -1548,6 +1631,7 @@ class SimulationEngine {
       routeIndex: 0,
       violator: false, weave: 0, odo: 0, nextStopAt: Infinity, stopAt: null, dwellLeft: 0, violationTimer: 0, approachWait: 0, yieldWait: 0,
     };
+    if (emergency) { sv.emergency = true; sv.pub.emergency = true; this.emergencyIds.add(sv.pub.id); }
     sv.next = this.chooseNext(sv);
     this.placeVehicle(sv);
     if (gps) sv.gps = { at: Date.now(), lat: sv.pub.lat, lng: sv.pub.lng };

@@ -1,4 +1,5 @@
 import type { Vehicle, RouteInfo } from './types.js';
+import { updateResponderRoute, endResponderRun } from './emergencyService.js';
 import { getSimulationEngine } from './simulationEngine.js';
 import { registerUserRoute, releaseUserRoute } from './pathfindingService.js';
 
@@ -50,13 +51,13 @@ setInterval(() => {
  * Starts driving `route` for `userId`: spawns their vehicle and registers the route as
  * navigator load so users planning afterwards are spread onto other nearby roads.
  */
-export function startUserSession(userId: string, route: RouteInfo, mode: DriveMode = 'simulated'): UserSession {
+export function startUserSession(userId: string, route: RouteInfo, mode: DriveMode = 'simulated', emergency = false): UserSession {
   const engine = getSimulationEngine();
   if (!engine) {
     throw new Error('Simulation engine not initialized');
   }
 
-  const vehicle = engine.addUserVehicle(userId, route.edgeIds, mode === 'gps');
+  const vehicle = engine.addUserVehicle(userId, route.edgeIds, mode === 'gps', emergency);
   if (!vehicle) {
     throw new Error('Failed to create user vehicle');
   }
@@ -87,6 +88,7 @@ export function updateSessionRoute(userId: string, route: RouteInfo): void {
   const session = sessions.get(userId);
   if (!session) return;
   registerUserRoute(userId, route.edgeIds);
+  updateResponderRoute(userId, route.edgeIds);
   session.route = route;
   session.pendingReroute = null;
   session.offRouteFixes = 0;
@@ -97,6 +99,7 @@ export function updateSessionRoute(userId: string, route: RouteInfo): void {
 export function markArrived(userId: string): void {
   const session = sessions.get(userId);
   releaseUserRoute(userId);
+  endResponderRun(userId);
   if (session) {
     session.isActive = false;
     session.arrivedAt = Date.now();
@@ -104,6 +107,7 @@ export function markArrived(userId: string): void {
 }
 
 export function removeUserVehicle(userId: string): void {
+  endResponderRun(userId);
   getSimulationEngine()?.removeUserVehicle(userId);
   releaseUserRoute(userId);
   sessions.delete(userId);

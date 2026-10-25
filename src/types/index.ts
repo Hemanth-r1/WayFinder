@@ -93,6 +93,8 @@ export interface Vehicle {
   wrongWay?: boolean;
   /** Just ran a red light */
   violation?: boolean;
+  /** Ambulance / fire / police on a run (siren on) */
+  emergency?: boolean;
 }
 export interface TrafficStats {
   totalVehicles: number; avgSpeed: number; avgDelay: number; congestionHotspots: number;

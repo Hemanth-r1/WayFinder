@@ -9,7 +9,8 @@ import { getApps } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 import { getDb } from './firebaseClient.js';
 
-export type Role = 'user' | 'supporter' | 'controller';
+/** responder: ambulance / fire / police drivers, who may start emergency runs */
+export type Role = 'user' | 'supporter' | 'controller' | 'responder';
 
 export interface Caller {
   uid: string;
@@ -18,7 +19,7 @@ export interface Caller {
   trusted: boolean;
 }
 
-const ROLES: Role[] = ['user', 'supporter', 'controller'];
+const ROLES: Role[] = ['user', 'supporter', 'controller', 'responder'];
 const ROLE_CACHE_MS = 5 * 60 * 1000;
 const roleCache = new Map<string, { role: Role; at: number }>();
 // Drop expired roles, or the cache grows with every user ever seen
@@ -55,7 +56,7 @@ async function identify(req: Request): Promise<Caller | null> {
     const uid = req.header('x-demo-user');
     if (!uid || !/^[\w-]{1,64}$/.test(uid)) return null;
     const role = asRole(req.header('x-demo-role'));
-    return { uid, role, trusted: role !== 'user' };
+    return { uid, role, trusted: role === 'supporter' || role === 'controller' };
   }
   const header = req.header('authorization') ?? '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : '';
@@ -63,7 +64,7 @@ async function identify(req: Request): Promise<Caller | null> {
   try {
     const decoded = await getAuth().verifyIdToken(token);
     const role = await roleFor(decoded.uid);
-    return { uid: decoded.uid, role, trusted: role !== 'user' };
+    return { uid: decoded.uid, role, trusted: role === 'supporter' || role === 'controller' };
   } catch {
     return null;
   }

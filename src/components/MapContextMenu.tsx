@@ -30,6 +30,9 @@ export interface MapContextMenuProps {
   onRemove: (id: string) => void;
   /** Controllers: jam the road here in the simulation */
   onJam?: (severity: 'stopped' | 'slow') => void;
+  /** Controllers: simulated ambulance starts / goes here */
+  onAmbulance?: (end: 'from' | 'to') => void;
+  ambulanceFromSet?: boolean;
   /** Driver view: hide coordinates, node info and vehicle spawning */
   simple: boolean;
 }
@@ -49,13 +52,12 @@ const VEHICLE_TYPES: { type: VehicleType; icon: string; label: string }[] = [
   { type: 'bike',      icon: '🛵', label: 'Bike' },
   { type: 'auto',      icon: '🛺', label: 'Auto' },
   { type: 'van',       icon: '📦', label: 'Van' },
-  { type: 'emergency', icon: '🚨', label: 'Emergency' },
 ];
 
 export default function MapContextMenu({
   lat, lng, nodeId, nodeDegree, roadNames, role,
   screenX, screenY, onClose, onAddSignal, onSpawnVehicle, onSetSource, onSetDest,
-  onReport, nearbyReports, onVote, canRemove, onRemove, simple, onJam,
+  onReport, nearbyReports, onVote, canRemove, onRemove, simple, onJam, onAmbulance, ambulanceFromSet,
 }: MapContextMenuProps) {
   // Clamp to viewport
   const menuWidth = 220;
@@ -141,6 +143,15 @@ export default function MapContextMenu({
             <div style={{ padding: '6px 14px 0', fontSize: 10, color: '#555', textTransform: 'uppercase', letterSpacing: 1 }}>Test jam (simulation)</div>
             <MenuItem icon="🛑" label="Jam this road — standstill, 400 m" onClick={() => { onJam('stopped'); onClose(); }} accent="#F44336" />
             <MenuItem icon="🐢" label="Slow this road — crawl, 400 m" onClick={() => { onJam('slow'); onClose(); }} accent="#FF9800" />
+          </div>
+        )}
+
+        {/* Emergency run (controllers, simulation): pick start, then destination */}
+        {role === 'controller' && onAmbulance && (
+          <div style={{ borderBottom: '1px solid #1a1a2e' }}>
+            <div style={{ padding: '6px 14px 0', fontSize: 10, color: '#555', textTransform: 'uppercase', letterSpacing: 1 }}>Emergency run (simulation)</div>
+            <MenuItem icon="🚑" label="Ambulance starts here" onClick={() => { onAmbulance('from'); onClose(); }} accent="#FF1744" />
+            {ambulanceFromSet && <MenuItem icon="🏥" label="Ambulance goes here — dispatch" onClick={() => { onAmbulance('to'); onClose(); }} accent="#FF1744" />}
           </div>
         )}
 
