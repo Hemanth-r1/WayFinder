@@ -131,3 +131,16 @@ export async function storageUsedMb(): Promise<number | null> {
     return null;
   }
 }
+
+/** Set when the user skipped the first-launch download (or dismissed the prompt). */
+export const OFFLINE_SKIP_KEY = 'wf-offline-prompt-dismissed';
+
+/** True when this device should see the setup screen. */
+export function needsOfflineSetup(): boolean {
+  try {
+    if (typeof caches === 'undefined') return false; // browser can't store it: nothing to offer
+    return !localStorage.getItem('wf-offline-map') && localStorage.getItem(OFFLINE_SKIP_KEY) !== '1';
+  } catch {
+    return false; // private mode
+  }
+}

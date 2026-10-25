@@ -5,20 +5,8 @@
  * comes over the network. Skipping is allowed (remembered); the side panel offers it later.
  */
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
-import { downloadOfflineMap, type OfflineProgress } from '../services/offlineMap';
+import { downloadOfflineMap, OFFLINE_SKIP_KEY, type OfflineProgress } from '../services/offlineMap';
 import { progressiveLoader } from '../services/progressiveLoader';
-
-export const OFFLINE_SKIP_KEY = 'wf-offline-prompt-dismissed';
-
-/** True when this device should see the setup screen. */
-export function needsOfflineSetup(): boolean {
-  try {
-    if (typeof caches === 'undefined') return false; // browser can't store it: nothing to offer
-    return !localStorage.getItem('wf-offline-map') && localStorage.getItem(OFFLINE_SKIP_KEY) !== '1';
-  } catch {
-    return false; // private mode
-  }
-}
 
 export default function OfflineSetup({ onDone }: { onDone: () => void }) {
   const [step, setStep] = useState<'ask' | 'roads' | 'tiles' | 'done' | 'error'>('ask');
